@@ -1,0 +1,327 @@
+#!/usr/bin/env bash
+# workflow - install a project workflow: skills, agent rules, and document layout.
+#
+# Installs into the current repository, not globally. Everything it writes is
+# tracked by git in that repository, so a teammate who clones the repo gets the
+# same workflow with no extra step.
+#
+#   workflow init        install into the current project
+#   workflow update      re-copy the skills after this toolkit changes
+#   workflow doctor      check what is installed and what is missing
+#   workflow uninstall   remove everything it installed
+#
+# Skills are copied, not linked, so a project keeps working if this toolkit is
+# moved or deleted. Use `workflow update` to pull in newer versions.
+set -euo pipefail
+
+VERSION="2.0.0"
+KIT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+MARKER_START="<!-- workflow:start -->"
+MARKER_END="<!-- workflow:end -->"
+
+# ---------------------------------------------------------------- output
+
+if [ -t 2 ]; then
+  C_DIM=$'\033[2m'; C_OK=$'\033[32m'; C_WARN=$'\033[33m'; C_ERR=$'\033[31m'; C_OFF=$'\033[0m'
+else
+  C_DIM=""; C_OK=""; C_WARN=""; C_ERR=""; C_OFF=""
+fi
+
+say()  { printf '%s\n' "$*" >&2; }
+ok()   { printf '%s✓%s %s\n' "$C_OK" "$C_OFF" "$*" >&2; }
+skip() { printf '%s·%s %s\n' "$C_DIM" "$C_OFF" "$*" >&2; }
+warn() { printf '%s!%s %s\n' "$C_WARN" "$C_OFF" "$*" >&2; }
+die()  { printf '%s✗%s %s\n' "$C_ERR" "$C_OFF" "$*" >&2; exit 1; }
+
+# ---------------------------------------------------------------- helpers
+
+# Find the project root: the nearest ancestor with a .git directory, else cwd.
+project_root() {
+  local dir="${1:-$PWD}"
+  while [ "$dir" != "/" ]; do
+    if [ -d "$dir/.git" ]; then printf '%s\n' "$dir"; return 0; fi
+    dir="$(dirname "$dir")"
+  done
+  printf '%s\n' "${1:-$PWD}"
+}
+
+skill_names() {
+  for d in "$KIT"/skills/*/; do
+    [ -f "$d/SKILL.md" ] || continue
+    basename "${d%/}"
+  done
+}
+
+require_kit() {
+  [ -d "$KIT/skills" ] || die "no skills/ directory next to $(basename "${BASH_SOURCE[0]}")"
+  [ -f "$KIT/CONVENTIONS.md" ] || die "no CONVENTIONS.md next to $(basename "${BASH_SOURCE[0]}")"
+}
+
+# Copy the skills into <root>/.agents/skills. Refuses to overwrite a directory
+# that this toolkit did not write, unless --force.
+install_skills() {
+  local root="$1" force="$2"
+  local dest="$root/.agents/skills"
+  mkdir -p "$dest"
+
+  for name in $(skill_names); do
+    local src="$KIT/skills/$name" target="$dest/$name"
+    if [ -e "$target" ] && [ ! -f "$target/.workflow-managed" ] && [ "$force" != 1 ]; then
+      warn "skipped $name: $target exists and was not written by this toolkit (use --force)"
+      continue
+    fi
+    rm -rf "$target"
+    mkdir -p "$target"
+    cp "$src/SKILL.md" "$target/SKILL.md"
+    : > "$target/.workflow-managed"
+    ok "skill $name"
+  done
+}
+
+# Copy the project review agents into <root>/.omp/agents.
+install_agents() {
+  local root="$1"
+  local dest="$root/.omp/agents"
+  mkdir -p "$dest"
+  for src in "$KIT"/templates/project/.omp/agents/*.md; do
+    [ -f "$src" ] || continue
+    cp "$src" "$dest/$(basename "$src")"
+    ok "agent $(basename "$src" .md)"
+  done
+}
+
+# Append, replace, or leave alone the marked block in AGENTS.md.
+install_agents_block() {
+  local root="$1" source="$2"
+  local file="$root/AGENTS.md"
+  local block
+  block="$(cat "$source")"
+
+  if [ ! -f "$file" ]; then
+    printf '%s\n' "$block" > "$file"
+    ok "AGENTS.md (created)"
+    return 0
+  fi
+
+  if grep -qF "$MARKER_START" "$file"; then
+    local tmp
+    tmp="$(mktemp)"
+    awk -v s="$MARKER_START" -v e="$MARKER_END" -v repl="$block" '
+      $0 == s { print repl; skipping = 1; next }
+      $0 == e { skipping = 0; next }
+      !skipping { print }
+    ' "$file" > "$tmp"
+    mv "$tmp" "$file"
+    ok "AGENTS.md (workflow block updated)"
+  else
+    printf '\n%s\n' "$block" >> "$file"
+    ok "AGENTS.md (workflow block appended)"
+  fi
+}
+
+# Write a file only if it does not exist. Never clobbers user edits.
+install_file() {
+  local dest="$1" src="$2"
+  if [ -e "$dest" ]; then
+    skip "$(basename "$dest") (already exists, left alone)"
+    return 0
+  fi
+  mkdir -p "$(dirname "$dest")"
+  cp "$src" "$dest"
+  ok "$(basename "$dest")"
+}
+
+write_manifest() {
+  local root="$1"
+  mkdir -p "$root/.workflow"
+  {
+    printf 'version: %s\n' "$VERSION"
+    printf 'installed: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    printf 'skills:\n'
+    for name in $(skill_names); do printf '  - %s\n' "$name"; done
+  } > "$root/.workflow/.workflow-version"
+}
+
+# ---------------------------------------------------------------- commands
+
+cmd_init() {
+  local force=0
+  for arg in "$@"; do
+    case "$arg" in
+      --force) force=1 ;;
+      -h|--help) usage; exit 0 ;;
+      *) die "unknown argument: $arg" ;;
+    esac
+  done
+
+  require_kit
+  local root; root="$(project_root)"
+  say ""
+  say "Installing the workflow into $root"
+  say ""
+
+  mkdir -p "$root/.workflow/specs" "$root/.workflow/tasks" \
+           "$root/.workflow/maps" "$root/.workflow/done" "$root/.omp/agents"
+
+  install_skills "$root" "$force"
+  install_agents "$root"
+  install_file "$root/.workflow/CONVENTIONS.md" "$KIT/CONVENTIONS.md"
+  install_file "$root/.workflow/STYLE.md" "$KIT/STYLE.md"
+
+  for f in standards glossary decisions; do
+    install_file "$root/.workflow/$f.md" "$KIT/templates/project/.workflow/$f.md"
+  done
+
+  install_agents_block "$root" "$KIT/templates/project/AGENTS.md"
+  write_manifest "$root"
+
+  cat >&2 <<EOF
+
+${C_OK}Done.${C_OFF} Next step:
+
+  1. Fill in the blanks in AGENTS.md and .workflow/standards.md (take five minutes).
+  2. Commit the .workflow/, .agents/ and AGENTS.md files.
+  3. Open your agent and ask it to grill you about what you want to build.
+
+EOF
+}
+
+cmd_update() {
+  require_kit
+  local root; root="$(project_root)"
+  say "Updating the workflow in $root"
+  install_skills "$root" 1
+  install_agents "$root"
+  cp "$KIT/CONVENTIONS.md" "$root/.workflow/CONVENTIONS.md"
+  cp "$KIT/STYLE.md" "$root/.workflow/STYLE.md"
+  install_agents_block "$root" "$KIT/templates/project/AGENTS.md"
+  write_manifest "$root"
+  ok "updated to $VERSION"
+  say ""
+  say "Your own files (standards, glossary, decisions, specs, tasks) were not touched."
+}
+
+cmd_doctor() {
+  local root; root="$(project_root)"
+  local problems=0
+  say "Workflow check for $root"
+  say ""
+
+  if [ -f "$root/.workflow/.workflow-version" ]; then
+    ok "installed: $(sed -n 's/^version: //p' "$root/.workflow/.workflow-version")"
+  else
+    warn "not installed here; run 'workflow init'"
+    problems=$((problems + 1))
+  fi
+
+  for name in $(skill_names); do
+    if [ -f "$root/.agents/skills/$name/SKILL.md" ]; then
+      ok "skill $name"
+    else
+      warn "skill $name missing"
+      problems=$((problems + 1))
+    fi
+  done
+
+  for src in "$KIT"/templates/project/.omp/agents/*.md; do
+    [ -f "$src" ] || continue
+    local a; a="$(basename "$src")"
+    if [ -f "$root/.omp/agents/$a" ]; then
+      ok "agent ${a%.md}"
+    else
+      warn "agent $a missing"; problems=$((problems + 1))
+    fi
+  done
+
+  if [ -f "$root/AGENTS.md" ] && grep -qF "$MARKER_START" "$root/AGENTS.md"; then
+    ok "AGENTS.md has the workflow block"
+  else
+    warn "AGENTS.md is missing the workflow block; run 'workflow update'"
+    problems=$((problems + 1))
+  fi
+
+  for f in CONVENTIONS.md STYLE.md standards.md glossary.md decisions.md; do
+    [ -f "$root/.workflow/$f" ] || { warn ".workflow/$f missing"; problems=$((problems + 1)); }
+  done
+
+  if [ -f "$root/.workflow/standards.md" ] && grep -q '<' "$root/.workflow/standards.md"; then
+    skip "standards.md still contains unfilled placeholders"
+  fi
+
+  say ""
+  if [ "$problems" -eq 0 ]; then
+    say "${C_OK}Everything present.${C_OFF}"
+  else
+    say "${C_WARN}$problems problem(s) found.${C_OFF} Run 'workflow init' or 'workflow update' to fix."
+  fi
+}
+
+cmd_uninstall() {
+  local root; root="$(project_root)"
+  local removed=0
+
+  for name in $(skill_names); do
+    local target="$root/.agents/skills/$name"
+    if [ -f "$target/.workflow-managed" ]; then
+      rm -rf "$target"; ok "removed skill $name"; removed=$((removed + 1))
+    fi
+  done
+
+
+  for src in "$KIT"/templates/project/.omp/agents/*.md; do
+    [ -f "$src" ] || continue
+    local a="$root/.omp/agents/$(basename "$src")"
+    if [ -f "$a" ] && cmp -s "$src" "$a"; then
+      rm "$a"; ok "removed agent $(basename "$src" .md)"; removed=$((removed + 1))
+    elif [ -f "$a" ]; then
+      warn "kept .omp/agents/$(basename "$src"): edited locally, yours to keep"
+    fi
+  done
+  rmdir "$root/.omp/agents" 2>/dev/null || true
+  rmdir "$root/.omp" 2>/dev/null || true
+
+  rmdir "$root/.agents/skills" 2>/dev/null || true
+  rmdir "$root/.agents" 2>/dev/null || true
+
+  if [ -f "$root/AGENTS.md" ] && grep -qF "$MARKER_START" "$root/AGENTS.md"; then
+    local tmp; tmp="$(mktemp)"
+    awk -v s="$MARKER_START" -v e="$MARKER_END" '
+      $0 == s { skipping = 1; next }
+      $0 == e { skipping = 0; next }
+      !skipping { print }
+    ' "$root/AGENTS.md" > "$tmp"
+    mv "$tmp" "$root/AGENTS.md"
+    ok "removed the workflow block from AGENTS.md"
+  fi
+
+  say ""
+  say "Removed $removed file(s)."
+  say ".workflow/ was left in place: your specs, tasks and decisions are in there."
+  say "Delete it yourself if you want it gone."
+}
+
+usage() {
+  cat <<EOF
+workflow $VERSION - a project workflow for coding agents
+
+  workflow init [--force]   install into the current project
+  workflow update           re-copy skills and rules after an update
+  workflow doctor           report what is installed and what is missing
+  workflow uninstall        remove the installed skills and the AGENTS.md block
+  workflow version          print the version
+
+Installs into the nearest git repository above the current directory. Nothing is
+written outside that project. Skills are copied into .agents/skills/ and the
+rules go into AGENTS.md between workflow:start and workflow:end markers.
+EOF
+}
+
+case "${1:-}" in
+  init) shift; cmd_init "$@" ;;
+  update) shift; cmd_update "$@" ;;
+  doctor) shift; cmd_doctor "$@" ;;
+  uninstall) shift; cmd_uninstall "$@" ;;
+  version|--version|-v) printf '%s\n' "$VERSION" ;;
+  ""|-h|--help|help) usage ;;
+  *) die "unknown command: $1 (try 'workflow help')" ;;
+esac

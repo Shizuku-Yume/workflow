@@ -11,8 +11,8 @@ description: >-
 
 # Flow: Map
 
-Read `CONVENTIONS.md` next to this skill first (§1 decision protocol, §2 document
-layout).
+Read `.workflow/CONVENTIONS.md` first (§1 decision protocol, §2 where things
+live), and `.workflow/STYLE.md`.
 
 For work where the route is not visible. Not "the plan is long", but "we cannot
 write the plan yet, because it depends on things we have not worked out".

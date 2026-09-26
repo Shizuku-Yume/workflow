@@ -10,10 +10,10 @@ description: >-
 
 # Flow: Break
 
-Read `CONVENTIONS.md` next to this skill first (§2 document layout).
+Read `.workflow/CONVENTIONS.md` first (§2 where things live).
 
-Input: a spec, a plan, or the current conversation. Output: `.workflow/tasks/<slug>/`
-folders, one per task.
+Input: a spec, a plan, or the current conversation. Output: one file per task in
+`.workflow/tasks/`.
 
 ## Why tasks exist
 
@@ -124,6 +124,9 @@ built in a fresh session by reading its own file plus the spec sections it names
 nobody should need the conversation that produced it. If a task would need that
 conversation, it is missing something; fix the task file now.
 
-For a task that is genuinely exploratory rather than buildable, say so and mark it
-as a decision task: its job is to settle a question, and it produces an answer
-written back into the spec, not code.
+Build them with `flow-implement`, one task per session. Independent tasks can run
+in parallel sessions; a task whose `Blocked by` is not done cannot start.
+
+A task that is genuinely exploratory rather than buildable is a decision task: its
+job is to settle a question, and it produces an answer written back into the spec,
+not code. Mark it as one so nobody tries to build it.

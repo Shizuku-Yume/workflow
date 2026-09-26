@@ -59,10 +59,12 @@ Never drip questions. One message, all questions in it.
 A **round** is every question you can ask right now without inventing an answer
 to another open question. Ask the whole round in one message, then stop and wait.
 
-Hard cap: **at most three questions per round.** If more than three are ready,
-the extra ones are almost always Bucket B. Decide those, log them, and say so in
-one line each. When a fourth genuinely must be asked, split it into a second
-round rather than inflating this one.
+Cap: **six questions per round**, and eight only when every one of them genuinely
+blocks the next step. Six is not a target to reach; two good questions beat six
+padded ones. If more than six are ready, the extra ones are almost always Bucket
+B. Decide those, log them, and mention each in one line. When a seventh genuinely
+must be asked, do not inflate the round: split it into two rounds, or drop the
+weakest question and log your own answer to it.
 
 If an explanation can run for more than one screen, the real question is smaller
 than it looks. Ask the one branch point, not the whole tree.
@@ -105,38 +107,50 @@ open questions recorded in the document, not extra rounds.
 
 ---
 
-## 2. Document layout
+## 2. Where things live
 
-One root per project: `.workflow/`. Create it lazily; only the parts you use.
+Everything is inside the project, tracked by git. Nothing lives in a global
+directory, so a teammate who clones the repository gets the same workflow.
 
 ```
+AGENTS.md                        the short list of rules; holds the workflow block
+.agents/skills/<name>/SKILL.md   the steps, one directory each
+.omp/agents/<name>.md            the review agents (other harnesses read their own dir)
 .workflow/
-  standards.md          entry point: how this project is worked on
-  glossary.md           what things are called and what the words mean
-  specs/<slug>.md       what is being built and why
-  tasks/<slug>/         one task: what to build, what to read, how to know it is done
-  decisions.md          the log: every choice made, with the runner-up
+  CONVENTIONS.md                 this file: the full rulebook
+  STYLE.md                       how everything you write should read
+  standards.md                   this project: commands, layout, rules
+  glossary.md                    what things are called
+  decisions.md                   every choice made, with the runner-up
+  specs/<slug>.md                what is being built and why
+  tasks/<NN>-<slug>.md           one task: what to build, how to know it is done
+  maps/<slug>.md                 the plan for work whose route is not visible yet
+  done/<slug>.md                 finished and archived
 ```
+
+`AGENTS.md` is read at the start of every session, so it stays short: rules the
+agent must not miss, and a pointer to this file for everything else. This file is
+read on demand. Depth belongs here; brevity belongs there.
 
 Rules:
 
-- **`standards.md` is the entry point.** A new session reads it first. It names
-  the language, the test command, the review axes, and where everything lives.
-  Keep it under one screen.
-- **The glossary is the vocabulary source.** If a concept gets a name in a spec
-  or task, it belongs here. One line per term, plus what not to call it.
-- **One spec per effort, updated in place.** When code changes a fact in a spec
-  (a path, a default, an interface shape), update the spec in the same change.
-  Do not append history to it.
+- **`standards.md` is this project's entry point.** A new session reads it first.
+  It names the commands, the layout, the conventions, and what the project has
+  ruled out. Keep it under one screen.
+- **The glossary is the vocabulary source.** If a concept gets a name in a spec or
+  a task, it belongs here. One line per term, plus what not to call it.
+- **One spec per effort, updated in place.** When code changes a fact a spec
+  states (a path, a default, an interface shape), update the spec in the same
+  change. Do not append history to it.
 - **When a decision reverses, the spec gets rewritten, not annotated.** Note the
   reversal in `decisions.md` with a link, and fix the spec so it reads as if the
-  new decision had always been the one. A spec carrying two contradicting
-  answers is worse than no spec.
-- **Task folders are deleted when merged.** Their lasting value, if any, moves
-  into the spec or the glossary. A finished task folder is archaeology.
+  new decision had always been the one. A spec carrying two contradicting answers
+  is worse than no spec, because it gets believed.
+- **Finished tasks move to `done/`.** Their lasting value, if any, moves into the
+  spec or the glossary first. A task file nobody will read again is archaeology.
 - **`decisions.md` is append-only.** One entry per Bucket B and Bucket C
   decision: what was decided, what lost, one line of why. This is what stops the
-  same argument from being had again next session.
+  same argument being had again next session.
 
 If a project already has a real issue tracker in use, the tracker wins for
 specs and tasks; `.workflow/` keeps `standards.md`, `glossary.md` and
@@ -146,31 +160,25 @@ specs and tasks; `.workflow/` keeps `standards.md`, `glossary.md` and
 
 ## 3. Writing
 
-Everything in this repo is read by a model and by a person who is tired. Both
-want the same thing: short sentences that say what is true.
+**`.workflow/STYLE.md` is the rulebook for everything you write**, in any
+language: chat replies, documents, commit messages, code comments, and text a
+user sees on screen. Read it and follow it. It covers sounding like a person
+rather than a translation, not mixing languages inside one document, keeping
+developer vocabulary out of user-facing text, and how long an answer should be.
 
-**Say the thing.** No preamble, no restating the request, no conclusion
-paragraph that summarizes what was just written. If a section has one fact in
-it, that section is a sentence.
+Three rules from it matter most inside workflow documents:
 
-**Define a term or drop it.** Jargon is allowed only when it is doing work. The
-first use of a term that is not obvious gets one clause of explanation, or an
-entry in `glossary.md`. Do not stack three abstractions in a sentence to sound
-precise; that hides a missing decision.
+**Say the thing.** No preamble, no restating the request, no closing paragraph
+that summarizes what was just written. If a section holds one fact, that section
+is a sentence.
 
-**Banned, unless a file in the repo actually has that name:** leverage, synergy,
-seam (say "the place where X talks to Y"), deepening, tracer bullet (say "a
-slice that works end to end"), blast radius, vertical slice, smart zone, first
-class citizen, single source of truth, dogfood, sane, robust, powerful, and any
-phrase that would survive being cut without losing information.
+**Define a term or drop it.** A term that is not obvious gets one clause of
+explanation, or an entry in `glossary.md`. Stacking three abstractions in one
+sentence does not make it precise; it hides the decision that was never made.
 
-**Prefer the concrete noun.** "The order intake module" beats "the domain
+**Name the concrete thing.** "The order intake module" beats "the domain
 boundary responsible for order ingestion". If you cannot name the file, the
 thing, or the command, you do not understand it well enough to write it down.
-
-**Length is a symptom.** A document nobody reads is not documentation. If a
-spec section runs long, the design is unclear, so fix the design instead of
-writing more words about it.
 
 ---
 
@@ -178,10 +186,11 @@ writing more words about it.
 
 ```
 flow-grill      align on what to do, and why        → .workflow/decisions.md
-flow-map        plan work too big for one session   → .workflow/specs/ + tasks
+flow-map        plan work too big for one session   → .workflow/maps/
 flow-spec       write down what is being built      → .workflow/specs/<slug>.md
-flow-break      cut it into tasks a session can hold→ .workflow/tasks/<slug>/
-flow-verify     check the work against all of it    → report
+flow-break      cut it into tasks a session can hold→ .workflow/tasks/
+flow-implement  build one task, then review it      → code, then .workflow/done/
+flow-verify     review any change on three axes     → report
 flow-architect  find the code that resists change   → report
 ```
 

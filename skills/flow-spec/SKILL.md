@@ -11,7 +11,7 @@ description: >-
 
 # Flow: Spec
 
-Read `CONVENTIONS.md` next to this skill first (§2 document layout, §3 writing).
+Read `.workflow/CONVENTIONS.md` first (§2 where things live, §3 writing).
 
 Input: a conversation, a design discussion, or an existing half-formed document.
 Output: `.workflow/specs/<slug>.md`.
@@ -101,7 +101,7 @@ ready to build from.
 ## Notes
 
 Anything a reader would otherwise have to ask you. Links to the conversation, the
-task folders, related specs.
+task files, related specs.
 ```
 
 ## Rules

@@ -11,7 +11,8 @@ description: >-
 
 # Flow: Architect
 
-Read `CONVENTIONS.md` next to this skill first (§3 writing).
+Read `.workflow/CONVENTIONS.md` first (§3 writing), and `.workflow/STYLE.md`:
+everything you report has to read like a person wrote it.
 
 Find the code that makes the next change expensive, and say what to do about it.
 Report only; change nothing.
