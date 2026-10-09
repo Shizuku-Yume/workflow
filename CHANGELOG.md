@@ -41,7 +41,13 @@ git add .workflow .agents AGENTS.md .gitattributes && git commit    # plus .clau
   `hotfix-review`, with the shell completions. Agents read the Markdown directly:
   the end of `decisions.md` plus `grep`, `technical-debt.md`, and `next` for tasks.
   The CLI is `init`, `update`, `uninstall`, `doctor`, `hook`, `validate`, `next`.
-  `validate --fix` and `next --interactive` are gone.
+  `validate --fix` is gone because CRLF files now parse like LF and are no longer
+  reported; `next --interactive` is gone too. Removed commands and options say so
+  and exit 2.
+- **`validate` prints its report on stdout,** like other linters, so it pipes into
+  `grep` or `less`; `--format json` keeps stdout pure JSON. Usage errors and side
+  warnings stay on stderr. Scripts that read the 2.4 report from stderr need to
+  switch.
 - **No Bash 4.** `bin/workflow` runs on Bash 3.2; `validate` and `next` moved to
   `bin/workflow-core.py` (stdlib only). The CLI went from eleven Bash files (about
   4,700 lines) to two files (about 2,700 lines).

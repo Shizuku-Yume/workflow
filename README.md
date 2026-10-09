@@ -30,7 +30,7 @@ Requirements: Bash 3.2 or newer (stock macOS is fine), git, python3, and the usu
 | `workflow validate` | check task files and the decision log (exit 0 valid, 1 warnings, 2 errors) |
 | `workflow next` | ready tasks ranked by spec priority; also lists paused and blocked ones |
 
-`validate` and `next` take `--format json` and `--no-color`. Everything else in `.workflow/` is plain Markdown that agents read and grep directly.
+`validate` and `next` take `--format json` and `--no-color`. Their report goes to stdout (pure JSON with `--format json`); usage errors and side warnings go to stderr. Everything else in `.workflow/` is plain Markdown that agents read and grep directly.
 
 ## What it installs
 
@@ -85,7 +85,7 @@ Where each rule lives, and which wins when two disagree, is in `CONVENTIONS.md`:
 
 **`.workflow` is missing.** Commands find the project root with `git rev-parse --show-toplevel`, or use the current directory outside git.
 
-**Malformed files.** `validate` names the file, line and fix. `Blocked by` takes `None` or a comma-list of `NN` (same effort) and `<effort>/NN`; titles after the numbers are errors. Problems inside `done/` archives are warnings, so old history never blocks a commit. Repair the Markdown and rerun `validate`.
+**Malformed files.** `validate` names the file, line and fix. `Blocked by` takes `None` or a comma-list of `NN` (same effort) and `<effort>/NN`; titles after the numbers are errors. Problems inside `done/` archives are warnings, so old history never blocks a commit. CRLF line endings are read like LF. Repair the Markdown and rerun `validate`.
 
 **Running the tests.** `bash tests/cli-tests.sh` from the checkout runs the installer regression suite, the Python tests for `validate` and `next`, and `tests/skills_lint.py`, which checks that CONVENTIONS references resolve, skill steps are numbered without gaps, the examples in skills pass `validate`, and no document mentions removed commands. CI runs it on Ubuntu and macOS, plus a smoke test with stock macOS `/bin/bash` 3.2.
 

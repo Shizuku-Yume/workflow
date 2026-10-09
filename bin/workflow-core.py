@@ -71,15 +71,6 @@ def read_lines(path):
     return [line[:-1] if line.endswith("\r") else line for line in lines]
 
 
-def has_crlf(path):
-    """Line number of the first CRLF line, or 0."""
-    with open(path, "rb") as fh:
-        for number, raw in enumerate(fh, 1):
-            if raw.endswith(b"\r\n") or raw.endswith(b"\r"):
-                return number
-    return 0
-
-
 def norm_number(value):
     stripped = value.lstrip("0")
     return stripped if stripped else "0"
@@ -279,6 +270,13 @@ def usage_error(message, usage):
     return 2
 
 
+# Options dropped in 2.5, answered like the removed commands in bin/workflow.
+REMOVED_FLAGS = {
+    "--fix": "validate --fix was removed in 2.5: CRLF line endings are read like LF, so there is nothing to repair",
+    "--interactive": "next --interactive was removed in 2.5: run 'workflow next' and start a task with flow-implement <effort>/<NN>",
+}
+
+
 def parse_common(args, usage, allowed):
     """Parse --format/--no-color/--strict; returns (options, exit code or None)."""
     opts = {"format": "text", "no_color": False, "strict": False}
@@ -299,6 +297,8 @@ def parse_common(args, usage, allowed):
             i += 1
         elif arg.startswith("--format="):
             opts["format"] = arg[len("--format="):]
+        elif arg in REMOVED_FLAGS:
+            return opts, usage_error(REMOVED_FLAGS[arg], "")
         else:
             return opts, usage_error("unknown option: %s" % arg, usage)
         i += 1
@@ -378,7 +378,6 @@ class Validator(object):
         self.check_bases()
         self.check_cycles(edges)
         self.check_decisions()
-        self.check_line_endings()
 
     def collect(self):
         for sub in ("tasks", "done"):
@@ -534,16 +533,6 @@ class Validator(object):
         for line, message, suggestion in decision_problems(read_lines(path)):
             self.issue("ERROR", path, line, message, suggestion)
 
-    def check_line_endings(self):
-        candidates = list(self.files)
-        decisions = os.path.join(self.wf, "decisions.md")
-        if os.path.isfile(decisions):
-            candidates.append(decisions)
-        for path in candidates:
-            line = has_crlf(path)
-            if line:
-                self.issue("WARNING", path, line, "CRLF line endings",
-                           "Convert the file to LF line endings.")
 
 
 ISO_TIME_RE = re.compile(r"^[0-9-]+T[0-9][0-9]:[0-9][0-9](:[0-9][0-9](\.[0-9]+)?)?"

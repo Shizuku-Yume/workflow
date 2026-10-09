@@ -261,16 +261,28 @@ class ValidateTests(Base):
         code, data = self.p.validate()
         self.assertEqual((code, data["issues"]), (0, []))
 
-    def test_crlf_warning_and_json_shape(self):
-        self.p.write(".workflow/tasks/core/01-a.md", task("01", "A", "core").replace("\n", "\r\n"))
+    def test_crlf_files_are_accepted(self):
+        # Windows checkouts may use CRLF; the reader strips CR, so nothing is reported.
+        crlf = lambda text: text.replace("\n", "\r\n")
+        self.p.write(".workflow/tasks/core/01-a.md", crlf(task("01", "A", "core")))
+        self.p.write(".workflow/tasks/core/02-b.md", crlf(task("02", "B", "core", blocked="01")))
+        self.p.write(".workflow/decisions.md", crlf(VALID_DECISIONS))
+        code, data = self.p.validate()
+        self.assertEqual((code, data["issues"]), (0, []))
+        proc = self.p.run("next", "--format", "json")
+        self.assertEqual(proc.returncode, 0)
+        self.assertEqual([t["number"] for t in json.loads(proc.stdout)["ready_tasks"]], [1])
+
+    def test_json_issue_shape(self):
+        self.p.write(".workflow/done/core/01-old.md", "# 01: Old\n\n**Effort:** core\n")
         code, data = self.p.validate()
         self.assertEqual(code, 1)
         self.assertEqual(sorted(data), ["errors", "issues", "tasks", "valid", "warnings"])
         issue = data["issues"][0]
         self.assertEqual(sorted(issue), ["file", "line", "message", "severity", "suggestion"])
-        self.assertEqual(issue["file"], ".workflow/tasks/core/01-a.md")
+        self.assertEqual(issue["file"], ".workflow/done/core/01-old.md")
+        self.assertEqual(issue["severity"], "WARNING")
         self.assertIsInstance(issue["line"], int)
-        self.assertEqual(issue["message"], "CRLF line endings")
 
     def test_missing_workflow_and_usage_errors(self):
         shutil.rmtree(os.path.join(self.p.root, ".workflow"))
@@ -280,6 +292,11 @@ class ValidateTests(Base):
         for args in (["validate", "--fix"], ["validate", "--format"], ["validate", "--format", "xml"],
                      ["next", "--interactive"], ["bogus"], []):
             self.assertEqual(self.p.run(*args).returncode, 2, args)
+        for args, hint in ((["validate", "--fix"], "validate --fix was removed in 2.5"),
+                           (["next", "--interactive"], "next --interactive was removed in 2.5")):
+            proc = self.p.run(*args)
+            self.assertIn(hint, proc.stderr)
+            self.assertEqual(proc.stdout, "")
         for cmd in ("validate", "next"):
             proc = self.p.run(cmd, "--help")
             self.assertEqual(proc.returncode, 0)
