@@ -45,8 +45,10 @@ that stops the same argument from being had again.>
 
 ## Where things go
 
+Local files below are the workflow task and spec source unless a supported tracker integration exists.
+
 - Decisions: `.workflow/decisions.md`
 - Specs: `.workflow/specs/`
 - Tasks: `.workflow/tasks/`
-- Finished tasks: `.workflow/done/`
+- Finished tasks: `.workflow/done/<effort>/`
 - Vocabulary: `.workflow/glossary.md`

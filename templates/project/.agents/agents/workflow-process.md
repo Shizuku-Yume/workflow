@@ -50,4 +50,6 @@ heading is information, a paragraph about an empty heading is noise.
 End with one line: which of these, if any, should block the change from being
 called done.
 
-Under 400 words.
+Be concise. If the change is clean, say so in three lines and stop. If there are
+findings, report them without padding. Long reports are for complex changes with
+many issues, not filler to meet arbitrary length.

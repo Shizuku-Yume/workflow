@@ -1,0 +1,223 @@
+#!/usr/bin/env bash
+# workflow-tasks - list and filter active tasks
+set -euo pipefail
+KIT_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/workflow-lib.bash"
+source "$KIT_LIB"
+
+usage() {
+  cat <<'EOF'
+workflow tasks - list and filter tasks
+
+Usage: workflow tasks [OPTIONS]
+
+Options:
+  --blocked          Show only blocked tasks (cannot combine with --ready)
+  --ready            Show only ready tasks
+  --effort SLUG      Filter by effort, including with --status
+  --status           Show counts for the selected tasks
+  --format text|json Output format (default: text)
+  --no-color         Disable terminal colors
+  -h, --help         Show this help
+
+Examples:
+  workflow tasks
+  workflow tasks --ready --effort api-v2
+  workflow tasks --blocked --no-color
+  workflow tasks --format json
+  workflow tasks --status --effort api-v2 --format json
+
+Missing fields display as N/A. Malformed dependencies produce file-specific
+warnings on stderr and are treated as blocked, not ready.
+EOF
+}
+for arg in "$@"; do
+  case "$arg" in -h|--help) usage; exit 0 ;; esac
+done
+
+usage_error() { printf 'Error: %s\n' "$*" >&2; exit 2; }
+error() { printf 'Error: %s\n' "$*" >&2; exit 1; }
+warning() { printf 'Warning: %s: %s\n' "$1" "$2" >&2; }
+
+FILTER="" EFFORT_FILTER="" EFFORT_GIVEN=0 STATUS=0 FORMAT=text NO_COLOR_FLAG=0
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --blocked) [ "$FILTER" != ready ] || usage_error '--blocked cannot be combined with --ready'; FILTER=blocked; shift ;;
+    --ready) [ "$FILTER" != blocked ] || usage_error '--ready cannot be combined with --blocked'; FILTER=ready; shift ;;
+    --status) STATUS=1; shift ;;
+    --no-color) NO_COLOR_FLAG=1; shift ;;
+    --effort)
+      [ "$#" -ge 2 ] && [[ "$2" != -* ]] || usage_error '--effort requires a lowercase effort slug, for example api-v2'
+      EFFORT_FILTER=$2; EFFORT_GIVEN=1; shift 2 ;;
+    --effort=*) EFFORT_FILTER=${1#--effort=}; EFFORT_GIVEN=1; shift ;;
+    --format)
+      [ "$#" -ge 2 ] && [[ "$2" != -* ]] || usage_error '--format requires text or json'
+      FORMAT=$2; shift 2 ;;
+    --format=*) FORMAT=${1#--format=}; shift ;;
+    *) usage_error "unknown option: $1" ;;
+  esac
+done
+case "$FORMAT" in text|json) ;; *) usage_error "--format must be text or json, not '$FORMAT'" ;; esac
+if [ "$EFFORT_GIVEN" -eq 1 ] && ! [[ "$EFFORT_FILTER" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]]; then
+  usage_error '--effort requires a lowercase effort slug, for example api-v2'
+fi
+
+ROOT=$(wf_project_root)
+DIRECTORY="$ROOT/.workflow/tasks"
+ARCHIVE="$ROOT/.workflow/done"
+if [ -e "$DIRECTORY" ] && [ ! -d "$DIRECTORY" ]; then error "task path is not a directory: $DIRECTORY"; fi
+
+# One record per task, parsed once with the shared reader. Missing or empty
+# fields display as N/A; the filename supplies the task number.
+declare -a T_NUMBER=() T_TITLE=() T_EFFORT=() T_BLOCKED_BY=() T_STATUS=() T_BASE=() T_STARTED=() T_FILE=() T_BLOCKED=()
+declare -A ACTIVE=() DONE=()
+COUNT=0
+if [ -d "$DIRECTORY" ]; then
+  while IFS= read -r -d '' file; do
+    [ -f "$file" ] || continue
+    name=${file##*/}
+    if command -v iconv >/dev/null 2>&1 && ! iconv -f UTF-8 -t UTF-8 "$file" >/dev/null 2>&1; then
+      error "cannot read $file: invalid UTF-8"
+    fi
+    [ -r "$file" ] || error "cannot read $file: permission denied"
+    wf_read_fields "$file"
+    number=""
+    if [[ "$name" =~ ^([0-9]+)- ]]; then
+      wf_normalize_number "${BASH_REMATCH[1]}"; number=$WF_NUMBER
+    else
+      warning "$file" 'filename has no valid task number; displaying N/A'
+    fi
+    title=$WF_TITLE
+    [ -n "$title" ] || title=${WF_FIELD[task]:-}
+    [ -n "$title" ] || title='N/A'
+    effort=${WF_FIELD[effort]:-}; [ -n "$effort" ] || effort='N/A'
+    blocked_by=${WF_FIELD[blocked by]:-}; [ -n "$blocked_by" ] || blocked_by='N/A'
+    status=${WF_FIELD[status]:-}; [ -n "$status" ] || status='N/A'
+    base=${WF_FIELD[base commit]:-}; [ -n "$base" ] || base='N/A'
+    started=${WF_FIELD[started]:-}; [ -n "$started" ] || started='N/A'
+    T_NUMBER+=("$number"); T_TITLE+=("$title"); T_EFFORT+=("$effort"); T_BLOCKED_BY+=("$blocked_by")
+    T_STATUS+=("$status"); T_BASE+=("$base"); T_STARTED+=("$started"); T_FILE+=("$file"); T_BLOCKED+=(0)
+    [ -z "$number" ] || ACTIVE["$effort|$number"]=1
+    COUNT=$((COUNT + 1))
+  done < <(find "$DIRECTORY" -mindepth 1 -maxdepth 1 \( -type f -o -type l \) -name '*.md' -print0)
+fi
+if [ -d "$ARCHIVE" ]; then
+  for effort_dir in "$ARCHIVE"/*/; do
+    [ -d "$effort_dir" ] || continue
+    archived_effort=${effort_dir%/}; archived_effort=${archived_effort##*/}
+    for archived in "$effort_dir"*.md; do
+      [ -f "$archived" ] || continue
+      archived_name=${archived##*/}
+      [[ "$archived_name" =~ ^([0-9]+)- ]] || continue
+      wf_normalize_number "${BASH_REMATCH[1]}"; DONE["$archived_effort|$WF_NUMBER"]=1
+    done
+  done
+fi
+
+# A task is blocked when any reference is still active or cannot be found;
+# malformed or missing Blocked by values are blocked, never ready.
+dependencies() {
+  local i=$1 raw file effort rc j ref ref_effort ref_number
+  raw=${T_BLOCKED_BY[$i]}; file=${T_FILE[$i]}; effort=${T_EFFORT[$i]}
+  T_BLOCKED[$i]=0
+  if [ "$raw" = 'N/A' ]; then
+    warning "$file" 'missing Blocked by; dependency status is unknown'
+    T_BLOCKED[$i]=1
+    return 0
+  fi
+  rc=0
+  wf_parse_blockers "$raw" 0 || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    if [ -z "$WF_BAD" ]; then warning "$file" 'empty Blocked by reference'
+    else warning "$file" "invalid Blocked by reference: '$WF_BAD'; expected NN or effort/NN"; fi
+    T_BLOCKED[$i]=1
+    return 0
+  fi
+  for ((j = 0; j < WF_REFS_COUNT; j++)); do
+    ref=${WF_REFS[$j]}
+    if [[ "$ref" == */* ]]; then ref_effort=${ref%%/*}; ref_number=${ref##*/}
+    else ref_effort=$effort; ref_number=$ref; fi
+    if [ -n "${ACTIVE["$ref_effort|$ref_number"]:-}" ]; then
+      T_BLOCKED[$i]=1
+    elif [ -z "${DONE["$ref_effort|$ref_number"]:-}" ]; then
+      T_BLOCKED[$i]=1
+      warning "$file" "Blocked by references missing task $ref_effort/$ref_number"
+    fi
+  done
+}
+
+# Sort numbered tasks numerically, unnumbered ones last, ties by file name.
+SELECTED=()
+if [ "$COUNT" -gt 0 ]; then
+  while IFS=$'\t' read -r _flag _number _file index; do
+    if [ "$EFFORT_GIVEN" -eq 1 ] && [ "${T_EFFORT[$index]}" != "$EFFORT_FILTER" ]; then continue; fi
+    dependencies "$index"
+    case "$FILTER" in
+      blocked) [ "${T_BLOCKED[$index]}" -eq 1 ] || continue ;;
+      ready) [ "${T_BLOCKED[$index]}" -eq 0 ] || continue ;;
+    esac
+    SELECTED+=("$index")
+  done < <(for ((i = 0; i < COUNT; i++)); do
+    if [ -n "${T_NUMBER[$i]}" ]; then printf '0\t%s\t%s\t%s\n' "${T_NUMBER[$i]}" "${T_FILE[$i]}" "$i"
+    else printf '1\t0\t%s\t%s\n' "${T_FILE[$i]}" "$i"; fi
+  done | LC_ALL=C sort -t $'\t' -k1,1n -k2,2n -k3,3)
+fi
+
+if [ "$STATUS" -eq 1 ]; then
+  total=${#SELECTED[@]}; ready=0; blocked=0; paused=0
+  for i in "${SELECTED[@]}"; do
+    if [ "${T_BLOCKED[$i]}" -eq 1 ]; then blocked=$((blocked + 1)); else ready=$((ready + 1)); fi
+    [ "${T_STATUS[$i],,}" != paused ] || paused=$((paused + 1))
+  done
+  if [ "$FORMAT" = json ]; then
+    printf '{"total": %s, "ready": %s, "blocked": %s, "paused": %s}\n' "$total" "$ready" "$blocked" "$paused"
+  else
+    printf 'Task Status:\n  Total:   %s\n  Ready:   %s (can start now)\n  Blocked: %s (waiting on dependencies)\n  Paused:  %s\n' "$total" "$ready" "$blocked" "$paused"
+  fi
+  exit 0
+fi
+
+if [ "$FORMAT" = json ]; then
+  printf '['
+  separator=""
+  # Print field by field: command substitutions would fork once per value.
+  for i in "${SELECTED[@]}"; do
+    printf '%s{"number": %s, "title": ' "$separator" "${T_NUMBER[$i]:-null}"; wf_json_string "${T_TITLE[$i]}"
+    printf ', "effort": '; wf_json_string "${T_EFFORT[$i]}"
+    printf ', "blocked_by": '; wf_json_string "${T_BLOCKED_BY[$i]}"
+    printf ', "status": '; wf_json_string "${T_STATUS[$i]}"
+    printf ', "base_commit": '; wf_json_string "${T_BASE[$i]}"
+    printf ', "started": '; wf_json_string "${T_STARTED[$i]}"
+    printf ', "file": '; wf_json_string "${T_FILE[$i]}"
+    if [ "${T_BLOCKED[$i]}" -eq 1 ]; then printf ', "blocked": true}'; else printf ', "blocked": false}'; fi
+    separator=", "
+  done
+  printf ']\n'
+  exit 0
+fi
+
+if [ "${#SELECTED[@]}" -eq 0 ]; then
+  if [ ! -d "$DIRECTORY" ]; then
+    printf 'No tasks directory: %s. Create .workflow/tasks/ to add tasks.\n' "$DIRECTORY"
+  elif [ "$COUNT" -eq 0 ]; then
+    printf 'No tasks found. Add a numbered .md file to .workflow/tasks/.\n'
+  else
+    printf 'No matching tasks.\n'
+  fi
+  exit 0
+fi
+
+red= green= yellow= bold= off=
+if [ -t 1 ] && [ "$NO_COLOR_FLAG" -eq 0 ]; then
+  red=$'\033[31m'; green=$'\033[32m'; yellow=$'\033[33m'; bold=$'\033[1m'; off=$'\033[0m'
+fi
+for i in "${SELECTED[@]}"; do
+  status_lower=${T_STATUS[$i],,}
+  if [ "${T_BLOCKED[$i]}" -eq 1 ]; then color=$red
+  elif [ "$status_lower" = paused ]; then color=$yellow
+  else color=$green; fi
+  marker='●'
+  if [ "$status_lower" = paused ] && [ "${T_BLOCKED[$i]}" -eq 0 ]; then marker='◐'; fi
+  printf '%s%s%s %s%s%s [%s] %s\n' "$color" "$marker" "$off" "$bold" "${T_NUMBER[$i]:-N/A}" "$off" "${T_EFFORT[$i]}" "${T_TITLE[$i]}"
+  if [ "${T_BLOCKED[$i]}" -eq 1 ]; then printf '  %sBlocked by: %s%s\n' "$red" "${T_BLOCKED_BY[$i]}" "$off"; fi
+  if [ "$status_lower" != active ]; then printf '  Status: %s\n' "${T_STATUS[$i]}"; fi
+done

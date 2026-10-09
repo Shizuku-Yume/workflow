@@ -1,43 +1,28 @@
 ---
 name: flow-spec
 description: >-
-  Turn a settled conversation into a spec document: what is being built, why,
-  how the pieces connect, what was ruled out, and how anyone will know it works.
-  No interview; it writes down what the conversation already decided. Use after a
-  design discussion, when handing work to another session, or when the user says
-  "write the spec", "write this up", "document the decision", "turn this into a
-  spec".
+  Turn settled conversation into a spec document. No interview. Use after design
+  discussion or when user says "write the spec", "document the decision".
 ---
 
 # Flow: Spec
 
-Read `.workflow/CONVENTIONS.md` first (§2 where things live, §3 writing).
+Read `.workflow/CONVENTIONS.md` §2 (where things live) and `.workflow/STYLE.md` first.
 
-Input: a conversation, a design discussion, or an existing half-formed document.
-Output: `.workflow/specs/<slug>.md`.
+Input: conversation, design discussion. Output: `.workflow/specs/<slug>.md`.
 
-Do **not** interview the user. Everything needed was decided in the conversation.
-If something genuinely was not, write it under "Open questions" and keep going;
-do not stop to ask.
+**Do not interview the user.** Everything needed was decided in conversation. If something genuinely wasn't, write it under "Open questions" and keep going.
 
-## The two mistakes
+## Two mistakes to avoid
 
-**Writing implementation.** A spec that names every function is stale the week it
-lands. Name the modules, the boundaries, the contracts, the shapes. Not the lines.
+**Writing implementation** — spec that names every function is stale in a week. Name modules, boundaries, contracts, shapes. Not lines.
 
-**Writing nothing but conclusions.** A spec that says what was decided without
-the option it beat is a press release. The next session reads it, disagrees with
-the reasoning it cannot see, and reopens the decision. The rejected option is
-half the value of the document.
+**Writing only conclusions** — spec without the rejected option is a press release. Next session reads it, disagrees with invisible reasoning, reopens decision.
 
 ## Before writing
 
-1. **Find the decisions already made.** The conversation, `.workflow/decisions.md`,
-   and the user's message are the source. Do not invent decisions to fill a section.
-2. **Look at the code.** Read the modules this will touch. A spec written without
-   reading the code reads like one.
-3. **Use the project's words.** Take names from `.workflow/glossary.md`. If you
-   need a new term, add it to the glossary as you write.
+1. **Find decisions already made** — conversation, `.workflow/decisions.md`, user's message are source. Don't invent decisions to fill sections.
+2. **Look at the code** — read modules this will touch. Per CONVENTIONS §0: evidence before questions. Check codebase for facts before asking user.
 
 ## The document
 
@@ -47,83 +32,93 @@ half the value of the document.
 **Status:** proposed | in progress | done
 
 ## What this is for
-
-The problem, from the user's perspective, in plain language. What is broken,
-missing, or newly wanted, and what happens if nobody does this. This section must
-stand on its own: delete everything below it and it still describes a real
-problem.
+Problem from user's perspective. What's broken, missing, or wanted, and what
+happens if nobody does this. Must stand alone.
 
 ## What it does
-
-The behaviour after the change, from the user's perspective. Not the
-implementation; what someone notices is different. Concrete enough to demo.
+Behavior after the change, from user's perspective. Not implementation; what
+someone notices is different. Concrete enough to demo.
 
 ## How it is built
-
-The decisions that shape the code. Modules added or changed, the boundaries
-between them, the data shapes, the interfaces, the failure behaviour. Prose and
-short lists; a snippet only when a snippet is clearer than a paragraph (a state
-machine, a schema, a type). Say what each piece is responsible for and what it is
-not.
+Decisions that shape code. Modules added/changed, boundaries, data shapes,
+interfaces, failure behavior. Prose and short lists; snippet only when clearer
+(state machine, schema, type). Say what each piece is responsible for and what
+it's not.
 
 ## What it must not do
-
-Out of scope, explicitly, with the reason. Things a reasonable reader might
-assume are included. This section prevents scope creep better than any amount of
-saying what is in scope.
+Out of scope, explicitly, with reason. Things a reasonable reader might assume
+are included. Prevents scope creep.
 
 ## What was considered and rejected
+One entry per real alternative:
+- **<The option>.** Its strongest argument, stated fairly. Then constraint that
+  killed it.
 
-One entry per real alternative, and each entry leads with the case *for* it:
-
-- **<The option>.** Its strongest argument, stated fairly. Then the constraint
-  that killed it.
-
-Only real options considered. Do not invent alternatives to look thorough, and
-do not write "do nothing" unless doing nothing was actually on the table.
+Only real options considered. Don't invent alternatives to look thorough.
 
 ## How we will know it works
-
-- The checks that prove the behaviour: what command, what result.
-- What is tested at which level, and why that level.
-- The observable signal when it breaks.
-- The edges worth a test: empty input, big input, concurrent use, failure of each
+- Checks that prove behavior: what command, what result.
+- What's tested at which level, and why that level.
+- Observable signal when it breaks.
+- Edges worth testing: empty input, big input, concurrent use, failure of each
   external dependency, permission denied.
 
-If anything here is "we will see", say so plainly instead of dressing it up.
+If anything is "we will see", say so plainly.
 
 ## Open questions
-
-Decisions that are genuinely unresolved, each with what would settle it and who
-can settle it. Empty is the good outcome. A long list here means the spec is not
-ready to build from.
+Unresolved decisions, each with what would settle it and who can settle it.
+Empty is good. Long list means spec not ready to build from.
 
 ## Notes
-
-Anything a reader would otherwise have to ask you. Links to the conversation, the
-task files, related specs.
+Anything a reader would otherwise ask. Links to conversation, task files,
+related specs.
 ```
 
 ## Rules
 
-- **Numbers not adjectives.** "Handles large imports" is nothing. "10k rows
-  under 2s on the current box" is a spec. If nobody knows the number, say that.
-- **One spec per effort, updated in place.** When the code changes a fact in the
-  spec, fix the fact in the same change. Never append a "2026-04-02 update"
-  section; rewrite the sentence so the document reads as current.
-- **A reversed decision rewrites the spec**, and gets one line in
-  `.workflow/decisions.md`. Nobody should be able to read two contradicting
-  answers in one document.
-- **Write specs for people who will read it in six months**, having forgotten
-  everything. Not for the person who just had the conversation.
-- **No file paths that will move.** Name the module, not `src/foo/bar.ts`. If a
-  path matters, say where it sits and why.
-- **Skip sections that have nothing to say.** Delete the heading. An empty
-  section is noise; a missing section is information.
+- **Numbers not adjectives** — "Handles large imports" is nothing. "10k rows under 2s" is spec. If nobody knows number, say that.
+- **Updated in place, never annotated** — reversed decision rewrites spec (CONVENTIONS §2). No contradicting answers in one document.
+- **Write for someone reading in six months** — not for person who just had conversation.
+- **No file paths that will move** — name module, not `src/foo/bar.ts`.
+- **Delete sections with nothing to say** — empty section is noise. Deletions pass convergence gate: if you have nothing for "What was considered and rejected" because no alternatives existed, delete the heading. Missing section conveys "this didn't apply", empty section suggests forgotten content.
+
+## Convergence gate
+
+Before presenting, verify:
+
+**Completeness:**
+- "What this is for" stands alone as problem statement
+- "What it does" describes observable user-facing behavior
+- "How it is built" names modules, boundaries, data shapes
+- "What it must not do" lists reasonable out-of-scope items (or section deleted if scope obvious)
+- "How we will know it works" specifies runnable checks
+- Sections with no content are deleted, not left empty
+- No duplicate facts across sections
+- No contradictions (resolve per latest decision)
+- All terms match `.workflow/glossary.md` or newly added
+- Decisions the spec relies on cite their entry as `decisions.md: <date> - <title>`
+
+**Resolvability:**
+- "Open questions" either empty or each names who/what settles it
+- No placeholder text like "TBD", "to be decided"
+- No unresolved alternatives disguised as notes
+
+**Evidence:**
+- Code inspection mentioned (which modules read)
+- Rejected alternatives have real reasons, not invented ones
+- Numbers replace adjectives where they matter
+
+If any check fails, fix before presenting.
 
 ## Finish
 
-Write the file, then report in three or four lines: the path, what the spec
-decides, and the open questions if any. Confirm with the user before treating it
-as settled. Then the next step is `flow-break` if the work is bigger than one
-session, or straight to building if it is not.
+After passing convergence gate, write file and report:
+1. Path
+2. What spec decides (one line)
+3. Open questions if any, or "ready to build"
+
+**Require explicit user confirmation** before proceeding. Present summary and stop. Only after user confirms does spec become settled.
+
+If spec changes materially after confirmation, re-run convergence gate and get fresh confirmation.
+
+Next step: `flow-break` if work is bigger than one session, or straight to building if not.

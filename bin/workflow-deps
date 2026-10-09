@@ -1,0 +1,304 @@
+#!/usr/bin/env bash
+# workflow-deps - visualize and validate task dependencies
+set -euo pipefail
+KIT_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/workflow-lib.bash"
+source "$KIT_LIB"
+
+usage() {
+  cat <<'EOF'
+workflow deps - visualize and validate task dependencies
+
+Usage:
+  workflow deps [--format mermaid|dot|text] [--effort SLUG] [--all]
+  workflow deps --check [--effort SLUG] [--all]
+
+Options:
+  --format FORMAT  Mermaid (default), Graphviz dot, or plain text
+  --effort SLUG    Show this effort and its transitive cross-effort blockers
+  --all            Also include completed tasks as graph roots
+  --check          Validate only; exit 1 for cycles, missing or invalid blockers
+  --no-color       Keep output plain (all formats are already uncolored)
+  -h, --help       Show this help
+
+Examples:
+  workflow deps --format mermaid
+  workflow deps --format dot --all > dependencies.dot
+  workflow deps --format text --effort payments
+  workflow deps --check
+
+Task fields may be plain, Markdown-bold, or bulleted. Blocked by accepts None,
+None, can start now, comma-separated numbers (02, 03), or cross-effort
+references (core/02). References must not contain titles or other text.
+Archived tasks can satisfy blockers without --all. Completed tasks have no
+outstanding dependencies. Arrows point from blocker to dependent. Rendering
+warns about issues on stderr but exits 0; --check exits 1 for the same issues.
+EOF
+}
+
+usage_error() { printf 'Error: %s\n' "$*" >&2; exit 2; }
+error() { printf 'Error: %s\n' "$*" >&2; exit 1; }
+warn() { printf 'Warning: %s\n' "$*" >&2; ISSUES=1; }
+
+FORMAT=mermaid
+EFFORT_FILTER=
+INCLUDE_DONE=no
+CHECK=no
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -h|--help) usage; exit 0 ;;
+    --format|--effort)
+      option=$1
+      [ "$#" -ge 2 ] && [ -n "$2" ] && [[ "$2" != --* ]] || usage_error "$option requires a value"
+      if [ "$option" = --format ]; then FORMAT=$2; else EFFORT_FILTER=$2; fi
+      shift 2
+      ;;
+    --all) INCLUDE_DONE=yes; shift ;;
+    --check) CHECK=yes; shift ;;
+    --no-color) shift ;;
+    *) usage_error "unknown option: $1" ;;
+  esac
+done
+case "$FORMAT" in mermaid|dot|text) ;; *) usage_error "unknown format: $FORMAT" ;; esac
+if [ -n "$EFFORT_FILTER" ]; then
+  [[ "$EFFORT_FILTER" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]] || usage_error "invalid effort slug: $EFFORT_FILTER"
+fi
+
+ROOT=$(wf_project_root)
+[ -d "$ROOT/.workflow" ] || error "no .workflow directory found in $ROOT"
+TASKS_DIR="$ROOT/.workflow/tasks"
+DONE_DIR="$ROOT/.workflow/done"
+
+# Parse each file once with the shared reader, then share one graph between
+# validation and all renderers. No per-edge subprocesses or recursive rendering.
+declare -A TITLES=() EFFORTS=() COMPLETED=() BLOCKED=() DEPS=()
+declare -A FILE_ISSUES=() SELECTED=() IDS=() MISSING=() STATES=()
+declare -a ALL_KEYS=() ROOTS=() NODES=() MISSING_KEYS=()
+ISSUES=0
+
+collect_tasks() {
+  local directory=$1 completed=$2 file filename num title effort blockers key issue
+  [ -d "$directory" ] || return 0
+  while IFS= read -r -d '' file; do
+    filename=${file##*/}
+    # README and other non-task Markdown files are intentionally ignored.
+    [[ "$filename" =~ ^([0-9]+)-.+\.md$ ]] || continue
+    wf_normalize_number "${BASH_REMATCH[1]}"; num=$WF_NUMBER
+    wf_read_fields "$file"
+    title=$WF_TITLE
+    [ -n "$title" ] || title=${WF_FIELD[task]:-}
+    [ -n "$title" ] || title=Untitled
+    effort=${WF_FIELD[effort]:-}
+    [ -n "$effort" ] || effort=none
+    blockers=${WF_FIELD[blocked by]:-}
+    issue=
+    if ! [[ "$effort" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]]; then
+      issue="invalid effort in $filename: $effort"
+      effort=none
+    fi
+    key="$effort/$num"
+    if [ -n "${TITLES[$key]+present}" ]; then
+      # Active files win over archived copies; duplicated active keys are errors.
+      if [ "$completed" = no ] || [ -n "${COMPLETED[$key]:-}" ]; then
+        FILE_ISSUES[$key]="duplicate task reference: $key ($filename)"
+      fi
+      continue
+    fi
+    TITLES[$key]=$title; EFFORTS[$key]=$effort; BLOCKED[$key]=$blockers
+    [ -z "$issue" ] || FILE_ISSUES[$key]=$issue
+    if [ "$completed" = yes ]; then COMPLETED[$key]=1; fi
+  done < <(find "$directory" -type f -name '*.md' -print0 | LC_ALL=C sort -z)
+}
+
+collect_tasks "$TASKS_DIR" no
+collect_tasks "$DONE_DIR" yes
+if [ "${#TITLES[@]}" -gt 0 ]; then
+  mapfile -t ALL_KEYS < <(printf '%s\n' "${!TITLES[@]}" | LC_ALL=C sort)
+fi
+
+# Every comma-separated item must be a complete NN or effort/NN reference.
+parse_dependencies() {
+  local key=$1 raw=${BLOCKED[$1]} rc=0 ref i
+  local -A seen=()
+  DEPS[$key]=
+  [ -z "$raw" ] && return 0
+  wf_parse_blockers "$raw" 0 || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    FILE_ISSUES[$key]="malformed Blocked by for $key: $raw"
+    return 0
+  fi
+  for ((i = 0; i < WF_REFS_COUNT; i++)); do
+    ref=${WF_REFS[$i]}
+    [[ "$ref" == */* ]] || ref="${EFFORTS[$key]}/$ref"
+    if [ -z "${seen[$ref]:-}" ]; then DEPS[$key]+=" $ref"; seen[$ref]=1; fi
+  done
+}
+
+for key in "${ALL_KEYS[@]}"; do
+  # Completed work cannot block on its historical dependency list.
+  if [ -z "${COMPLETED[$key]:-}" ]; then parse_dependencies "$key"; fi
+  if { [ -z "$EFFORT_FILTER" ] || [ "${EFFORTS[$key]}" = "$EFFORT_FILTER" ]; } &&
+     { [ "$INCLUDE_DONE" = yes ] || [ -z "${COMPLETED[$key]:-}" ]; }; then
+    ROOTS+=("$key")
+  fi
+done
+
+# Expand each selected root once. Filtering never creates false missing nodes
+# for blockers in another effort, and archived blockers remain visible.
+queue=("${ROOTS[@]}")
+for key in "${ROOTS[@]}"; do SELECTED[$key]=1; done
+for ((index=0; index<${#queue[@]}; index++)); do
+  key=${queue[$index]}
+  for dep in ${DEPS[$key]:-}; do
+    if [ -z "${TITLES[$dep]+present}" ]; then
+      MISSING[$dep]=1
+    elif [ -z "${SELECTED[$dep]:-}" ]; then
+      SELECTED[$dep]=1; queue+=("$dep")
+    fi
+  done
+done
+if [ "${#SELECTED[@]}" -gt 0 ]; then mapfile -t NODES < <(printf '%s\n' "${!SELECTED[@]}" | LC_ALL=C sort); fi
+if [ "${#MISSING[@]}" -gt 0 ]; then mapfile -t MISSING_KEYS < <(printf '%s\n' "${!MISSING[@]}" | LC_ALL=C sort); fi
+
+for key in "${NODES[@]}"; do
+  [ -z "${FILE_ISSUES[$key]:-}" ] || warn "${FILE_ISSUES[$key]}"
+  for dep in ${DEPS[$key]:-}; do
+    [ -z "${MISSING[$dep]:-}" ] || warn "$key references missing blocker task: $dep"
+  done
+done
+
+# Iterative depth-first search: gray nodes are the current DFS path; an edge
+# back to gray identifies a cycle. Explicit frames avoid shell recursion limits
+# and every node/edge is visited once, even for large shared dependency graphs.
+for root in "${NODES[@]}"; do
+  [ "${STATES[$root]:-0}" -eq 0 ] || continue
+  stack=("$root"); pending=("${DEPS[$root]:-}"); STATES[$root]=1
+  while [ "${#stack[@]}" -gt 0 ]; do
+    top=$((${#stack[@]} - 1)); key=${stack[$top]}
+    wf_trim "${pending[$top]}"; rest=$WF_TRIMMED
+    if [ -z "$rest" ]; then
+      STATES[$key]=2; unset 'stack[top]' 'pending[top]'; continue
+    fi
+    dep=${rest%% *}
+    if [[ "$rest" = *' '* ]]; then pending[$top]=${rest#* }; else pending[$top]=; fi
+    [ -n "${SELECTED[$dep]:-}" ] || continue
+    case ${STATES[$dep]:-0} in
+      0) STATES[$dep]=1; stack+=("$dep"); pending+=("${DEPS[$dep]:-}") ;;
+      1)
+        cycle=; in_cycle=no
+        for ancestor in "${stack[@]}"; do
+          [ "$ancestor" != "$dep" ] || in_cycle=yes
+          if [ "$in_cycle" = yes ]; then cycle+="${cycle:+ -> }$ancestor"; fi
+        done
+        warn "circular dependency: $cycle -> $dep"
+        ;;
+    esac
+  done
+done
+
+if [ "$CHECK" = yes ]; then
+  if [ "$ISSUES" -eq 0 ]; then printf 'Dependencies valid (%s tasks checked).\n' "${#NODES[@]}"; fi
+  exit "$ISSUES"
+fi
+
+counter=0
+for key in "${NODES[@]}" "${MISSING_KEYS[@]}"; do
+  counter=$((counter + 1)); IDS[$key]="task_$counter"
+done
+
+# Escape labels rather than interpolating task text into graph syntax.
+mermaid_escape() {
+  ESCAPED=${1//&/\&amp;}
+  ESCAPED=${ESCAPED//#/\#35;}
+  ESCAPED=${ESCAPED//\"/\#quot;}
+  ESCAPED=${ESCAPED//</\&lt;}
+  ESCAPED=${ESCAPED//>/\&gt;}
+  ESCAPED=${ESCAPED//[/\#91;}
+  ESCAPED=${ESCAPED//]/\#93;}
+  ESCAPED=${ESCAPED//\`/\#96;}
+}
+dot_escape() {
+  ESCAPED=${1//\\/\\\\}
+  ESCAPED=${ESCAPED//\"/\\\"}
+  ESCAPED=${ESCAPED//$'\r'/}
+}
+
+emit_mermaid() {
+  local key effort group=0
+  local -A group_nodes=()
+  local -a groups=()
+  printf 'flowchart TD\n'
+  for key in "${NODES[@]}"; do
+    effort=${EFFORTS[$key]}
+    if [ -z "${group_nodes[$effort]+present}" ]; then groups+=("$effort"); fi
+    group_nodes[$effort]+=" $key"
+  done
+  for effort in "${groups[@]}"; do
+    group=$((group + 1)); mermaid_escape "$effort"
+    printf '  subgraph effort_%s["Effort: %s"]\n    direction TB\n' "$group" "$ESCAPED"
+    for key in ${group_nodes[$effort]}; do
+      mermaid_escape "$key: ${TITLES[$key]}"
+      printf '    %s["%s"]\n' "${IDS[$key]}" "$ESCAPED"
+    done
+    printf '  end\n'
+  done
+  for key in "${MISSING_KEYS[@]}"; do
+    mermaid_escape "$key: missing blocker"
+    printf '  %s["%s"]:::missing\n' "${IDS[$key]}" "$ESCAPED"
+  done
+  for key in "${NODES[@]}"; do
+    if [ -n "${COMPLETED[$key]:-}" ]; then printf '  class %s completed\n' "${IDS[$key]}"; fi
+    for dep in ${DEPS[$key]:-}; do printf '  %s --> %s\n' "${IDS[$dep]}" "${IDS[$key]}"; done
+  done
+  cat <<'EOF'
+  subgraph legend["Legend"]
+    direction LR
+    legend_active["Active task"]
+    legend_completed["Completed task"]:::completed
+    legend_missing["Missing blocker"]:::missing
+    legend_blocker["Blocker"] --> legend_dependent["Dependent"]
+  end
+  classDef completed fill:#90EE90,stroke:#267326,color:#111
+  classDef missing fill:#ffcccc,stroke:#cc0000,color:#990000
+EOF
+}
+
+emit_dot() {
+  local key
+  printf 'digraph dependencies {\n  rankdir=TB;\n  node [shape=box, style=rounded];\n'
+  for key in "${NODES[@]}"; do
+    dot_escape "$key: ${TITLES[$key]}"
+    printf '  %s [label="%s"' "${IDS[$key]}" "$ESCAPED"
+    if [ -n "${COMPLETED[$key]:-}" ]; then printf ', style="rounded,filled", fillcolor=lightgreen'; fi
+    printf '];\n'
+  done
+  for key in "${MISSING_KEYS[@]}"; do
+    dot_escape "$key: missing blocker"
+    printf '  %s [label="%s", style=filled, fillcolor="#ffcccc", color=red, fontcolor=red];\n' "${IDS[$key]}" "$ESCAPED"
+  done
+  for key in "${NODES[@]}"; do
+    for dep in ${DEPS[$key]:-}; do printf '  %s -> %s;\n' "${IDS[$dep]}" "${IDS[$key]}"; done
+  done
+  printf '}\n'
+}
+
+emit_text() {
+  local key
+  printf 'Task Dependencies:\n\n'
+  if [ "${#NODES[@]}" -eq 0 ]; then printf 'No tasks\n'; return; fi
+  for key in "${NODES[@]}"; do
+    printf '[%s] %s' "$key" "${TITLES[$key]}"
+    if [ -n "${COMPLETED[$key]:-}" ]; then printf ' (completed)'; fi
+    printf '\n'
+    for dep in ${DEPS[$key]:-}; do
+      printf '  Depends on: %s' "$dep"
+      if [ -n "${MISSING[$dep]:-}" ]; then printf ' (MISSING)'; fi
+      printf '\n'
+    done
+  done
+}
+
+case "$FORMAT" in
+  mermaid) emit_mermaid ;;
+  dot) emit_dot ;;
+  text) emit_text ;;
+esac

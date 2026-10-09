@@ -1,0 +1,373 @@
+#!/usr/bin/env bash
+# workflow-debt - track technical debt using the project Markdown format.
+set -euo pipefail
+
+ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+DEBT_FILE="$ROOT/.workflow/technical-debt.md"
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+PARSER="$SCRIPT_DIR/workflow-debt.awk"
+SCRATCH=""
+cleanup() { if [ -n "$SCRATCH" ]; then rm -rf -- "$SCRATCH"; fi; }
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
+error() { printf 'Error: workflow debt: %s\n' "$*" >&2; }
+usage_error() { error "$@"; exit 2; }
+
+usage() {
+  cat <<'EOF'
+workflow debt - track technical debt
+
+Usage:
+  workflow debt init
+  workflow debt list [--priority LEVEL] [--by-file] [--age] [--format text|json]
+  workflow debt add [--title TITLE] [--id ID] [--location PATHS]
+                    [--priority LEVEL] [--description-file FILE | --problem TEXT]
+                    [--impact TEXT] [--solution TEXT] [--cost TEXT]
+  workflow debt resolve ID [--resolution TEXT] [--commit SHA] [--pr NUMBER|URL]
+  workflow debt accept ID [--reason TEXT]
+
+Options:
+  --help, -h        Show this help, also supported after any command.
+  --no-color        Disable colors (also disabled when stdout is not a terminal).
+  --format FORMAT   List as text (default) or a JSON array for scripts.
+  --priority LEVEL  fix-now, worth-doing (default for add), or only-if-grows.
+  --by-file         Group items by their Where/Location field.
+  --age             Display elapsed days since the ISO 8601 Added timestamp.
+  --description-file FILE
+                    Read multiline problem text from FILE; '-' reads stdin.
+
+Interactive add asks for the title first and suggests a unique slug ID.
+$EDITOR (or $VISUAL) edits the multiline problem description. Without an
+editor, enter multiple lines and finish with a line containing only '.'.
+Missing optional fields default to empty for noninteractive, flag-based add.
+Missing or empty debt files are created when adding; init creates a new file.
+Resolve and accept prompt for a resolution/reason unless supplied as a flag.
+Errors exit 1; invalid commands, options, or values exit 2.
+
+Examples:
+  workflow debt add
+  workflow debt add --title 'Duplicated validation' --location src/api \
+    --priority fix-now --description-file notes.txt --impact 'Fixes drift'
+  workflow debt add --title 'Legacy adapter' --location src/legacy \
+    --description-file - <<'DESCRIPTION'
+First line of the problem.
+Further evidence and details.
+DESCRIPTION
+  workflow debt list --by-file --age --no-color
+  workflow debt list --priority only-if-grows
+  workflow debt resolve duplicated-validation --resolution 'Shared validator' \
+    --commit abc1234 --pr 42
+  workflow debt accept legacy-adapter --reason 'Required for compatibility'
+EOF
+}
+
+# Help must not depend on repository state, dependencies, or valid arguments.
+for arg in "$@"; do
+  case "$arg" in -h|--help) usage; exit 0 ;; esac
+done
+
+COLOR_DISABLED=0
+if [ ! -t 1 ] || [ -n "${NO_COLOR:-}" ]; then COLOR_DISABLED=1; fi
+remaining=$#
+while [ "$remaining" -gt 0 ]; do
+  arg=$1; shift
+  remaining=$((remaining - 1))
+  if [ "$arg" = --no-color ]; then COLOR_DISABLED=1; else set -- "$@" "$arg"; fi
+done
+C_DIM= C_BOLD= C_RED= C_YELLOW= C_GREEN= C_OFF=
+if [ "$COLOR_DISABLED" -eq 0 ]; then
+  C_DIM=$'\033[2m'; C_BOLD=$'\033[1m'; C_RED=$'\033[31m'
+  C_YELLOW=$'\033[33m'; C_GREEN=$'\033[32m'; C_OFF=$'\033[0m'
+fi
+
+check_priority() {
+  case "$1" in fix-now|worth-doing|only-if-grows) ;; *) usage_error "invalid priority '$1' (use fix-now, worth-doing, or only-if-grows)" ;; esac
+}
+check_id() {
+  [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || usage_error 'ID must start with a letter or digit and contain only letters, digits, dots, underscores, or hyphens'
+}
+require_value() {
+  [ "$#" -ge 2 ] && [ -n "$2" ] && [[ "$2" != --* ]] || usage_error "$1 requires a value"
+}
+parse() { awk -f "$PARSER" "$@"; }
+validate() {
+  if [ -e "$DEBT_FILE" ] && [ ! -f "$DEBT_FILE" ]; then error "not a regular debt file: $DEBT_FILE"; return 1; fi
+  if [ -f "$DEBT_FILE" ]; then parse -v mode=validate "$DEBT_FILE"; fi
+}
+prompt() {
+  local destination=$1 label=$2 value
+  printf '%s' "$label" >&2
+  if ! IFS= read -r value; then error "input ended while reading $destination"; return 1; fi
+  printf -v "$destination" '%s' "$value"
+}
+
+start_edit() {
+  mkdir -p -- "$ROOT/.workflow" || { error 'cannot create .workflow directory'; return 1; }
+  SCRATCH=$(mktemp -d "$ROOT/.workflow/.debt.XXXXXX") || { error 'cannot create temporary debt file'; return 1; }
+  if [ -f "$DEBT_FILE" ] && parse -v mode=nonempty "$DEBT_FILE"; then
+    cp -- "$DEBT_FILE" "$SCRATCH/base"
+  else
+    cat > "$SCRATCH/base" <<'EOF'
+# Technical Debt
+
+Track code issues that make changes expensive.
+
+## Status: Active
+
+### Fix Now
+
+### Worth Doing
+
+### Only If It Grows
+
+## Status: Resolved
+
+Moved here when fixed, with a commit/PR reference when available.
+
+## Status: Accepted
+
+Decided not to fix, with a reason to prevent re-proposing.
+EOF
+  fi
+}
+commit_edit() {
+  parse -v mode=validate "$SCRATCH/result" || return 1
+  # Preserve permissions on existing files; never replace them with mktemp's 0600 mode.
+  if [ -f "$DEBT_FILE" ]; then
+    cp -p -- "$DEBT_FILE" "$SCRATCH/install"
+    cat "$SCRATCH/result" > "$SCRATCH/install"
+    mv -f -- "$SCRATCH/install" "$DEBT_FILE"
+  else
+    mv -- "$SCRATCH/result" "$DEBT_FILE"
+  fi
+}
+init_debt() {
+  [ "$#" -eq 0 ] || usage_error 'init does not accept arguments'
+  validate || return 1
+  if [ -f "$DEBT_FILE" ] && parse -v mode=nonempty "$DEBT_FILE"; then
+    error "technical debt file already exists: $DEBT_FILE"; return 1
+  fi
+  start_edit
+  cp -- "$SCRATCH/base" "$SCRATCH/result"
+  commit_edit
+  printf 'Created: %s\n' "$DEBT_FILE"
+}
+list_debt() {
+  local priority='' by_file=0 age=0 format=text
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --priority) require_value "$@"; priority=$2; check_priority "$priority"; shift 2 ;;
+      --by-file) by_file=1; shift ;;
+      --age) age=1; shift ;;
+      --format) require_value "$@"; format=$2; case "$format" in text|json) ;; *) usage_error 'format must be text or json' ;; esac; shift 2 ;;
+      *) usage_error "unknown list option: $1" ;;
+    esac
+  done
+  validate || return 1
+  if [ ! -f "$DEBT_FILE" ]; then
+    if [ "$format" = json ]; then printf '[]\n'; else printf "No debt file. Run 'workflow debt init' or 'workflow debt add'.\n"; fi
+    return 0
+  fi
+  parse -v mode=list -v format="$format" -v priority="$priority" -v by_file="$by_file" -v age="$age" -v now="$(date +%s)" \
+    -v bold="$C_BOLD" -v dim="$C_DIM" -v red="$C_RED" -v yellow="$C_YELLOW" -v green="$C_GREEN" -v off="$C_OFF" "$DEBT_FILE"
+}
+slugify() {
+  printf '%s\n' "$1" | LC_ALL=C tr '[:upper:]' '[:lower:]' |
+    LC_ALL=C awk '{gsub(/[^a-z0-9]+/, "-"); sub(/^-+/, ""); sub(/-+$/, ""); print}'
+}
+# Structural headings and metadata belong to the tracker, not free-form descriptions.
+check_body() {
+  local text=$1
+  if ! printf '%s\n' "$text" | awk '
+    /^[ \t]*```/ || /^[ \t]*~~~/ {
+      delimiter=($0 ~ /^[ \t]*```/ ? "`" : "~")
+      if (!fenced) {fenced=1; fence_delimiter=delimiter}
+      else if (delimiter == fence_delimiter) fenced=0
+      next
+    }
+    !fenced && (/^## / || /^### (Fix Now|Worth Doing|Only If It Grows)[ \t\r]*$/ || /^\*\*[A-Za-z ]+:\*\*/) {bad=1}
+    END {exit bad || fenced ? 1 : 0}
+  '; then
+    usage_error 'description must not contain top-level ## headings or debt metadata outside a code fence'
+  fi
+}
+read_description() {
+  local destination=$1 value='' line editor=${EDITOR:-${VISUAL:-}} ended=0
+  if [ -n "$editor" ]; then
+    : > "$SCRATCH/description"
+    # EDITOR may include arguments; the scratch path is always passed separately.
+    if ! bash -c 'exec '"$editor"' "$1"' workflow-debt "$SCRATCH/description"; then error 'editor failed; debt file was not changed'; return 1; fi
+    value=$(cat "$SCRATCH/description")
+  else
+    printf 'Problem description (multiple lines; finish with a line containing only .):\n' >&2
+    while IFS= read -r line; do
+      if [ "$line" = . ]; then ended=1; break; fi
+      value+="${value:+$'\n'}$line"
+    done
+    # EOF also terminates a heredoc; interactive input still requires a description.
+    if [ "$ended" -eq 0 ] && [ -z "$value" ]; then error 'input ended before the problem description'; return 1; fi
+  fi
+  printf -v "$destination" '%s' "$value"
+}
+add_debt() {
+  local id='' title='' where='' priority=worth-doing problem='' impact='' solution='' cost=''
+  local description_file='' interactive=0 explicit_id=0 problem_set=0 suggested=''
+  [ "$#" -gt 0 ] || interactive=1
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --id) require_value "$@"; id=$2; explicit_id=1; shift 2 ;;
+      --title) require_value "$@"; title=$2; shift 2 ;;
+      --location|--where) require_value "$@"; where=$2; shift 2 ;;
+      --priority) require_value "$@"; priority=$2; shift 2 ;;
+      --description-file) require_value "$@"; description_file=$2; shift 2 ;;
+      --problem|--description) require_value "$@"; problem=$2; problem_set=1; shift 2 ;;
+      --impact) require_value "$@"; impact=$2; shift 2 ;;
+      --solution) require_value "$@"; solution=$2; shift 2 ;;
+      --cost) require_value "$@"; cost=$2; shift 2 ;;
+      *) usage_error "unknown add option: $1" ;;
+    esac
+  done
+  [ "$problem_set" -eq 0 ] || [ -z "$description_file" ] || usage_error 'use either --problem or --description-file, not both'
+  check_priority "$priority"
+  validate || return 1
+  [ -n "$title" ] || { interactive=1; prompt title 'Brief symptom: '; }
+  [[ "$title" =~ [^[:space:]] ]] || usage_error 'title required'
+  [[ "$title" != *$'\n'* && "$title" != *$'\r'* ]] || usage_error 'title must be a single line'
+  start_edit
+  if [ "$explicit_id" -eq 0 ]; then
+    suggested=$(slugify "$title")
+    suggested=${suggested:-debt}
+    suggested=$(parse -v mode=id -v target="$suggested" "$SCRATCH/base")
+    if [ "$interactive" -eq 1 ]; then prompt id "ID [$suggested]: "; fi
+    id=${id:-$suggested}
+  fi
+  check_id "$id"
+  [ -n "$where" ] || prompt where 'Location (files/modules): '
+  [[ "$where" =~ [^[:space:]] ]] || usage_error 'location required'
+  [[ "$where" != *$'\n'* && "$where" != *$'\r'* ]] || usage_error 'location must be a single line'
+  if [ "$interactive" -eq 1 ]; then
+    local default_priority=$priority
+    prompt priority "Priority (fix-now/worth-doing/only-if-grows) [$default_priority]: "
+    priority=${priority:-$default_priority}
+    check_priority "$priority"
+  fi
+  if [ -n "$description_file" ]; then
+    if [ "$description_file" = - ]; then problem=$(cat)
+    elif [ -f "$description_file" ] && [ -r "$description_file" ]; then problem=$(cat -- "$description_file")
+    else error "cannot read description file: $description_file"; return 1
+    fi
+  elif [ "$problem_set" -eq 0 ]; then
+    read_description problem
+  fi
+  [[ "$problem" =~ [^[:space:]] ]] || usage_error 'problem description required'
+  if [ "$interactive" -eq 1 ]; then
+    prompt impact 'Impact: '
+    prompt solution 'Suggested solution (additional detail may be supplied with --solution): '
+    prompt cost 'Cost: '
+  fi
+  check_body "$problem"; check_body "$impact"; check_body "$solution"; check_body "$cost"
+  cat > "$SCRATCH/entry" <<EOF
+
+## [$id] $title
+
+**Where:** $where
+**Added:** $(date -u +%Y-%m-%dT%H:%M:%SZ)
+**Priority:** $priority
+**Status:** active
+
+**Problem:** $problem
+
+**Impact:** $impact
+
+**Solution:** $solution
+
+**Cost:** $cost
+
+---
+EOF
+  local heading='Worth Doing'
+  case "$priority" in fix-now) heading='Fix Now' ;; only-if-grows) heading='Only If It Grows' ;; esac
+  parse -v mode=mutate -v new_id="$id" -v destination=Active -v priority_heading="$heading" \
+    -v entry_file="$SCRATCH/entry" "$SCRATCH/base" > "$SCRATCH/result"
+  commit_edit
+  printf 'Added debt item [%s] to %s\n' "$id" "$DEBT_FILE"
+}
+close_debt() {
+  local status=$1; shift
+  [ "$#" -gt 0 ] || usage_error "$status requires an ID"
+  local id=$1; shift; check_id "$id"
+  local resolution='' commit='' pr=''
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --resolution|--reason) require_value "$@"; resolution=$2; shift 2 ;;
+      --commit) [ "$status" = resolved ] || usage_error '--commit is only supported by resolve'; require_value "$@"; commit=$2; shift 2 ;;
+      --pr) [ "$status" = resolved ] || usage_error '--pr is only supported by resolve'; require_value "$@"; pr=$2; shift 2 ;;
+      *) usage_error "unknown $status option: $1" ;;
+    esac
+  done
+  if [ -n "$commit" ]; then [[ "$commit" =~ ^[a-fA-F0-9]{4,64}$ ]] || usage_error 'commit must be a hexadecimal SHA (4-64 characters)'; fi
+  if [ -n "$pr" ]; then
+    [[ "$pr" =~ ^#?[1-9][0-9]*$ || "$pr" =~ ^https?://[^[:space:]]+/(pull|pulls|merge_requests)/[1-9][0-9]*([/?#][^[:space:]]*)?$ ]] || usage_error 'PR must be a positive number, #number, or a pull/merge request URL'
+    if [[ "$pr" =~ ^[1-9][0-9]*$ ]]; then pr="#$pr"; fi
+  fi
+  validate || return 1
+  [ -f "$DEBT_FILE" ] || { error "no debt file: $DEBT_FILE"; return 1; }
+  local old_status
+  old_status=$(parse -v mode=get -v field=Status -v target="$id" "$DEBT_FILE") || return 1
+  [ "$old_status" = active ] || { error "[$id] is already $old_status"; return 1; }
+  if [ -z "$resolution" ]; then
+    if [ "$status" = resolved ]; then prompt resolution 'Resolution (how it was fixed): '
+    else prompt resolution 'Reason (why accepted, not planned to fix): '
+    fi
+  fi
+  [[ "$resolution" =~ [^[:space:]] ]] || usage_error 'resolution/reason required'
+  check_body "$resolution"
+  start_edit
+  parse -v mode=get -v field=entry -v target="$id" "$SCRATCH/base" > "$SCRATCH/old-entry"
+  # Pass free-form user text via files, not awk -v (which interprets backslash escapes).
+  printf '%s\n' "$resolution" > "$SCRATCH/resolution"
+  awk -v status="$status" -v resolution_file="$SCRATCH/resolution" -v commit="$commit" -v pr="$pr" '
+    {lines[NR]=$0; if ($0 ~ /[^ \t\r]/) last=NR}
+    END {
+      if (lines[last] ~ /^---[ \t\r]*$/) last--
+      for (i=1; i<=last; i++) {
+        line=lines[i]
+        if (line ~ /^[ \t]*```/ || line ~ /^[ \t]*~~~/) {
+          delimiter=(line ~ /^[ \t]*```/ ? "`" : "~")
+          if (!fenced) {fenced=1; fence_delimiter=delimiter}
+          else if (delimiter == fence_delimiter) fenced=0
+        }
+        if (!fenced && line ~ /^\*\*Status:\*\*/) print "**Status:** " status
+        else print line
+      }
+      print "\n**Resolution:**"
+      while ((getline line < resolution_file) > 0) print line
+      close(resolution_file)
+      if (commit != "") print "**Commit:** " commit
+      if (pr != "") print "**PR:** " pr
+      print "\n---"
+    }
+  ' "$SCRATCH/old-entry" > "$SCRATCH/entry"
+  local destination=Resolved
+  [ "$status" != accepted ] || destination=Accepted
+  parse -v mode=mutate -v target="$id" -v destination="$destination" -v entry_file="$SCRATCH/entry" \
+    "$SCRATCH/base" > "$SCRATCH/result"
+  commit_edit
+  printf 'Marked [%s] as %s\n' "$id" "$status"
+}
+
+COMMAND=${1:-list}
+if [[ "$COMMAND" = --* ]]; then COMMAND=list
+elif [ "$#" -gt 0 ]; then shift
+fi
+case "$COMMAND" in
+  help) usage ;;
+  init) init_debt "$@" ;;
+  list) list_debt "$@" ;;
+  add) add_debt "$@" ;;
+  resolve) close_debt resolved "$@" ;;
+  accept) close_debt accepted "$@" ;;
+  *) usage_error "unknown command: $COMMAND (use --help)" ;;
+esac

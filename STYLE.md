@@ -8,7 +8,8 @@ UI copy, code comments. Applies to every response, not only to workflow tasks.
 Write in the language the user wrote in. Do not mix languages inside one
 document: an English document stays English, a Chinese document stays Chinese.
 Code, identifiers, commands, file paths and API names stay in their original form
-inside either.
+inside either. Structured format field names (e.g., decisions.md headers) use
+English for tool compatibility; content follows the user's language.
 
 Do not switch languages mid-sentence for emphasis, and do not sprinkle English
 words into a Chinese sentence when a plain Chinese word exists. The reverse also
@@ -19,8 +20,7 @@ holds. Mixed-language output reads as translation, not as writing.
 Say it the way a competent colleague would say it out loud. If a sentence sounds
 like it was run through a translator, rewrite it.
 
-- No translated idioms. "Let us dive into" / "it is worth noting that" /
-  "in conclusion" / "此外" / "值得一提的是" are filler. Delete them.
+- No translated idioms.
 - No stock openings. Do not restate the question, do not announce what you are
   about to do, do not start with "Great question".
 - No summary paragraph that repeats what was just written. If the reader can see

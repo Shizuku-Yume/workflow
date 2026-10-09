@@ -14,10 +14,15 @@
 # moved or deleted. Use `workflow update` to pull in newer versions.
 set -euo pipefail
 
-VERSION="2.0.0"
+VERSION="2.2.0"
 KIT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$KIT/bin/workflow-lib.bash"
 MARKER_START="<!-- workflow:start -->"
 MARKER_END="<!-- workflow:end -->"
+
+# Framework files installed with the workflow and checked by doctor.
+# technical-debt.md is user data (workflow debt writes it), installed once.
+MANAGED_FRAMEWORK="thinking.md phase-boundaries.md merge-strategy.md spike-tasks.md"
 
 # ---------------------------------------------------------------- output
 
@@ -35,14 +40,14 @@ die()  { printf '%s✗%s %s\n' "$C_ERR" "$C_OFF" "$*" >&2; exit 1; }
 
 # ---------------------------------------------------------------- helpers
 
-# Find the project root: the nearest ancestor with a .git directory, else cwd.
+# Find the project root with Git, falling back to the requested directory.
 project_root() {
-  local dir="${1:-$PWD}"
-  while [ "$dir" != "/" ]; do
-    if [ -d "$dir/.git" ]; then printf '%s\n' "$dir"; return 0; fi
-    dir="$(dirname "$dir")"
-  done
-  printf '%s\n' "${1:-$PWD}"
+  local dir="${1:-$PWD}" root
+  if root="$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null)"; then
+    printf '%s\n' "$root"
+  else
+    printf '%s\n' "$dir"
+  fi
 }
 
 skill_names() {
@@ -55,10 +60,867 @@ skill_names() {
 require_kit() {
   [ -d "$KIT/skills" ] || die "no skills/ directory next to $(basename "${BASH_SOURCE[0]}")"
   [ -f "$KIT/CONVENTIONS.md" ] || die "no CONVENTIONS.md next to $(basename "${BASH_SOURCE[0]}")"
+  [ -f "$KIT/STYLE.md" ] || die "no STYLE.md next to $(basename "${BASH_SOURCE[0]}")"
 }
 
-# Copy the skills into <root>/.agents/skills. Refuses to overwrite a directory
-# that this toolkit did not write, unless --force.
+# Symlink safety helpers: ensure managed files and trees remain strictly within the project root.
+check_path_symlink_safety() {
+  local root="$1" path="$2"
+  local c_root resolved
+  c_root="$(cd "$root" 2>/dev/null && pwd -P || realpath -m "$root")"
+  c_root="${c_root%/}"
+  [ -z "$c_root" ] && c_root="/"
+
+  local abs_path="$path"
+  if [[ "$abs_path" != /* ]]; then
+    abs_path="$root/$abs_path"
+  fi
+
+  resolved="$(realpath -m "$abs_path" 2>/dev/null || true)"
+  resolved="${resolved%/}"
+  if [ "$resolved" != "$c_root" ] && [[ "$resolved" != "$c_root"/* ]]; then
+    return 1
+  fi
+
+  local rel=""
+  if [[ "$abs_path" == "$root"/* ]]; then
+    rel="${abs_path#"$root"}"
+    rel="${rel#/}"
+  fi
+
+  if [ -n "$rel" ]; then
+    local cur="$root"
+    local part
+    local -a parts
+    IFS='/' read -r -a parts <<< "$rel"
+    for part in "${parts[@]}"; do
+      [ -n "$part" ] || continue
+      cur="$cur/$part"
+      if [ -L "$cur" ]; then
+        local link_res
+        link_res="$(realpath -m "$cur" 2>/dev/null || true)"
+        link_res="${link_res%/}"
+        if [ "$link_res" != "$c_root" ] && [[ "$link_res" != "$c_root"/* ]]; then
+          return 1
+        fi
+      fi
+    done
+  fi
+  return 0
+}
+
+check_symlink_safety() {
+  local root="$1"
+  local target="${2:-}"
+  if [ -n "$target" ]; then
+    check_path_symlink_safety "$root" "$target"
+    return $?
+  fi
+
+  local top link sublink
+  for top in "$root/.workflow" "$root/.agents" "$root/AGENTS.md"; do
+    if [ -e "$top" ] || [ -L "$top" ]; then
+      if ! check_path_symlink_safety "$root" "$top"; then
+        return 1
+      fi
+      if [ -d "$top" ]; then
+        while IFS= read -r -d '' link; do
+          if ! check_path_symlink_safety "$root" "$link"; then
+            return 1
+          fi
+          if [ -d "$link" ]; then
+            while IFS= read -r -d '' sublink; do
+              if ! check_path_symlink_safety "$root" "$sublink"; then
+                return 1
+              fi
+            done < <(find "$link/" -type l -print0 2>/dev/null)
+          fi
+        done < <(find "$top/" -type l -print0 2>/dev/null)
+      fi
+    fi
+  done
+
+  # Enumerate all concrete managed targets that workflow reads, writes, or deletes.
+  local name src f d a_name
+  for name in $(skill_names); do
+    check_path_symlink_safety "$root" "$root/.agents/skills/$name" || return 1
+    check_path_symlink_safety "$root" "$root/.agents/skills/$name/SKILL.md" || return 1
+    check_path_symlink_safety "$root" "$root/.agents/skills/$name/.workflow-managed" || return 1
+  done
+
+  if [ -d "$KIT/templates/project/.agents/agents" ]; then
+    for src in "$KIT"/templates/project/.agents/agents/*.md; do
+      [ -f "$src" ] || continue
+      a_name="$(basename "$src")"
+      check_path_symlink_safety "$root" "$root/.agents/agents/$a_name" || return 1
+      check_path_symlink_safety "$root" "$root/.agents/agents/.${a_name%.md}.workflow-managed" || return 1
+    done
+  fi
+
+  for f in CONVENTIONS.md STYLE.md; do
+    check_path_symlink_safety "$root" "$root/.workflow/$f" || return 1
+    check_path_symlink_safety "$root" "$root/.workflow/.${f%.md}.workflow-managed" || return 1
+  done
+
+  for f in standards.md glossary.md decisions.md; do
+    check_path_symlink_safety "$root" "$root/.workflow/$f" || return 1
+  done
+
+  for d in specs tasks maps done; do
+    check_path_symlink_safety "$root" "$root/.workflow/$d" || return 1
+  done
+
+  check_path_symlink_safety "$root" "$root/.workflow/.workflow-version" || return 1
+  check_path_symlink_safety "$root" "$root/AGENTS.md" || return 1
+  check_path_symlink_safety "$root" "$root/.workflow/.agents-block.workflow-managed" || return 1
+
+  return 0
+}
+
+assert_symlink_safety() {
+  local root="$1"
+  local target="${2:-}"
+  if ! check_symlink_safety "$root" "$target"; then
+    if [ -n "$target" ]; then
+      die "symlink safety violation: '$target' escapes project root '$root'"
+    else
+      die "symlink safety violation: managed path escapes project root '$root'"
+    fi
+  fi
+}
+
+# Parse AGENTS.md workflow block markers.
+# Returns: "<starts> <ends> <malformed>"
+parse_agents_marker_state() {
+  local file="$1"
+  if [ ! -f "$file" ]; then
+    printf '0 0 0\n'
+    return 0
+  fi
+  awk -v s="$MARKER_START" -v e="$MARKER_END" '
+    index($0, s) {
+      if ($0 == s) {
+        starts++
+        if (inside) malformed = 1
+        inside = 1
+      } else {
+        malformed = 1
+      }
+      next
+    }
+    index($0, e) {
+      if ($0 == e) {
+        ends++
+        if (!inside) malformed = 1
+        inside = 0
+      } else {
+        malformed = 1
+      }
+      next
+    }
+    END {
+      if (inside) malformed = 1
+      print starts + 0, ends + 0, malformed + 0
+    }
+  ' "$file"
+}
+
+# Copy the skills into <root>/.agents/skills and the review agents into
+# <root>/.agents/agents, both under the same ownership rule: a file is ours to
+# replace only if it carries a managed marker AND still matches what we wrote
+# last time (the marker holds that checksum). Edit a skill and it becomes yours;
+# `--force` takes it back.
+#
+# A marker written by 2.0 is empty — it recorded ownership but not content. Treat
+# one as ours only while the file still matches the toolkit's current copy, so an
+# upgrade keeps working without ever overwriting an edit.
+
+managed_ok() {
+  local target="$1" marker="$2" upstream="$3"
+  [ -f "$marker" ] || return 1
+  local recorded; recorded="$(cat "$marker")"
+  if [ -z "$recorded" ]; then
+    [ -n "$upstream" ] && cmp -s "$target" "$upstream"
+    return
+  fi
+  [ "$recorded" = "$(cksum < "$target" | cut -d' ' -f1)" ]
+}
+
+mark_managed() {
+  cksum < "$1" | cut -d' ' -f1 > "$2"
+}
+
+install_rulebooks() {
+  local root="$1" mode="${2:-init}"
+  if [ "$mode" = "1" ]; then mode="force"; fi
+  if [ "$mode" = "0" ]; then mode="init"; fi
+  mkdir -p "$root/.workflow"
+  for f in CONVENTIONS.md STYLE.md; do
+    local src="$KIT/$f" target="$root/.workflow/$f"
+    local marker="$root/.workflow/.${f%.md}.workflow-managed"
+    if [ ! -e "$target" ]; then
+      cp "$src" "$target"
+      mark_managed "$target" "$marker"
+      ok "$f"
+    elif [ "$mode" = "force" ]; then
+      cp "$src" "$target"
+      mark_managed "$target" "$marker"
+      ok "$f"
+    elif [ -f "$marker" ] && managed_ok "$target" "$marker" "$src"; then
+      if [ "$mode" = "update" ]; then
+        cp "$src" "$target"
+        mark_managed "$target" "$marker"
+        ok "$f"
+      else
+        skip "$f (already exists, left alone)"
+      fi
+    elif [ ! -f "$marker" ] && cmp -s "$target" "$src"; then
+      mark_managed "$target" "$marker"
+      if [ "$mode" = "update" ]; then
+        ok "$f"
+      else
+        skip "$f (already exists, left alone)"
+      fi
+    elif [ "$mode" = "init" ]; then
+      warn "skipped $f: $target was edited locally and is yours to keep (use --force)"
+    else
+      warn "skipped $f: $target was edited locally and is yours to keep"
+    fi
+  done
+
+  # Install framework files; checksum-managed like CONVENTIONS.md.
+  for f in $MANAGED_FRAMEWORK; do
+    local src="$KIT/templates/project/.workflow/$f" target="$root/.workflow/$f"
+    local marker="$root/.workflow/.${f%.md}.workflow-managed"
+    if [ ! -f "$src" ]; then
+      continue  # Source doesn't exist in this version, skip
+    fi
+    if [ ! -e "$target" ]; then
+      cp "$src" "$target"
+      mark_managed "$target" "$marker"
+      ok "$f"
+    elif [ "$mode" = "force" ]; then
+      cp "$src" "$target"
+      mark_managed "$target" "$marker"
+      ok "$f"
+    elif [ -f "$marker" ] && managed_ok "$target" "$marker" "$src"; then
+      if [ "$mode" = "update" ]; then
+        cp "$src" "$target"
+        mark_managed "$target" "$marker"
+        ok "$f"
+      else
+        skip "$f (already exists, left alone)"
+      fi
+    elif [ ! -f "$marker" ] && cmp -s "$target" "$src"; then
+      mark_managed "$target" "$marker"
+      if [ "$mode" = "update" ]; then
+        ok "$f"
+      else
+        skip "$f (already exists, left alone)"
+      fi
+    elif [ "$mode" = "init" ]; then
+      warn "skipped $f: $target was edited locally and is yours to keep (use --force)"
+    else
+      warn "skipped $f: $target was edited locally and is yours to keep"
+    fi
+  done
+
+  # technical-debt.md is user data: install once, never overwrite edits.
+  install_file "$root/.workflow/technical-debt.md" "$KIT/templates/project/.workflow/technical-debt.md"
+
+  # Create efforts directory if needed
+  if [ ! -d "$root/.workflow/efforts" ]; then
+    mkdir -p "$root/.workflow/efforts"
+    ok "created efforts/ directory"
+  fi
+}
+
+check_decisions() {
+  local file="$1"
+  local -n p_ref="$2"
+  local err
+  while IFS= read -r err; do
+    [ -n "$err" ] || continue
+    warn "decisions.md: $err"
+    p_ref=$((p_ref + 1))
+  done < <(awk '
+    function check_entry() {
+      if (!in_entry) return
+      missing = ""
+      if (!c["decided"]) missing = missing (missing ? ", " : "") "Decided"
+      if (!c["instead"]) missing = missing (missing ? ", " : "") "Instead of"
+      if (!c["because"]) missing = missing (missing ? ", " : "") "Because"
+      if (!c["mine"]) missing = missing (missing ? ", " : "") "Mine"
+      if (!c["revisit"]) missing = missing (missing ? ", " : "") "Revisit when"
+      if (missing != "") print "entry \047" entry_title "\047 is missing " missing
+    }
+
+    BEGIN { in_code = 0; in_comment = 0; after_entries = 0; in_entry = 0; cur_field = "" }
+
+    {
+      sub(/\r$/, "")
+      if ($0 ~ /^[[:space:]]*```/) { in_code = !in_code; next }
+      if (in_code) next
+      gsub(/<!--.*-->/, "")
+      if (/<!--/) { in_comment = 1; sub(/<!--.*/, "") }
+      if (in_comment) {
+        if (/-->/) { in_comment = 0; sub(/.*-->/, "") } else next
+      }
+      if (/^[[:space:]]*$/) next
+      if (!after_entries) {
+        if (/^[[:space:]]*##[[:space:]]+Entries/) after_entries = 1
+        next
+      }
+      if (/^[[:space:]]*##[[:space:]]+[^#]/) {
+        check_entry()
+        in_entry = 1
+        entry_title = $0
+        sub(/^[[:space:]]*##[[:space:]]+/, "", entry_title); sub(/[[:space:]]+$/, "", entry_title)
+        delete c; cur_field = ""; next
+      }
+      if (!in_entry) next
+      t = $0
+      sub(/^[[:space:]]*([-*][[:space:]]+)?/, "", t)
+      match(tolower(t), /^\*{0,2}(decided|instead of|because|mine|revisit when)(\*{0,2}:|:\*{0,2})[[:space:]]*/)
+      if (RSTART) {
+        f = substr(tolower(t), RSTART, RLENGTH)
+        cur_field = (f ~ /decided/) ? "decided" : (f ~ /instead/) ? "instead" : (f ~ /because/) ? "because" : (f ~ /mine/) ? "mine" : "revisit"
+        val = substr(t, RSTART + RLENGTH)
+        sub(/^[[:space:]]+/, "", val); sub(/[[:space:]]+$/, "", val)
+        if (val != "") c[cur_field] = 1
+      } else if (cur_field != "" && !/^[[:space:]]*#/) {
+        val = $0; sub(/^[[:space:]]+/, "", val); sub(/[[:space:]]+$/, "", val)
+        if (val != "") c[cur_field] = 1
+      }
+    }
+
+    END {
+      check_entry()
+    }
+  ' "$file")
+}
+check_glossary() {
+  local file="$1"
+  local -n p_ref="$2"
+  [ -f "$file" ] || return 0
+  local -A seen_terms=()
+  local in_terms=0
+  local has_terms_section=0
+  if grep -qE '^[[:space:]]*##[[:space:]]+Terms' "$file"; then
+    has_terms_section=1
+  fi
+
+  local cur_term=""
+  local term_has_def=0
+  local avoid_has_def=0
+  local last_item="none"
+  local last_avoid_line=""
+  local in_fence=0
+
+  check_pending_def() {
+    if [ "$last_item" = "term" ] && [ "$term_has_def" -eq 0 ]; then
+      warn "glossary.md: missing definition for term: $cur_term"
+      p_ref=$((p_ref + 1))
+      term_has_def=1
+    elif [ "$last_item" = "avoid" ] && [ "$avoid_has_def" -eq 0 ]; then
+      warn "glossary.md: empty Avoid entry: $last_avoid_line"
+      p_ref=$((p_ref + 1))
+      avoid_has_def=1
+    fi
+  }
+
+  while IFS= read -r line || [ -n "$line" ]; do
+    line="${line%$'\r'}"
+    if [ "$has_terms_section" -eq 1 ] && [ "$in_terms" -eq 0 ]; then
+      if [[ "$line" =~ ^[[:space:]]*##[[:space:]]+Terms ]]; then
+        in_terms=1
+      fi
+      continue
+    fi
+
+    # Ignore fenced code blocks
+    if [[ "$line" =~ ^[[:space:]]*\`\`\` ]]; then
+      check_pending_def
+      last_item="none"
+      in_fence=$(( 1 - in_fence ))
+      continue
+    fi
+    if [ "$in_fence" -eq 1 ]; then
+      continue
+    fi
+
+    # Strip inline HTML comments
+    [[ "$line" =~ \<!--.*--\> ]] && line="${line%%<!--*}${line#*-->}"
+
+    # Skip blanks, comments, headings
+    if [[ "$line" =~ ^[[:space:]]*$ ]]; then
+      check_pending_def
+      last_item="none"
+      continue
+    fi
+    if [[ "$line" =~ ^[[:space:]]*# ]]; then
+      check_pending_def
+      cur_term=""
+      if [ "$has_terms_section" -eq 1 ] && [[ "$line" =~ ^[[:space:]]*#{1,2}[[:space:]] ]]; then
+        last_item="none"
+        break
+      fi
+      last_item="none"
+      continue
+    fi
+
+    # List items
+    if [[ "$line" =~ ^[[:space:]]*[-*][[:space:]]+ ]]; then
+      check_pending_def
+
+      # Check if this list item is an Avoid line
+      if [[ "$line" =~ ^[[:space:]]*[-*][[:space:]]+(_Avoid_|\*Avoid\*)(.*)$ ]]; then
+        local avoid_rest="${BASH_REMATCH[2]}"
+        if [[ "$avoid_rest" =~ ^[[:space:]]*[:-][[:space:]]*(.*)$ ]]; then
+          if [ -z "$cur_term" ]; then
+            warn "glossary.md: orphan Avoid entry: $line"
+            p_ref=$((p_ref + 1))
+            last_item="none"
+            continue
+          fi
+          local avoid_content="${BASH_REMATCH[1]}"
+          avoid_content="${avoid_content#"${avoid_content%%[![:space:]]*}"}"
+          avoid_content="${avoid_content%"${avoid_content##*[![:space:]]}"}"
+          if [ -n "$avoid_content" ]; then
+            avoid_has_def=1
+          else
+            avoid_has_def=0
+          fi
+          last_item="avoid"
+          last_avoid_line="$line"
+          continue
+        else
+          warn "glossary.md: malformed Avoid entry: $line"
+          p_ref=$((p_ref + 1))
+          last_item="none"
+          continue
+        fi
+      fi
+
+      # Term parsing
+      local term="" term_def=""
+      # 1. Bold term anchored to list start: - **term**: def or - **term** - def
+      if [[ "$line" =~ ^[[:space:]]*[-*][[:space:]]+\*\*([^*]+)\*\*[[:space:]]*[:-][[:space:]]*(.*)$ ]]; then
+        term="${BASH_REMATCH[1]}"
+        term_def="${BASH_REMATCH[2]}"
+      # 2. Plain term with colon: - term: def
+      elif [[ "$line" =~ ^[[:space:]]*[-*][[:space:]]+([^:]+):[[:space:]]*(.*)$ ]]; then
+        term="${BASH_REMATCH[1]}"
+        term_def="${BASH_REMATCH[2]}"
+        term="${term#"${term%%[![:space:]]*}"}"
+        term="${term%"${term##*[![:space:]]}"}"
+      # 3. Plain term with dash separator: - term - def
+      elif [[ "$line" =~ ^[[:space:]]*[-*][[:space:]]+([^-]+)[[:space:]]+-[[:space:]]+(.*)$ ]]; then
+        term="${BASH_REMATCH[1]}"
+        term_def="${BASH_REMATCH[2]}"
+        term="${term#"${term%%[![:space:]]*}"}"
+        term="${term%"${term##*[![:space:]]}"}"
+      else
+        warn "glossary.md: malformed line: $line"
+        p_ref=$((p_ref + 1))
+        last_item="none"
+        continue
+      fi
+
+      local norm_term="${term// /}"
+      if [ -n "${seen_terms[$norm_term]:-}" ]; then
+        warn "glossary.md: duplicate term: $term"
+        p_ref=$((p_ref + 1))
+      fi
+      seen_terms[$norm_term]=1
+
+      term_def="${term_def#"${term_def%%[![:space:]]*}"}"
+      term_def="${term_def%"${term_def##*[![:space:]]}"}"
+      if [ -n "$term_def" ]; then
+        term_has_def=1
+      else
+        term_has_def=0
+      fi
+      cur_term="$term"
+      last_item="term"
+      continue
+    fi
+
+    # Indented plain continuation lines wrapping definitions
+    if [[ "$line" =~ ^[[:space:]]+ ]]; then
+      if [ "$last_item" = "term" ]; then
+        term_has_def=1
+      elif [ "$last_item" = "avoid" ]; then
+        avoid_has_def=1
+      else
+        warn "glossary.md: unexpected line format: $line"
+        p_ref=$((p_ref + 1))
+      fi
+      continue
+    fi
+
+    # Unindented arbitrary line
+    check_pending_def
+    last_item="none"
+    cur_term=""
+    warn "glossary.md: unexpected line format: $line"
+    p_ref=$((p_ref + 1))
+  done < "$file"
+
+  check_pending_def
+  unset -f check_pending_def 2>/dev/null || true
+}
+
+
+check_tasks() {
+  local root="$1"
+  local -n p_ref="$2"
+  local task_dir="$root/.workflow/tasks"
+  [ -d "$task_dir" ] || return 0
+
+  local task_files=()
+  for tf in "$task_dir"/*.md; do
+    [ -f "$tf" ] || continue
+    task_files+=("$tf")
+  done
+  [ ${#task_files[@]} -gt 0 ] || return 0
+
+  local -A known_tasks=() file_effort=() file_base_commit=() file_blocked_by=() file_num=() file_heading=()
+  local -A task_file_by_key=() collision_files=()
+
+  # Index done tasks: .workflow/done/<effort>/*.md
+  if [ -d "$root/.workflow/done" ]; then
+    for df in "$root/.workflow/done"/*/*.md; do
+      [ -f "$df" ] || continue
+      local de="${df#$root/.workflow/done/}"
+      local eff="${de%%/*}"
+      local base; base="$(basename "$df" .md)"
+      if [[ "$base" =~ ^([0-9]+)- ]]; then
+        local snum=$((10#${BASH_REMATCH[1]}))
+        known_tasks["$eff:$snum"]=1
+        task_file_by_key["$eff:$snum"]="$(basename "$df")"
+      fi
+    done
+  fi
+
+  # Parse active tasks and index targets once
+  for tf in "${task_files[@]}"; do
+    local base; base="$(basename "$tf" .md)"
+    local snum=""
+    [[ "$base" =~ ^([0-9]+)- ]] && snum=$((10#${BASH_REMATCH[1]}))
+    file_num["$tf"]="$snum"
+
+    wf_read_fields "$tf"
+    local eff="${WF_FIELD[effort]:-}" base_c="${WF_FIELD[base commit]:-}" blk="${WF_FIELD[blocked by]:-}"
+    file_heading["$tf"]="$WF_TITLE_NUMBER_RAW"
+
+    file_effort["$tf"]="$eff"
+    file_base_commit["$tf"]="$base_c"
+    file_blocked_by["$tf"]="$blk"
+    if [[ "$eff" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]] && [ -n "$snum" ]; then
+      local collision_key="$eff:$snum"
+      local cur_file; cur_file="$(basename "$tf")"
+      if [ "${known_tasks["$collision_key"]:-0}" -eq 1 ]; then
+        local prev_file="${task_file_by_key["$collision_key"]:-}"
+        if [ -n "$prev_file" ] && [ "$prev_file" != "$cur_file" ]; then
+          if [ -z "${collision_files["$collision_key"]:-}" ]; then
+            collision_files["$collision_key"]="$prev_file, $cur_file"
+          else
+            collision_files["$collision_key"]="${collision_files["$collision_key"]}, $cur_file"
+          fi
+        fi
+      else
+        known_tasks["$collision_key"]=1
+        task_file_by_key["$collision_key"]="$cur_file"
+      fi
+    fi
+  done
+
+  # Report duplicate task numbers
+  if [ ${#collision_files[@]} -gt 0 ]; then
+    while IFS= read -r collision_key; do
+      [ -n "$collision_key" ] || continue
+      local ceff="${collision_key%%:*}"
+      local cnum="${collision_key##*:}"
+      warn "duplicate task number $cnum in effort $ceff: ${collision_files["$collision_key"]}"
+      p_ref=$((p_ref + 1))
+    done < <(printf '%s\n' "${!collision_files[@]}" | sort)
+  fi
+
+  # Detect dependency cycles in active tasks
+  local -A cycle_graph=() cycle_disp=() cycle_eff=()
+  for tf in "${task_files[@]}"; do
+    local eff="${file_effort["$tf"]}"
+    local snum="${file_num["$tf"]}"
+    [ -n "$eff" ] && [ -n "$snum" ] || continue
+    local u="$eff:$snum"
+
+    local snum_str; printf -v snum_str '%02d' "$snum"
+    cycle_disp["$u"]="$snum_str"
+    cycle_eff["$u"]="$eff"
+
+    local blk="${file_blocked_by["$tf"]}"
+    [ -n "$blk" ] || continue
+    wf_parse_blockers "$blk" 1 || continue
+    [ "$WF_REFS_COUNT" -gt 0 ] || continue
+
+    local u_deps=() ref teff tnum
+    for ref in "${WF_REFS[@]}"; do
+      if [[ "$ref" == */* ]]; then teff="${ref%%/*}"; tnum=$((10#${ref##*/}))
+      else teff="$eff"; tnum=$((10#$ref)); fi
+      local v="$teff:$tnum"
+      [ "$v" != "$u" ] || continue
+      u_deps+=("$v")
+    done
+    if [ ${#u_deps[@]} -gt 0 ]; then
+      cycle_graph["$u"]="$(IFS=','; echo "${u_deps[*]}")"
+    fi
+  done
+
+  local -A cycle_visited=() cycle_in_stack=() reported_cycles=()
+  local -a cycle_stack=() sorted_nodes=()
+  if [ ${#cycle_disp[@]} -gt 0 ]; then
+    while IFS= read -r k; do
+      [ -n "$k" ] || continue
+      sorted_nodes+=("$k")
+    done < <(printf '%s\n' "${!cycle_disp[@]}" | sort -t: -k1,1 -k2,2n)
+  fi
+
+  _cycle_dfs() {
+    local u="$1"
+    cycle_visited["$u"]=1
+    cycle_in_stack["$u"]=1
+    cycle_stack+=("$u")
+
+    local raw_deps="${cycle_graph["$u"]:-}"
+    if [ -n "$raw_deps" ]; then
+      local dlist=()
+      IFS=',' read -ra dlist <<< "$raw_deps"
+      for v in "${dlist[@]}"; do
+        [ -n "$v" ] || continue
+        [ "$v" != "$u" ] || continue
+        [ -n "${cycle_disp["$v"]:-}" ] || continue
+
+        if [ "${cycle_in_stack["$v"]:-0}" -eq 1 ]; then
+          local c_start=-1
+          for ((idx=0; idx<${#cycle_stack[@]}; idx++)); do
+            if [ "${cycle_stack[idx]}" = "$v" ]; then
+              c_start=$idx
+              break
+            fi
+          done
+          if [ "$c_start" -ge 0 ]; then
+            local same_eff=1
+            local base_eff="${cycle_eff["$v"]}"
+            for ((idx=c_start; idx<${#cycle_stack[@]}; idx++)); do
+              if [ "${cycle_eff["${cycle_stack[idx]}"]}" != "$base_eff" ]; then
+                same_eff=0
+                break
+              fi
+            done
+            local chain_labels=()
+            for ((idx=c_start; idx<${#cycle_stack[@]}; idx++)); do
+              local n="${cycle_stack[idx]}"
+              if [ "$same_eff" -eq 1 ]; then
+                chain_labels+=("${cycle_disp["$n"]}")
+              else
+                chain_labels+=("${cycle_eff["$n"]}/${cycle_disp["$n"]}")
+              fi
+            done
+            if [ "$same_eff" -eq 1 ]; then
+              chain_labels+=("${cycle_disp["$v"]}")
+            else
+              chain_labels+=("${cycle_eff["$v"]}/${cycle_disp["$v"]}")
+            fi
+
+            local first_lbl="${chain_labels[0]}"
+            local chain_str
+            chain_str="$(IFS=' '; echo "${chain_labels[*]}")"
+            chain_str="${chain_str// / -> }"
+            if [ -z "${reported_cycles["$chain_str"]:-}" ]; then
+              reported_cycles["$chain_str"]=1
+              warn "task $first_lbl: dependency cycle detected: $chain_str"
+              p_ref=$((p_ref + 1))
+            fi
+          fi
+        elif [ "${cycle_visited["$v"]:-0}" -eq 0 ]; then
+          _cycle_dfs "$v"
+        fi
+      done
+    fi
+
+    unset "cycle_stack[-1]"
+    cycle_in_stack["$u"]=0
+  }
+
+  for node in "${sorted_nodes[@]}"; do
+    if [ "${cycle_visited["$node"]:-0}" -eq 0 ]; then
+      _cycle_dfs "$node"
+    fi
+  done
+
+  # Validate each active task
+  for tf in "${task_files[@]}"; do
+    local tname; tname="$(basename "$tf")"
+    local effort="${file_effort["$tf"]}"
+    local base_commit="${file_base_commit["$tf"]}"
+    local blocked_by="${file_blocked_by["$tf"]}"
+    local self_num="${file_num["$tf"]}"
+
+    local heading_raw="" heading_num="" self_raw=""
+    [[ "$tname" =~ ^([0-9]+)- ]] && self_raw="${BASH_REMATCH[1]}"
+    heading_raw="${file_heading["$tf"]}"
+    [ -n "$heading_raw" ] && heading_num=$((10#$heading_raw))
+    if [ -n "$heading_num" ] && [ -n "$self_num" ] && [ "$heading_num" -ne "$self_num" ]; then
+      warn "task $tname: heading declares ${heading_raw:-$heading_num} but filename declares ${self_raw:-$self_num}"
+      p_ref=$((p_ref + 1))
+    fi
+
+    if [ -z "$effort" ] || ! [[ "$effort" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]]; then
+      warn "task $tname is missing or has an invalid Effort"
+      p_ref=$((p_ref + 1))
+    fi
+
+    case "$(wf_base_commit_state "$root" "$base_commit")" in
+      missing)
+        warn "task $tname is missing or has an invalid Base commit"
+        p_ref=$((p_ref + 1)) ;;
+      unresolved)
+        warn "task $tname Base commit does not resolve to a commit: $base_commit"
+        p_ref=$((p_ref + 1)) ;;
+    esac
+
+    if [ -z "$blocked_by" ]; then
+      warn "task $tname is missing Blocked by"
+      p_ref=$((p_ref + 1))
+      continue
+    fi
+
+    if ! wf_parse_blockers "$blocked_by" 1; then
+      warn "task $tname is missing or has an invalid Blocked by"
+      p_ref=$((p_ref + 1))
+      continue
+    fi
+
+    local ri item ref target_effort target_num
+    for ((ri = 0; ri < WF_REFS_COUNT; ri++)); do
+      ref="${WF_REFS[$ri]}"; item="${WF_RAW_REFS[$ri]}"
+      if [[ "$ref" == */* ]]; then target_effort="${ref%%/*}"; target_num=$((10#${ref##*/}))
+      else target_effort="$effort"; target_num=$((10#$ref)); fi
+
+      if [ -n "$self_num" ] && [ "$target_effort" = "$effort" ] && [ "$target_num" -eq "$self_num" ]; then
+        warn "task $tname: Blocked by references itself ($item)"
+        p_ref=$((p_ref + 1))
+        continue
+      fi
+
+      if [ "${known_tasks["$target_effort:$target_num"]:-0}" -ne 1 ]; then
+        warn "task $tname: Blocked by references non-existent task $item"
+        p_ref=$((p_ref + 1))
+      fi
+    done
+  done
+}
+
+check_maps() {
+  local root="$1"
+  local -n p_ref="$2"
+  [ -d "$root/.workflow/maps" ] || return 0
+  for map in "$root/.workflow/maps/"*.md; do
+    [ -f "$map" ] || continue
+    local status
+    status=$(grep -Ei '(^|\*\*)Status:' "$map" | head -1)
+    [[ "$status" =~ working ]] || continue
+
+    # Parse index sections and trailing Q sections, ignoring template comments.
+    local map_state
+    map_state="$(awk '
+      function finish_q() {
+        if (in_q) {
+          if (!q_answered) open = 1
+          in_q = 0
+        }
+      }
+      BEGIN { section=""; open=0; fog=0; in_q=0; q_answered=0; in_comment=0; in_code=0 }
+      /^```/ { in_code = 1 - in_code; next }
+      in_code { next }
+      {
+        gsub(/<!--.*-->/, "")
+        if (in_comment) {
+          if ($0 ~ /-->/) { in_comment = 0; sub(/.*-->/, "") } else next
+        }
+        if ($0 ~ /<!--/) { in_comment = 1; sub(/<!--.*/, "") }
+        if ($0 ~ /^[[:space:]]*$/) next
+      }
+      /^## / {
+        finish_q()
+        h = tolower($0)
+        if (h ~ /^## open questions/) section = "open"
+        else if (h ~ /^## not yet clear/) section = "fog"
+        else if (h ~ /^## q([0-9]+|:|[[:space:]])/) { section = "q"; in_q = 1; q_answered = 0; ans_seen = 0 }
+        else section = ""
+        next
+      }
+      section == "open" { open = 1 }
+      section == "fog" { fog = 1 }
+      section == "q" && $0 ~ /^\*?\*?Answer:\*?\*?[[:space:]]*/ {
+        value = $0
+        sub(/^\*?\*?Answer:\*?\*?[[:space:]]*/, "", value)
+        ans_seen = 1
+        if (value != "" && value !~ /^<.*>$/) q_answered = 1
+        next
+      }
+      section == "q" && ans_seen && $0 !~ /^\*?\*?(Blocks|Kind|Depends on):/ && $0 !~ /^<.*>$/ {
+        q_answered = 1
+      }
+      END { finish_q(); print open + 0, fog + 0 }
+    ' "$map")"
+    local open fog
+    read -r open fog <<< "$map_state"
+    if [ "$open" -eq 0 ] && [ "$fog" -eq 1 ]; then
+      warn "map $(basename "$map"): Status working but no open questions and fog remains; consider promoting or closing"
+      p_ref=$((p_ref + 1))
+    fi
+  done
+}
+
+check_managed_file() {
+  local label="$1" target="$2" marker="$3" upstream="$4"
+  if [ ! -f "$target" ]; then
+    warn "$label missing"
+    return 1
+  fi
+
+  local recorded=""
+  if [ -f "$marker" ]; then
+    recorded="$(cat "$marker" 2>/dev/null || true)"
+  fi
+
+  if [ ! -s "$target" ] || ( [ -f "$marker" ] && [ -n "$recorded" ] && ! [[ "$recorded" =~ ^[0-9]+$ ]] ); then
+    warn "$label corrupt"
+    return 1
+  fi
+
+  if [ -f "$marker" ]; then
+    if managed_ok "$target" "$marker" "$upstream"; then
+      ok "$label"
+      return 0
+    else
+      warn "$label edited"
+      return 1
+    fi
+  else
+    if [ -n "$upstream" ] && cmp -s "$target" "$upstream"; then
+      ok "$label (legacy file without marker)"
+      return 0
+    else
+      warn "$label edited"
+      return 1
+    fi
+  fi
+}
+
+
 install_skills() {
   local root="$1" force="$2"
   local dest="$root/.agents/skills"
@@ -66,57 +928,117 @@ install_skills() {
 
   for name in $(skill_names); do
     local src="$KIT/skills/$name" target="$dest/$name"
-    if [ -e "$target" ] && [ ! -f "$target/.workflow-managed" ] && [ "$force" != 1 ]; then
-      warn "skipped $name: $target exists and was not written by this toolkit (use --force)"
+    local file="$target/SKILL.md" marker="$target/.workflow-managed"
+    if [ -e "$file" ] && ! managed_ok "$file" "$marker" "$src/SKILL.md" && [ "$force" != 1 ]; then
+      warn "skipped skill $name: $file was edited here and is yours to keep (use --force)"
       continue
     fi
-    rm -rf "$target"
     mkdir -p "$target"
-    cp "$src/SKILL.md" "$target/SKILL.md"
-    : > "$target/.workflow-managed"
+    cp "$src/SKILL.md" "$file"
+    mark_managed "$file" "$marker"
     ok "skill $name"
   done
 }
 
-# Copy the project review agents into <root>/.omp/agents.
 install_agents() {
-  local root="$1"
-  local dest="$root/.omp/agents"
+  local root="$1" force="$2"
+  local dest="$root/.agents/agents"
   mkdir -p "$dest"
-  for src in "$KIT"/templates/project/.omp/agents/*.md; do
+  for src in "$KIT"/templates/project/.agents/agents/*.md; do
     [ -f "$src" ] || continue
-    cp "$src" "$dest/$(basename "$src")"
-    ok "agent $(basename "$src" .md)"
+    local name target marker
+    name="$(basename "$src" .md)"
+    target="$dest/$(basename "$src")"
+    marker="$dest/.$name.workflow-managed"
+    if [ -e "$target" ] && ! managed_ok "$target" "$marker" "$src" && [ "$force" != 1 ]; then
+      warn "skipped agent $name: $target was edited here and is yours to keep (use --force)"
+      continue
+    fi
+    cp "$src" "$target"
+    mark_managed "$target" "$marker"
+    ok "agent $name"
   done
 }
 
 # Append, replace, or leave alone the marked block in AGENTS.md.
 install_agents_block() {
-  local root="$1" source="$2"
+  local root="$1" source="$2" force="${3:-0}"
   local file="$root/AGENTS.md"
-  local block
+  local marker="$root/.workflow/.agents-block.workflow-managed"
+  assert_symlink_safety "$root" "$file"
+  assert_symlink_safety "$root" "$marker"
+  local block marker_state starts ends malformed tmp output_state
   block="$(cat "$source")"
+
+  mkdir -p "$root/.workflow"
 
   if [ ! -f "$file" ]; then
     printf '%s\n' "$block" > "$file"
+    mark_managed "$source" "$marker"
     ok "AGENTS.md (created)"
     return 0
   fi
 
-  if grep -qF "$MARKER_START" "$file"; then
-    local tmp
-    tmp="$(mktemp)"
-    awk -v s="$MARKER_START" -v e="$MARKER_END" -v repl="$block" '
-      $0 == s { print repl; skipping = 1; next }
-      $0 == e { skipping = 0; next }
-      !skipping { print }
-    ' "$file" > "$tmp"
-    mv "$tmp" "$file"
-    ok "AGENTS.md (workflow block updated)"
-  else
+  marker_state="$(parse_agents_marker_state "$file")"
+  read -r starts ends malformed <<< "$marker_state"
+
+  if [ "$starts" -eq 0 ] && [ "$ends" -eq 0 ] && [ "$malformed" -eq 0 ]; then
     printf '\n%s\n' "$block" >> "$file"
+    mark_managed "$source" "$marker"
     ok "AGENTS.md (workflow block appended)"
+    return 0
   fi
+  if [ "$starts" -ne 1 ] || [ "$ends" -ne 1 ] || [ "$malformed" -ne 0 ]; then
+    die "AGENTS.md has an incomplete or ambiguous workflow block; refusing to modify it"
+  fi
+
+  if [ "$force" != 1 ]; then
+    local current_block; current_block="$(mktemp)"
+    awk -v s="$MARKER_START" -v e="$MARKER_END" '
+      $0 == s { inside = 1 }
+      inside { print }
+      $0 == e { inside = 0 }
+    ' "$file" > "$current_block"
+
+    if [ -f "$marker" ]; then
+      if ! managed_ok "$current_block" "$marker" "$source"; then
+        rm -f "$current_block"
+        warn "skipped AGENTS.md: workflow block was edited locally and is yours to keep (use --force)"
+        return 0
+      fi
+    else
+      if ! cmp -s "$current_block" "$source"; then
+        rm -f "$current_block"
+        warn "skipped AGENTS.md: workflow block was edited locally and is yours to keep (use --force)"
+        return 0
+      fi
+    fi
+    rm -f "$current_block"
+  fi
+
+  tmp="$(mktemp)"
+  if ! awk -v s="$MARKER_START" -v e="$MARKER_END" -v repl="$block" '
+    $0 == s { print repl; skipping = 1; next }
+    $0 == e { skipping = 0; next }
+    !skipping { print }
+  ' "$file" > "$tmp"; then
+    rm -f "$tmp"
+    die "could not prepare the AGENTS.md workflow block"
+  fi
+
+  output_state="$(awk -v s="$MARKER_START" -v e="$MARKER_END" '
+    $0 == s { starts++ }
+    $0 == e { ends++ }
+    END { print starts + 0, ends + 0 }
+  ' "$tmp")"
+  if [ "$output_state" != "1 1" ]; then
+    rm -f "$tmp"
+    die "could not validate the AGENTS.md workflow block"
+  fi
+
+  mv "$tmp" "$file"
+  mark_managed "$source" "$marker"
+  ok "AGENTS.md (workflow block updated)"
 }
 
 # Write a file only if it does not exist. Never clobbers user edits.
@@ -142,6 +1064,52 @@ write_manifest() {
   } > "$root/.workflow/.workflow-version"
 }
 
+# Remove managed skills and agents the toolkit no longer ships. Files without
+# our marker are left alone: they belong to the project.
+prune_stale_files() {
+  local root="$1" dest dir file name marker
+  local skills_expected=" $(skill_names | tr '\n' ' ') "
+  dest="$root/.agents/skills"
+  if [ -d "$dest" ]; then
+    for dir in "$dest"/*/; do
+      [ -d "$dir" ] || continue
+      name="$(basename "$dir")"
+      case "$skills_expected" in *" $name "*) continue ;; esac
+      marker="$dir/.workflow-managed"
+      [ -f "$marker" ] || continue
+      file="$dir/SKILL.md"
+      if managed_ok "$file" "$marker" ""; then
+        rm -f "$file" "$marker"
+        rmdir "$dir" 2>/dev/null || true
+        ok "removed skill $name (no longer in the toolkit)"
+      else
+        warn "kept skill $name: edited locally, yours to keep"
+      fi
+    done
+  fi
+  local agents_expected=" "
+  for file in "$KIT"/templates/project/.agents/agents/*.md; do
+    [ -f "$file" ] || continue
+    agents_expected="$agents_expected$(basename "$file" .md) "
+  done
+  dest="$root/.agents/agents"
+  if [ -d "$dest" ]; then
+    for file in "$dest"/*.md; do
+      [ -f "$file" ] || continue
+      name="$(basename "$file" .md)"
+      case "$agents_expected" in *" $name "*) continue ;; esac
+      marker="$dest/.$name.workflow-managed"
+      [ -f "$marker" ] || continue
+      if managed_ok "$file" "$marker" ""; then
+        rm -f "$file" "$marker"
+        ok "removed agent $name (no longer in the toolkit)"
+      else
+        warn "kept agent $name: edited locally, yours to keep"
+      fi
+    done
+  fi
+}
+
 # ---------------------------------------------------------------- commands
 
 cmd_init() {
@@ -156,23 +1124,23 @@ cmd_init() {
 
   require_kit
   local root; root="$(project_root)"
+  assert_symlink_safety "$root"
   say ""
   say "Installing the workflow into $root"
   say ""
 
   mkdir -p "$root/.workflow/specs" "$root/.workflow/tasks" \
-           "$root/.workflow/maps" "$root/.workflow/done" "$root/.omp/agents"
+           "$root/.workflow/maps" "$root/.workflow/done"
 
   install_skills "$root" "$force"
-  install_agents "$root"
-  install_file "$root/.workflow/CONVENTIONS.md" "$KIT/CONVENTIONS.md"
-  install_file "$root/.workflow/STYLE.md" "$KIT/STYLE.md"
+  install_agents "$root" "$force"
+  install_rulebooks "$root" "$force"
 
   for f in standards glossary decisions; do
     install_file "$root/.workflow/$f.md" "$KIT/templates/project/.workflow/$f.md"
   done
 
-  install_agents_block "$root" "$KIT/templates/project/AGENTS.md"
+  install_agents_block "$root" "$KIT/templates/project/AGENTS.md" "$force"
   write_manifest "$root"
 
   cat >&2 <<EOF
@@ -187,22 +1155,37 @@ EOF
 }
 
 cmd_update() {
+  local force=0
+  for arg in "$@"; do
+    case "$arg" in
+      --force) force=1 ;;
+      -h|--help) usage; exit 0 ;;
+      *) die "unknown argument: $arg" ;;
+    esac
+  done
+
   require_kit
   local root; root="$(project_root)"
+  assert_symlink_safety "$root"
   say "Updating the workflow in $root"
-  install_skills "$root" 1
-  install_agents "$root"
-  cp "$KIT/CONVENTIONS.md" "$root/.workflow/CONVENTIONS.md"
-  cp "$KIT/STYLE.md" "$root/.workflow/STYLE.md"
-  install_agents_block "$root" "$KIT/templates/project/AGENTS.md"
+  mkdir -p "$root/.workflow"
+  install_skills "$root" "$force"
+  install_agents "$root" "$force"
+  local rulebooks_mode="update"
+  if [ "$force" = 1 ]; then rulebooks_mode="force"; fi
+  install_rulebooks "$root" "$rulebooks_mode"
+  install_agents_block "$root" "$KIT/templates/project/AGENTS.md" "$force"
+  prune_stale_files "$root"
   write_manifest "$root"
   ok "updated to $VERSION"
   say ""
   say "Your own files (standards, glossary, decisions, specs, tasks) were not touched."
+  say "Skills, agents, and rulebooks you edited yourself were skipped; run 'workflow init --force' to replace them."
 }
 
 cmd_doctor() {
   local root; root="$(project_root)"
+  assert_symlink_safety "$root"
   local problems=0
   say "Workflow check for $root"
   say ""
@@ -215,106 +1198,311 @@ cmd_doctor() {
   fi
 
   for name in $(skill_names); do
-    if [ -f "$root/.agents/skills/$name/SKILL.md" ]; then
-      ok "skill $name"
-    else
-      warn "skill $name missing"
+    local target="$root/.agents/skills/$name/SKILL.md"
+    local marker="$root/.agents/skills/$name/.workflow-managed"
+    local src="$KIT/skills/$name/SKILL.md"
+    check_managed_file "skill $name" "$target" "$marker" "$src" || problems=$((problems + 1))
+  done
+
+  local stale_dir stale_name skills_expected=" $(skill_names | tr '\n' ' ') "
+  for stale_dir in "$root/.agents/skills"/*/; do
+    [ -d "$stale_dir" ] || continue
+    stale_name="$(basename "$stale_dir")"
+    case "$skills_expected" in *" $stale_name "*) continue ;; esac
+    if [ -f "$stale_dir/.workflow-managed" ]; then
+      warn "skill $stale_name is no longer in the toolkit; run 'workflow update'"
       problems=$((problems + 1))
     fi
   done
 
-  for src in "$KIT"/templates/project/.omp/agents/*.md; do
+  local a
+  for src in "$KIT"/templates/project/.agents/agents/*.md; do
     [ -f "$src" ] || continue
-    local a; a="$(basename "$src")"
-    if [ -f "$root/.omp/agents/$a" ]; then
-      ok "agent ${a%.md}"
-    else
-      warn "agent $a missing"; problems=$((problems + 1))
+    a="$(basename "$src")"
+    local name="${a%.md}"
+    local target="$root/.agents/agents/$a"
+    local marker="$root/.agents/agents/.$name.workflow-managed"
+    check_managed_file "agent $name" "$target" "$marker" "$src" || problems=$((problems + 1))
+  done
+
+  local stale_agent agents_expected=" "
+  for src in "$KIT"/templates/project/.agents/agents/*.md; do
+    [ -f "$src" ] || continue
+    agents_expected="$agents_expected$(basename "$src" .md) "
+  done
+  for stale_agent in "$root/.agents/agents"/*.md; do
+    [ -f "$stale_agent" ] || continue
+    local stale_agent_name; stale_agent_name="$(basename "$stale_agent" .md)"
+    case "$agents_expected" in *" $stale_agent_name "*) continue ;; esac
+    if [ -f "$root/.agents/agents/.$stale_agent_name.workflow-managed" ]; then
+      warn "agent $stale_agent_name is no longer in the toolkit; run 'workflow update'"
+      problems=$((problems + 1))
     fi
   done
 
-  if [ -f "$root/AGENTS.md" ] && grep -qF "$MARKER_START" "$root/AGENTS.md"; then
+  local marker_state starts ends malformed
+  marker_state="$(parse_agents_marker_state "$root/AGENTS.md")"
+  read -r starts ends malformed <<< "$marker_state"
+  if [ "$starts" -eq 1 ] && [ "$ends" -eq 1 ] && [ "$malformed" -eq 0 ]; then
     ok "AGENTS.md has the workflow block"
-  else
+  elif [ "$starts" -eq 0 ] && [ "$ends" -eq 0 ] && [ "$malformed" -eq 0 ]; then
     warn "AGENTS.md is missing the workflow block; run 'workflow update'"
+    problems=$((problems + 1))
+  else
+    warn "AGENTS.md has an incomplete or ambiguous workflow block; fix markers manually"
     problems=$((problems + 1))
   fi
 
-  for f in CONVENTIONS.md STYLE.md standards.md glossary.md decisions.md; do
+  for f in CONVENTIONS.md STYLE.md; do
+    local target="$root/.workflow/$f"
+    local marker="$root/.workflow/.${f%.md}.workflow-managed"
+    local src="$KIT/$f"
+    check_managed_file ".workflow/$f" "$target" "$marker" "$src" || problems=$((problems + 1))
+  done
+
+  # Framework files are checksum-managed; technical-debt.md is user data and
+  # only has to exist.
+  for f in $MANAGED_FRAMEWORK; do
+    local target="$root/.workflow/$f"
+    local marker="$root/.workflow/.${f%.md}.workflow-managed"
+    local src="$KIT/templates/project/.workflow/$f"
+    if [ -f "$src" ]; then
+      check_managed_file ".workflow/$f" "$target" "$marker" "$src" || problems=$((problems + 1))
+    fi
+  done
+
+  if [ ! -f "$root/.workflow/technical-debt.md" ]; then
+    warn ".workflow/technical-debt.md missing"
+    problems=$((problems + 1))
+  fi
+
+  for f in standards.md glossary.md decisions.md; do
     [ -f "$root/.workflow/$f" ] || { warn ".workflow/$f missing"; problems=$((problems + 1)); }
   done
 
-  if [ -f "$root/.workflow/standards.md" ] && grep -q '<' "$root/.workflow/standards.md"; then
-    skip "standards.md still contains unfilled placeholders"
+  if [ -f "$root/.workflow/standards.md" ] && grep -qE '<[a-z][a-z ]*>' "$root/.workflow/standards.md"; then
+    warn "standards.md still contains unfilled placeholders"
+    problems=$((problems + 1))
+  fi
+
+  if [ -f "$root/.workflow/decisions.md" ]; then
+    check_decisions "$root/.workflow/decisions.md" problems
+  fi
+  if [ -f "$root/.workflow/glossary.md" ]; then
+    check_glossary "$root/.workflow/glossary.md" problems
+  fi
+
+
+  check_tasks "$root" problems
+  check_maps "$root" problems
+
+  if [ -d "$root/.workflow/tasks" ]; then
+    local task_files=()
+    for tf in "$root/.workflow/tasks"/*.md; do
+      [ -f "$tf" ] || continue
+      task_files+=("$tf")
+    done
+    local active=${#task_files[@]}
+    if [ "$active" -gt 0 ]; then
+      local drafts=0
+      for tf in "${task_files[@]}"; do
+        if grep -q -i "Base commit:.*<commit-sha>" "$tf"; then
+          drafts=$((drafts + 1))
+        fi
+      done
+      local started=$((active - drafts))
+      say "Tasks: $active active ($drafts draft, $started started)"
+    fi
   fi
 
   say ""
   if [ "$problems" -eq 0 ]; then
     say "${C_OK}Everything present.${C_OFF}"
+    return 0
   else
-    say "${C_WARN}$problems problem(s) found.${C_OFF} Run 'workflow init' or 'workflow update' to fix."
+    say "${C_WARN}$problems problem(s) found.${C_OFF} Follow the diagnostics above to fix them."
+    return 1
   fi
 }
 
 cmd_uninstall() {
   local root; root="$(project_root)"
+  assert_symlink_safety "$root"
   local removed=0
 
   for name in $(skill_names); do
     local target="$root/.agents/skills/$name"
-    if [ -f "$target/.workflow-managed" ]; then
-      rm -rf "$target"; ok "removed skill $name"; removed=$((removed + 1))
+    local file="$target/SKILL.md" marker="$target/.workflow-managed"
+    if managed_ok "$file" "$marker" "$KIT/skills/$name/SKILL.md"; then
+      rm "$file" "$marker"; rmdir "$target" 2>/dev/null || true
+      ok "removed skill $name"; removed=$((removed + 1))
+    elif [ -f "$file" ]; then
+      warn "kept .agents/skills/$name/SKILL.md: edited locally, yours to keep"
     fi
   done
 
 
-  for src in "$KIT"/templates/project/.omp/agents/*.md; do
+  for src in "$KIT"/templates/project/.agents/agents/*.md; do
     [ -f "$src" ] || continue
-    local a="$root/.omp/agents/$(basename "$src")"
-    if [ -f "$a" ] && cmp -s "$src" "$a"; then
-      rm "$a"; ok "removed agent $(basename "$src" .md)"; removed=$((removed + 1))
+    local name a marker
+    name="$(basename "$src" .md)"
+    a="$root/.agents/agents/$(basename "$src")"
+    marker="$root/.agents/agents/.$name.workflow-managed"
+    if managed_ok "$a" "$marker" "$src"; then
+      rm "$a" "$marker"; ok "removed agent $name"; removed=$((removed + 1))
     elif [ -f "$a" ]; then
-      warn "kept .omp/agents/$(basename "$src"): edited locally, yours to keep"
+      warn "kept .agents/agents/$(basename "$src"): edited locally, yours to keep"
     fi
   done
-  rmdir "$root/.omp/agents" 2>/dev/null || true
-  rmdir "$root/.omp" 2>/dev/null || true
-
+  prune_stale_files "$root"
+  rmdir "$root/.agents/agents" 2>/dev/null || true
   rmdir "$root/.agents/skills" 2>/dev/null || true
   rmdir "$root/.agents" 2>/dev/null || true
 
-  if [ -f "$root/AGENTS.md" ] && grep -qF "$MARKER_START" "$root/AGENTS.md"; then
-    local tmp; tmp="$(mktemp)"
-    awk -v s="$MARKER_START" -v e="$MARKER_END" '
-      $0 == s { skipping = 1; next }
-      $0 == e { skipping = 0; next }
-      !skipping { print }
-    ' "$root/AGENTS.md" > "$tmp"
-    mv "$tmp" "$root/AGENTS.md"
-    ok "removed the workflow block from AGENTS.md"
+  # Rulebooks: remove if unedited, keep if edited. Clean single marker either way.
+  for f in CONVENTIONS.md STYLE.md; do
+    local target="$root/.workflow/$f"
+    local marker="$root/.workflow/.${f%.md}.workflow-managed"
+    local src="$KIT/$f"
+    if [ -f "$marker" ] && managed_ok "$target" "$marker" "$src"; then
+      rm -f "$target" "$marker"
+      ok "removed .workflow/$f"
+      removed=$((removed + 1))
+    elif [ ! -f "$marker" ] && [ -f "$target" ] && cmp -s "$target" "$src"; then
+      rm -f "$target"
+      ok "removed .workflow/$f"
+      removed=$((removed + 1))
+    else
+      rm -f "$marker"
+      if [ -f "$target" ]; then
+        warn "kept .workflow/$f: edited locally, yours to keep"
+      fi
+    fi
+  done
+
+  if [ -f "$root/.workflow/.workflow-version" ]; then
+    rm "$root/.workflow/.workflow-version"
+    ok "removed .workflow/.workflow-version"
+    removed=$((removed + 1))
+  fi
+  for d in specs tasks maps done; do
+    rmdir "$root/.workflow/$d" 2>/dev/null || true
+  done
+
+  local agents_file="$root/AGENTS.md"
+  local agents_marker="$root/.workflow/.agents-block.workflow-managed"
+  local agents_src="$KIT/templates/project/AGENTS.md"
+
+  if [ -f "$agents_file" ]; then
+    local agents_preexisting_empty=0
+    [ -s "$agents_file" ] || agents_preexisting_empty=1
+
+    if [ "$agents_preexisting_empty" -eq 1 ]; then
+      rm -f "$agents_marker"
+    else
+      local marker_state starts ends malformed
+      marker_state="$(parse_agents_marker_state "$agents_file")"
+      read -r starts ends malformed <<< "$marker_state"
+
+      if [ "$starts" -eq 0 ] && [ "$ends" -eq 0 ] && [ "$malformed" -eq 0 ]; then
+        rm -f "$agents_marker"
+      elif [ "$starts" -ne 1 ] || [ "$ends" -ne 1 ] || [ "$malformed" -ne 0 ]; then
+        warn "kept AGENTS.md: ambiguous or malformed workflow block, yours to keep"
+      else
+        local current_block; current_block="$(mktemp)"
+        awk -v s="$MARKER_START" -v e="$MARKER_END" '
+          $0 == s { inside = 1 }
+          inside { print }
+          $0 == e { inside = 0 }
+        ' "$agents_file" > "$current_block"
+
+        local block_unmodified=0
+        if [ -f "$agents_marker" ]; then
+          if managed_ok "$current_block" "$agents_marker" "$agents_src"; then
+            block_unmodified=1
+          fi
+        else
+          if cmp -s "$current_block" "$agents_src"; then
+            block_unmodified=1
+          fi
+        fi
+        rm -f "$current_block"
+
+        if [ "$block_unmodified" -eq 1 ]; then
+          local tmp; tmp="$(mktemp)"
+          awk -v s="$MARKER_START" -v e="$MARKER_END" '
+            $0 == s { skipping = 1; next }
+            $0 == e { skipping = 0; next }
+            !skipping { print }
+          ' "$agents_file" > "$tmp"
+          mv "$tmp" "$agents_file"
+          rm -f "$agents_marker"
+          ok "removed the workflow block from AGENTS.md"
+
+          # Only delete if successful workflow block removal made it empty
+          if [ -f "$agents_file" ] && [ ! -s "$agents_file" ]; then
+            rm "$agents_file"
+            ok "removed the empty AGENTS.md"
+          fi
+        else
+          warn "kept AGENTS.md: workflow block was edited locally, yours to keep"
+        fi
+      fi
+    fi
+  else
+    rm -f "$agents_marker"
   fi
 
   say ""
   say "Removed $removed file(s)."
-  say ".workflow/ was left in place: your specs, tasks and decisions are in there."
-  say "Delete it yourself if you want it gone."
+  say "Your own files are untouched: .workflow/standards.md, glossary.md,"
+  say "decisions.md, specs/, tasks/, maps/ and done/."
+  if [ -d "$root/.workflow" ] && [ -z "$(ls -A "$root/.workflow")" ]; then
+    rmdir "$root/.workflow"
+  fi
+  say "Delete whatever is left of .workflow/ if you want it gone."
 }
 
 usage() {
   cat <<EOF
 workflow $VERSION - a project workflow for coding agents
 
-  workflow init [--force]   install into the current project
-  workflow update           re-copy skills and rules after an update
-  workflow doctor           report what is installed and what is missing
-  workflow uninstall        remove the installed skills and the AGENTS.md block
-  workflow version          print the version
+Setup:
+  workflow init [--force]      install into the current project
+  workflow update [--force]    re-copy skills and rules after an update
+  workflow doctor              report what is installed and what is missing
+  workflow uninstall           remove the installed skills, agents and rulebook
 
-Installs into the nearest git repository above the current directory. Nothing is
-written outside that project. Skills are copied into .agents/skills/ and the
-rules go into AGENTS.md between workflow:start and workflow:end markers.
+Daily commands (run anywhere in project):
+  workflow tasks [OPTIONS]     list and filter tasks
+  workflow deps [OPTIONS]      visualize task dependencies
+  workflow decisions [CMD]     search and manage decision log
+  workflow effort [CMD]        manage effort lifecycle
+  workflow debt [CMD]          track technical debt
+  workflow hotfix-review       list unresolved hotfixes
+  workflow validate [OPTIONS]  validate workflow structure
+All commands support --help for details.
+
+Installs into the nearest git repository above the current directory, or the
+current directory if there is no git repository. Nothing is written outside that
+project. Symlinks escaping that project are rejected. Skills are copied into
+.agents/skills/ and rules go into AGENTS.md between workflow:start/end markers.
 EOF
 }
+
+# Dispatch to subcommands if they exist
+dispatch_subcommand() {
+  local cmd="$1"
+  shift
+  local script="$KIT/bin/workflow-$cmd"
+
+  if [ -f "$script" ]; then
+    exec bash "$script" "$@"
+  else
+    die "unknown command: $cmd (try 'workflow help')"
+  fi
+}
+
 
 case "${1:-}" in
   init) shift; cmd_init "$@" ;;
@@ -323,5 +1511,6 @@ case "${1:-}" in
   uninstall) shift; cmd_uninstall "$@" ;;
   version|--version|-v) printf '%s\n' "$VERSION" ;;
   ""|-h|--help|help) usage ;;
+  tasks|deps|decisions|effort|debt|hotfix-review|validate|next) dispatch_subcommand "$@" ;;
   *) die "unknown command: $1 (try 'workflow help')" ;;
 esac

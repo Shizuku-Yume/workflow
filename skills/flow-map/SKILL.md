@@ -1,179 +1,106 @@
 ---
 name: flow-map
 description: >-
-  Plan work that is too big to see the whole way through: chart it as a map of
-  open questions, answer them one at a time, and let the route to the destination
-  become clear. Use when a project is large or foggy, when the user says "I do not
-  know how to approach this", "this is too big", "help me plan this out", "where
-  do we even start", or when grilling keeps producing questions that cannot be
-  answered yet.
+  Plan work too big to see whole way through, as map of open questions answered
+  one per session. Use when project large/foggy or user says "I don't know how to approach this".
 ---
 
 # Flow: Map
 
-Read `.workflow/CONVENTIONS.md` first (§1 decision protocol, §2 where things
-live), and `.workflow/STYLE.md`.
+Read `.workflow/CONVENTIONS.md` §1 (decision protocol) and §2 (where things live), and `.workflow/STYLE.md`.
 
-For work where the route is not visible. Not "the plan is long", but "we cannot
-write the plan yet, because it depends on things we have not worked out".
+Per CONVENTIONS §0: check codebase before asking. Many questions that feel like decisions are facts waiting to be discovered.
 
-The output is a map: one document listing the questions that gate the work, each
-answered in its own session, with the answers accumulating until the way is clear.
-Fog is expected. Do not try to clear it by guessing.
+For work where route not visible. Not "plan is long", but "can't write plan yet, depends on things not worked out".
 
-## When this applies
+Output: map listing questions gating work, each answered in own session, answers accumulating until way is clear. Fog expected. Don't try to clear by guessing.
 
-Use it when:
-
-- The work spans more than one session and its shape depends on answers nobody has.
-- Grilling keeps stopping because questions depend on other unanswered questions.
-- The user can describe the goal but not the first step.
-
-Do not use it when the route is already visible. If you can list the tasks, that
-is `flow-spec` plus `flow-break`, not this. A map for clear work is ceremony.
+Use when work spans more than one session and shape depends on answers nobody has, when grilling keeps stopping on questions depending on other unanswered questions, or user can describe goal but not first step. Don't use when route already visible — if you can list tasks, that's `flow-spec` plus `flow-break`. Map for clear work is ceremony.
 
 ## Map or spec
 
-A **map** holds questions whose answers are decisions. It is done when nothing is
-left to decide and everything is ready to build.
+**Map** holds questions whose answers are decisions. **Spec** holds decisions already made, describing what will be built. Map graduates into one or more specs; doesn't replace them, finished when nothing left in it.
 
-A **spec** holds decisions already made, describing what will be built. A map
-graduates into one or more specs; it does not replace them.
+## Charting map
 
-A map is finished when it has nothing left in it. That is the goal: the map should
-end up empty of open work because it all moved into specs and task lists.
+### 1. Name destination
 
-## Charting the map
+What does end of this effort look like? Shipped feature, decision locked, migration done, document written. One or two sentences. Everything depends on this: decides what's in scope. Wrong destination makes every question wrong. If destination unclear, settle with `flow-grill` — it's one question you can't defer.
 
-### 1. Name the destination
+### 2. Fan out and find questions
 
-What does the end of this effort look like? A shipped feature, a decision locked,
-a migration done, a document written. One or two sentences. Everything else
-depends on this: it decides what is in scope, and a wrong destination makes every
-ticket on the map wrong.
+Grill user, but **wide rather than deep**: across whole space, not down one thread. Looking for questions gating everything else, not answers. If produces no fog, stop: route visible, use `flow-spec` and `flow-break`, say so.
 
-If the destination is unclear, settle it first with `flow-grill`. It is the one
-question you cannot defer.
-
-### 2. Fan out and find the questions
-
-Grill the user, but **wide rather than deep**: across the whole space, not down
-one thread. You are looking for the questions that gate everything else, not the
-answers to them.
-
-If this produces no fog, stop. The route is visible; use `flow-spec` and
-`flow-break` instead, and say so.
-
-### 3. Write the map
+### 3. Write map
 
 `.workflow/maps/<slug>.md`:
 
 ```markdown
-# Map: <destination in a few words>
+# Map: <destination in few words>
 
-**Destination:** <what reaching the end looks like>
-
+**Destination:** <what reaching end looks like>
 **Started:** <date>   **Status:** charting | working | clear
 
 ## Route so far
-
-<!-- one line per answered question, newest last. The detail lives in the
-question's own section below; this is the index. -->
+<!-- one line per answered question, newest last. Detail lives in question's
+section below; this is index. -->
 
 ## Open questions
-
-<!-- the questions that can be answered now: everything they depend on is settled.
+<!-- questions that can be answered now: everything they depend on is settled.
 Grouped by what they block. -->
 
 ## Not yet clear
-
-<!-- questions you can tell are coming but cannot phrase sharply yet: they hang on
-answers we do not have. Write them loosely. This is the fog. -->
+<!-- questions coming but can't phrase sharply yet: hang on answers we don't
+have. Write loosely. This is fog. -->
 
 ## Ruled out
-
-<!-- things beyond the destination: named, out of this effort, with the reason.
-They never graduate. -->
+<!-- things beyond destination: named, out of this effort, with reason. Never
+graduate. -->
 ```
 
-The map is an index, not a store. Each answered question's detail lives in its own
-section; the Route-so-far list just points at it. A map that restates its own
-answers twice will drift.
-
-### 4. Write the open questions as concrete questions
-
-Each one gets its own section below the header blocks:
+Each open question gets own section below header blocks:
 
 ```markdown
-## Q<N>: <the question, as a question>
+## Q<N>: <question, as question>
 
-**Blocks:** <what cannot start until this is answered>
-
+**Blocks:** <what can't start until this answered>
 **Kind:** research | decide | build-a-bad-version | do-something-first
-
 **Depends on:** <Q numbers, or none>
-
 **Answer:** <filled in when answered>
 ```
 
-Four kinds, and they are not decoration:
+Map is index, not store. Each answered question's detail lives in own section; Route-so-far list just points at it. Map restating own answers twice will drift.
 
-- **research** - the answer is a fact someone can find: read the docs, check the
-  third-party API, look at what the library actually does. Answer it with a
-  subagent, in parallel, without the user.
-- **decide** - a real choice between options. Answer it with `flow-grill`.
-- **build-a-bad-version** - the question is "how should this look or behave",
-  and talking cannot answer it. Make the cheapest rough thing that can be reacted
-  to: a stub, a sketch, a throwaway page. Keep it, or throw it away after.
-- **do-something-first** - nothing to decide, but the discussion is blocked until
-  it exists: sign up for the API so its behaviour can be judged, move the data so
-  its shape can be seen, get the access. This is the one kind that does work. Its
-  answer records what was done and the facts that came out of it.
+### 4. Four kinds
 
-### 5. Wire the dependencies
+Not decoration; each says how to answer it.
 
-Write each question's `Depends on` after all of them exist, so the numbers are
-real. A question whose dependencies are all answered is **open**. Everything else
-is blocked or still fog.
+- **research** — answer is fact someone can find: read docs, check third-party API, look at what library does. Answer with subagent, in parallel, without user.
+- **decide** — real choice between options. Answer with `flow-grill`.
+- **build-a-bad-version** — question is "how should this look or behave", talking can't answer. Make cheapest rough thing that can be reacted to: stub, sketch, throwaway page. Keep or throw away after.
+- **do-something-first** — nothing to decide, but discussion blocked until it exists: sign up for API so behavior can be judged, move data so shape can be seen, get access. Does work. Answer records what was done and facts that came out.
 
-## Where the lines go
+Write each question's `Depends on` after all exist, so numbers are real. Question whose dependencies all answered is **open**; everything else blocked or still fog.
 
-**Question or fog?** The test is whether you can phrase it sharply now, not
-whether you can answer it now.
+## Where lines go
 
-- **A question** when you can state it precisely, even if it is blocked.
-- **Fog** when you cannot yet phrase it that sharply. Do not chop fog into
-  question-sized pieces; it is coarser than a question, and one patch may turn
-  into three questions later, or none.
+**Question or fog?** Test is whether you can phrase sharply now, not whether you can answer now. Question when you can state precisely, even if blocked. Fog when can't yet phrase sharply — don't chop fog into question-sized pieces; it's coarser, one patch may turn into three questions later, or none.
 
-**Fog or ruled out?** Fog gathers toward the destination and is in scope but
-unclear. Ruled out is beyond the destination. Scope puts something in "Ruled out";
-sharpness puts it in "Not yet clear". Work in "Ruled out" never graduates; if the
-destination changes, it comes back as a new effort, not a resumed one.
+**Fog or ruled out?** Fog gathers toward destination, in scope but unclear. Ruled out beyond destination. Scope puts something in "Ruled out", sharpness in "Not yet clear". Work in "Ruled out" never graduates; if destination changes, comes back as new effort, not resumed one.
 
-## Working the map
+## Working map
 
-One question per session. Not two: the point of the map is that each answer gets
-a clean context.
+One question per session. Not two: point of map is each answer gets clean context.
 
-1. Read the map header and Route so far. Not every question section.
-2. Pick the next open question: the first one whose dependencies are all answered.
-   If the user named one, use theirs.
-3. Answer it, in the way its kind says. Read any related question sections you need.
-4. Write the answer into that question's section: the decision, the option it beat,
-   and what it was based on. If it was a real decision, add one line to
-   `.workflow/decisions.md`.
-5. Update the map: add the answer to Route so far, answer any question it just
-   unblocked, and promote whatever fog is now sharp enough to phrase. Remove
-   promoted fog from "Not yet clear" so it lives in exactly one place.
-6. If the answer shows something is beyond the destination, move it to "Ruled out"
-   with the reason, rather than resolving it on the route.
+1. Read map header and Route so far. Not every question section.
+2. Pick next open question: first one whose dependencies all answered. If user named one, use theirs.
+3. Answer it, in way its kind says. Read any related question sections needed.
+4. Write answer into question's section: decision, option it beat, what it was based on. If real decision, add one complete decision entry to `.workflow/decisions.md`.
+5. Update map: add answer to Route so far, answer any question it just unblocked, promote whatever fog now sharp enough to phrase. Remove promoted fog from "Not yet clear" so lives in exactly one place.
+6. If answer shows something beyond destination, move to "Ruled out" with reason, rather than resolving on route.
 
 ## Finishing
 
-When no open questions remain and no fog can be promoted, the route is clear. Write
-the specs the map now implies (`flow-spec`), cut them into tasks (`flow-break`), and
-mark the map `Status: clear` with a closing line saying what it produced.
+When no open questions remain and no fog can be promoted, route is clear. Write specs map now implies (`flow-spec`), cut into tasks (`flow-break`), mark map `Status: clear` with closing line saying what it produced.
 
-Keep the map. It is the record of why the plan looks the way it does, which is
-exactly what someone will ask in three months.
+Keep map. It's record of why plan looks way it does, exactly what someone will ask in three months.

@@ -1,132 +1,119 @@
 ---
 name: flow-break
 description: >-
-  Cut a spec into tasks where each one is a complete piece of working behavior
-  that a single session can build and finish, with the dependencies between them
-  written down. Use after a spec exists and the work is bigger than one sitting;
-  when the user says "break this down", "split this into tasks", "what order do
-  we do this in", or before handing work to run in parallel.
+  Cut spec into tasks a single session can finish, with dependencies. Use when
+  user says "break this down", "split into tasks", or before parallel work.
 ---
 
 # Flow: Break
 
-Read `.workflow/CONVENTIONS.md` first (§2 where things live).
-
-Input: a spec, a plan, or the current conversation. Output: one file per task in
-`.workflow/tasks/`.
+Read `.workflow/CONVENTIONS.md` §2 first. Input: spec or settled conversation. Output: task files in `.workflow/tasks/`, archived to `.workflow/done/<effort>/` when finished.
 
 ## Why tasks exist
 
-A long session degrades: the model's attention is sharpest early and gets worse
-as context fills, so a job described in one huge document gets built worse than
-the same job described in five small ones. Each task is sized to fit in one fresh
-session with room to spare.
+Long sessions degrade: attention is sharpest early. Each task sized to fit one fresh session with room to spare.
 
-The second reason is order. Tasks declare what blocks them, so independent ones
-can run in parallel and the user can see what is actually startable now.
+Second reason: order. Tasks declare blockers, so independent ones can run in parallel (separate worktrees/branches/directories only; shared working tree is serial).
 
-## The shape of a good task
+## Good task shape
 
-- **It delivers working behaviour**, end to end: a narrow path that runs, is
-  visible, and can be checked. Not "add the database layer", which delivers
-  nothing anyone can use.
-- **A fresh session can finish it** without reading the whole codebase first.
-  The task says which files matter.
-- **It is checkable** by something other than the person who wrote it.
-- **It is independent** of tasks declared after it. Everything it needs is either
-  already in the repo or in a task that blocks it.
+- **Delivers working behavior** end to end: narrow path that runs, is visible, checkable. Not "add database layer" which delivers nothing usable.
+- **Fresh session can finish it** without reading whole codebase. Task says which files matter.
+- **Checkable** by something other than person who wrote it.
+- **Independent** of tasks declared after it. Everything needed is already in repo or in blocking task.
 
-Prefer the narrow complete path over the broad incomplete one. A task that adds
-one field through the whole stack, storage to display, is usually better than a
-task that adds five fields to storage only.
-
-**The exception: mechanics that touch everything at once.** Renaming a shared
-symbol, changing a column type, moving a file used in a hundred places. This
-cannot land green in one task. Sequence it as three steps instead: add the new
-thing beside the old, move the callers over in batches, then delete the old
-thing. Each batch is its own task and each lands with the build passing.
+**Exception: spike tasks** — time-boxed technical exploration where deliverable is
+an answer, not code. Mark with `Task type: spike` and follow
+`.workflow/spike-tasks.md`. The time box is a scope limit stated as what to stop
+after (one prototype, one benchmark run), not wall-clock hours an agent can't
+measure. Produces written findings, code may be throwaway. Completing a spike
+means answering the question, whether answer is "yes", "no", or "yes but needs X".
+Use for: "Can library Y do Z?", "Is approach A feasible?", "How does existing
+module B work?".
 
 ## Sizing
 
-A task is too big if you cannot describe what it delivers in one sentence
-without "and". Too big if it needs more than roughly a dozen files read to start.
-Too small if it cannot be checked on its own.
-
-When unsure, cut smaller. Two small tasks in sequence beat one that stalls
-half-way with nothing working.
+Too big if can't describe what it delivers in one sentence without "and", or needs more than ~dozen files read to start. Too small if can't check on its own. When unsure, cut smaller: two small tasks in sequence beat one that stalls halfway with nothing working.
 
 ## Process
 
-### 1. Read the spec and the code
+### 1. Read spec and code
 
-Identify the places the work touches. Look for tidying that makes the real change
-easier: renaming the confusing thing, extracting the shared piece, moving the
-function that is in the wrong file. That tidying goes first, as its own task.
-Making the change easy, then making the easy change.
+Identify where work touches. Look for tidying that makes real change easier: rename confusing thing, extract shared piece, move function in wrong file. Tidying goes first as own task. Make change easy, then make easy change.
 
-### 2. Draft the tasks
+### 2. Draft tasks
 
-For each one, write:
+For each:
+- **Effort** — lowercase slug `[a-z0-9]+(-[a-z0-9]+)*`, determines archive dir `.workflow/done/<effort>/`
+- **Task type** — `feature`, `bugfix`, `refactor`, `spike` (optional, defaults to `feature`)
+- **Base commit** — `<commit-sha>` placeholder when drafting. `flow-implement` captures real SHA when starting.
+- **Delivers** — behavior person can observe once done (for spike: "Answer to: <question>")
+- **Blocked by** — required: `None`, or comma-list of `NN` (same effort) or `<effort>/NN` (cross-effort). Numbers only; titles break `workflow validate`.
+- **Files** — expected starting locations. Not closed whitelist; necessary tests/callers/docs may be added during implementation.
+- **Read first** — specific spec sections, glossary entries, files needed to start. Short list; long list means task too big.
+- **Check** — command to run and result that means it works (for spike: how answer will be validated)
+- **Done when** — acceptance points as checklist (for spike: question answered with evidence)
+Behavior and checks, not code. No snippets except when snippet carries decision prose can't (schema, state machine, type). Never paste file path if file likely to move; name module instead.
 
-- **Delivers** - the behaviour a person can observe once it is done.
-- **Blocked by** - which other tasks must finish first, or none.
-- **Files** - where the work happens, so the next session does not go hunting.
-- **Read first** - the specific spec sections, glossary entries, or files needed
-  to start. Keep this list short; a long list means the task is too big.
-- **Check** - the command to run and the result that means it works.
-- **Done when** - the acceptance points, as a checklist.
+Don't create task for work nobody asked for.
 
-### 3. Quiz the user
+### 3. Quiz user
 
-Present the whole breakdown as a numbered list: title, what it delivers, what
-blocks it. Ask three things only:
+Present whole breakdown as numbered list: title, what it delivers, what blocks it.
 
-- Is this the right size?
-- Are the dependencies right - does each task depend only on what truly gates it?
+For parallel work, identify coordination needs:
+- **Truly independent** — no shared interfaces, can merge in any order
+- **Interface dependency** — not blocked by, but both touch same API/module boundary (note in task: "Coordinate with NN on <interface>")
+- **Merge sequence preferred** — merging N before M reduces conflicts, though M not blocked (note in task: "Easier after NN")
+
+Ask three things:
+- Right size?
+- Dependencies right — each task depends only on what truly gates it?
 - Should any be joined or split?
 
-Iterate until they approve. This is one round, not a negotiation per task.
+Iterate until approved. One round, not negotiation per task.
 
-### 4. Write the folders
+### 4. Write files
 
-`.workflow/tasks/<NN>-<slug>.md`, numbered `01`, `02` in dependency order so
-blockers come first:
+`.workflow/tasks/<NN>-<slug>.md`. Number within the effort, `01`, `02` in dependency order (blockers first). Another effort may reuse the same numbers, so refer to tasks elsewhere as `<effort>/<NN>`, and pick slugs that don't collide with another effort's file in the shared `tasks/` directory.
 
 ```markdown
 # <NN>: <Title>
 
-**Delivers:** <the observable behaviour>
+**Effort:** <effort>
+**Task type:** feature
+**Base commit:** <commit-sha>
 
-**Blocked by:** <NN titles> | None, can start now
+**Delivers:** <observable behavior>
 
-**Files:** <where the work happens>
+**Blocked by:** None | <NN>, <effort>/<NN>
+**Files:** <where work happens>
 
 **Read first:** <spec sections, glossary terms, files>
 
-**Check:** `<command>` → <the result that means it works>
+**Check:** `<command>` → <result that means it works>
 
 - [ ] <acceptance point>
 - [ ] <acceptance point>
 ```
 
-Rules for what goes in: behaviour and checks, not code. No snippets except when a
-snippet carries a decision prose cannot (a schema, a state machine, a type).
-Never paste a file path into a task if the file is likely to move before the task
-runs; name the module instead.
+If `.workflow/efforts/<effort>.md` doesn't exist, run `workflow effort create <effort>` and fill in goal, scope, success criteria and priority from the spec.
 
-Do not create a task for work nobody asked for. If a task exists only because the
-plan looks tidier with it, drop it.
+Then run `workflow validate`. Fix every error in the task files before handing off.
 
 ### 5. Hand off
 
-Report the list with what can start now and what runs in parallel. Each task is
-built in a fresh session by reading its own file plus the spec sections it names;
-nobody should need the conversation that produced it. If a task would need that
-conversation, it is missing something; fix the task file now.
+Report list with:
+- What can start now
+- What runs in parallel (truly independent vs needs coordination)
+- Recommended merge order if conflicts likely
 
-Build them with `flow-implement`, one task per session. Independent tasks can run
-in parallel sessions; a task whose `Blocked by` is not done cannot start.
+Each task built in fresh session by reading its own file plus spec sections it
+names; nobody should need conversation that produced it. If task would need that
+conversation, it's missing something; fix task file now.
 
-A task that is genuinely exploratory rather than buildable is a decision task: its
-job is to settle a question, and it produces an answer written back into the spec,
-not code. Mark it as one so nobody tries to build it.
+Build with `flow-implement`, one per session. Independent tasks run in parallel only in separate worktrees/directories; branch in same working tree is not isolation. Task can't start until all blockers are finished: their files sit under `.workflow/done/<effort>/` in committed HEAD or in the branch the dependent task uses. An uncommitted done file doesn't count. `workflow next` applies the same rule, so an archived blocker stops blocking without editing the dependent task's `Blocked by`.
+
+When task finishes, `flow-implement` archives to `.workflow/done/<effort>/` and commits code, docs, and archive move together.
+
+Genuinely exploratory task is decision task: settles question, produces answer written back into spec, not code. Mark it so nobody tries to build it.

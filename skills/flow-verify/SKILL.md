@@ -1,93 +1,78 @@
 ---
 name: flow-verify
 description: >-
-  Review a change on three axes at once: does it do what was asked, is the code
-  any good, and did the work follow this project's process. Use before merging,
-  when the user says "review this", "check my work", "did I miss anything",
-  "review since main", or when flow-implement calls it after building a task.
+  Review change across three checks using two agent roles: built as asked, code
+  quality, process followed. Use before merging or when user says "review this".
 ---
 
 # Flow: Verify
 
-Read `.workflow/CONVENTIONS.md` first (§2 for where things live).
+Read `.workflow/CONVENTIONS.md` §2 first.
 
-Three separate reviews of the same change, run as parallel subagents so their
-findings do not contaminate each other, then reported side by side.
+Three checks across two agent roles: `workflow-reviewer` covers what-was-asked and
+code-quality; `workflow-process` covers process adherence.
 
-They are separate on purpose. Code can follow every convention and build the wrong
-thing, or build exactly the right thing in a way nobody can maintain, or be
-perfectly good work that skipped the evidence this project agreed to produce. A
-change that fails one axis has failed; do not average the three into a verdict.
+This is the review behind `flow-implement`'s `standard` level. `quick` skips it;
+`thorough` runs it and then `flow-architect`.
 
-## 1. Pin the comparison point
+## 1. Pin comparison point
 
-Whatever the user named: a commit, a branch, a tag. If they named nothing, ask
-once. Capture the command now and reuse it everywhere:
+When called from `flow-implement`: comparison point is task's exact Base commit recorded before implementation. Falling back to `main` strictly forbidden.
 
+Standalone review invoked by user: use whatever user named (commit, branch, tag). If nothing named, default to `main` (or `origin/HEAD` if no `main`), say you assumed it, let them correct.
+
+Capture diff commands now, reuse everywhere:
 ```sh
-git diff <point>...HEAD      # three dots: compares against the merge base
-git log <point>..HEAD --oneline
+git diff <point>                          # working tree vs comparison point
+git diff <point>...HEAD                   # committed changes since point
+git diff HEAD                             # uncommitted vs HEAD
+git ls-files --others --exclude-standard  # untracked
+git log <point>..HEAD --oneline           # commit history
 ```
 
-Check the reference resolves and the diff is not empty before spawning anything.
-An empty diff or a bad reference should fail here, not inside three subagents.
+Check comparison reference resolves to valid commit and combined change set (committed, staged, unstaged, untracked) is non-empty before spawning. When called from `flow-implement`, committed changes since baseline optional (work typically staged/unstaged before task commit). Final evaluated diff must be non-empty. Empty change set or bad baseline fails here, not inside review agents.
 
 ## 2. Gather what each axis needs
 
-**Axis 1, built as asked** needs the source of truth: the spec, the task file, or
-the issue. Look in commit messages, `.workflow/specs/`, `.workflow/tasks/`, or a
-path the user gave. If there is none, run this axis as "no spec available" rather
-than inventing requirements.
+**Axis 1, built as asked** needs source of truth: spec, task file, or issue. Look in commit messages, `.workflow/specs/`, `.workflow/tasks/`, or path user gave. If none, run axis as "no spec available" rather than inventing requirements.
 
-**Axis 2, code quality** needs the project's standards: `.workflow/standards.md`,
-plus whatever the repo already has (`AGENTS.md`, `CONTRIBUTING.md`, lint config).
+**Axis 2, code quality** needs project standards: `.workflow/standards.md`, plus repo files (`AGENTS.md`, `CONTRIBUTING.md`, lint config).
 
-**Axis 3, process** needs `.workflow/standards.md` and `.workflow/decisions.md`:
-what this project agreed to do, and what was decided along the way.
+**Axis 3, process** needs `.workflow/standards.md` and `.workflow/decisions.md`: what project agreed to do, what was decided along way.
 
-## 3. Spawn the review agents
+## 3. Spawn review agents
 
-Use the project's review agents, not a general worker. They are read-only, they
-have their own briefs, and they will not start editing your files.
+Two agent roles performing three checks: `workflow-reviewer` covers built-as-asked and code-quality; `workflow-process` covers process.
 
-| Axis | Agent | Needs |
+| Check / Axis | Agent Role | Needs |
 | --- | --- | --- |
-| Built as asked, and code quality | `workflow-reviewer` | the diff command, the commit list, the spec or task text, `.workflow/standards.md` |
-| Process followed | `workflow-process` | the diff command, the commit list, `.workflow/` |
-| Security, when it applies | `security-reviewer` | the diff command, the commit list |
+| 1. Built as asked | `workflow-reviewer` | diff commands, untracked files, commit list, spec or task text |
+| 2. Code quality | `workflow-reviewer` | diff commands, untracked files, commit list, `.workflow/standards.md`, repo conventions |
+| 3. Process followed | `workflow-process` | diff commands, untracked files, commit list, `.workflow/` |
 
-Give each one the diff command and commit list in its task. They run the diff
-themselves.
+Two subagent invocations enough. Give each agent diff commands, untracked file list, commit list in its task. They run commands themselves.
 
-The security pass is conditional: run it when the diff touches authentication,
-authorisation, input that reaches a query, a shell, or a filesystem path, secrets,
-cryptography, or a trust boundary in either direction. Say explicitly whether you
-ran it, so nobody assumes it happened.
-
-If those agents are not available in this harness, fall back to a general-purpose
-subagent, and paste the relevant brief into its task: for the reviewer, the
-standards file and the change; for the process check, the five things it must
-look at (evidence, stale documents, decisions, leftovers, scope). Say in the
-report that you fell back.
+If agents not available (harness-specific agent directory, project may not have set up for yours), fall back to general-purpose subagent and paste relevant brief into task. Briefs in `.agents/agents/workflow-reviewer.md` and `.agents/agents/workflow-process.md`. Say in report you fell back.
 
 ## 4. Report
 
-One section per axis, findings as the agent wrote them, lightly cleaned. Then one
-line per axis: how many findings, and the worst one *within that axis*. Never a
-single overall verdict across axes.
+Report each axis with explicit status:
+- `pass`: all checks succeeded, no blocking issues
+- `blocked`: one or more blocking findings (correctness bug, missing deliverable, broken invariant, unrecorded substantial decision)
+- `not-run`: axis couldn't be evaluated (missing baseline or prerequisite)
 
-A clean axis is information: say so in its section rather than leaving it blank.
+One section per axis, findings as agent wrote them, lightly cleaned. Then one line per axis with status, how many findings, worst one *within that axis*. Never single overall verdict averaged across axes.
 
-End with the honest one-liner: is this ready, and if not, what is the shortest
-path to it being ready.
+Clean axis is information: mark `pass` and state that rather than leaving blank.
+
+End with honest one-liner: is this ready, if not what's shortest path. If any axis `blocked` or `not-run`, change **not ready**. Evaluated diff must be non-empty.
+
+Final evaluated diff must match change being released. If review fixes alter scope, update task or rerun affected axis rather than silently committing different change.
 
 ## 5. Then what
 
-Fix the findings, or hand them to the user. A finding the user rejects gets one
-line in `.workflow/decisions.md` so the next review does not raise it again.
+Fix findings or hand to user. Finding user rejects gets one complete decision entry in `.workflow/decisions.md` so next review doesn't raise again.
 
-Do not re-run the whole review after fixing a finding unless asked. Check the
-specific thing that was wrong.
+Don't re-run whole review after fixing unless asked. Check specific thing that was wrong.
 
-When `flow-implement` called this, go back there for the remaining steps: update
-the documents the change made stale, commit, and archive the task.
+When `flow-implement` called this, return to `flow-implement` for final steps: archive task to `.workflow/done/<effort>/` and commit code, docs, archive move together.

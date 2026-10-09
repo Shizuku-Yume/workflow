@@ -27,6 +27,8 @@ and the easiest to miss.
 exists. Report requirements that are missing or half-done, behaviour nobody asked
 for, and anything that looks done but would not survive being used.
 
+If no spec or task file exists, evaluate whether the change is internally consistent and self-documenting: clear commit messages, sensible boundaries, obvious intent from the code. Do not flag the absence of a spec as a finding, and do not invent requirements to judge against.
+
 **Is the code maintainable.** For each thing you report, name the specific
 problem in one sentence: this name does not say what the function does; this rule
 appears in three places and will drift; this abstraction has one implementation
@@ -52,4 +54,6 @@ Rank by what would actually hurt: a wrong answer in production first, then a bug
 waiting for the right input, then maintainability. Do not pad. If the change is
 in good shape, say so in one line and stop.
 
-Under 400 words. No preamble, no restating the request, no closing summary.
+Be concise. Match report length to findings: clean change gets one line, complex
+change with issues gets detail. No preamble, no restating the request, no closing
+summary.

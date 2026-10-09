@@ -11,14 +11,15 @@ conversation is a name that will drift.
 ## Format
 
 ```markdown
-**Term**: what it means, in one sentence, ideally naming where it shows up in the
-code.
-_Avoid_: the words that mean the same thing but should not be used.
+- **Term**: what it means, in one sentence, ideally naming where it shows up in the
+  code.
+- _Avoid_: words that mean the same thing but should not be used (optional; omit if no synonyms exist).
 ```
 
-The `Avoid` line is doing real work. "Order" and "Purchase" being two names for
-one thing is the most common source of confusion in a codebase, and the cheapest
-to fix.
+The `Avoid` line does real work when it exists. "Order" and "Purchase" being two
+names for one thing is a common source of confusion. But if a concept has no
+competing names, omit the line rather than inventing fake synonyms.
+
 
 ## Terms
 

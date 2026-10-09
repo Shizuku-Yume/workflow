@@ -1,0 +1,307 @@
+#!/usr/bin/env bash
+# workflow-effort - discover and manage effort lifecycles.
+set -euo pipefail
+KIT_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/workflow-lib.bash"
+source "$KIT_LIB"
+
+usage() {
+  cat <<'EOF'
+workflow effort - manage effort lifecycle
+
+Usage:
+  workflow effort list [--archived]
+  workflow effort status SLUG
+  workflow effort create SLUG
+  workflow effort rename OLD NEW
+  workflow effort complete SLUG
+
+Options:
+  --archived  Include completed efforts in list (active efforts are shown by default).
+  --no-color  Disable terminal colors.
+  --help      Show this help.
+
+Slugs use lowercase letters and numbers separated by single hyphens: api-v2.
+Tasks are discovered recursively, including archived tasks. Unqualified task
+blockers refer to the same effort; use other-effort/NN for cross-effort blockers.
+
+Lifecycle examples:
+  workflow effort create api-v2
+  workflow effort list
+  workflow effort status api-v2
+  workflow effort rename api-v2 public-api
+  workflow effort complete public-api
+  workflow effort list --archived
+EOF
+}
+error() { printf 'Error: %s\n' "$*" >&2; exit 1; }
+usage_error() { printf 'Error: %s (try --help)\n' "$*" >&2; exit 2; }
+valid_slug() { [[ "$1" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]]; }
+check_slug() {
+  valid_slug "$1" || usage_error "invalid effort slug '$1'; use lowercase letters, numbers, and single hyphens (example: api-v2)"
+}
+
+ARCHIVED=0
+NO_COLOR=0
+ARGS=()
+for arg in "$@"; do
+  case "$arg" in
+    --help|-h) usage; exit 0 ;;
+    --archived) ARCHIVED=1 ;;
+    --no-color) NO_COLOR=1 ;;
+    *) ARGS+=("$arg") ;;
+  esac
+done
+# Validate options after help scanning so `--bad --help` still displays help.
+for arg in "${ARGS[@]}"; do case "$arg" in --*) usage_error "unknown option: $arg";; esac; done
+COMMAND=${ARGS[0]:-list}
+if [ "$COMMAND" = help ]; then usage; exit 0; fi
+case "$COMMAND" in
+  list) [ "${#ARGS[@]}" -le 1 ] || usage_error 'list takes no slug' ;;
+  status|create|complete) [ "${#ARGS[@]}" -eq 2 ] || usage_error "$COMMAND requires exactly one effort slug"; check_slug "${ARGS[1]}" ;;
+  rename) [ "${#ARGS[@]}" -eq 3 ] || usage_error 'rename requires old and new effort slugs'; check_slug "${ARGS[1]}"; check_slug "${ARGS[2]}" ;;
+  *) usage_error "unknown command: $COMMAND" ;;
+esac
+[ "$ARCHIVED" -eq 0 ] || [ "$COMMAND" = list ] || usage_error '--archived is only supported by list'
+
+ROOT="$(wf_project_root)"
+[ -d "$ROOT/.workflow" ] || error "missing .workflow directory in $ROOT; run 'workflow init' first"
+EFFORTS_DIR="$ROOT/.workflow/efforts"
+TASKS_DIR="$ROOT/.workflow/tasks"
+DONE_DIR="$ROOT/.workflow/done"
+for directory in "$EFFORTS_DIR" "$TASKS_DIR" "$DONE_DIR"; do
+  [ ! -e "$directory" ] || [ -d "$directory" ] || error "not a directory: $directory"
+done
+BOLD= RESET=
+if [ -t 1 ] && [ "$NO_COLOR" -eq 0 ]; then BOLD=$'\033[1m'; RESET=$'\033[0m'; fi
+
+# Metadata comes from the shared reader: plain, bold, bullet, and
+# case-insensitive fields, first occurrence, continuations joined.
+field() {
+  local key="${2,,}"
+  [ -r "$1" ] || error "cannot read metadata in $1"
+  wf_read_fields "$1"
+  printf '%s' "${WF_FIELD[$key]:-}"
+}
+normalize_id() {
+  wf_normalize_number "$1"
+  printf '%s' "$WF_NUMBER"
+}
+task_id() {
+  local name=${1##*/}
+  if [[ "$name" =~ ^([0-9]+)([-.]|$) ]]; then
+    normalize_id "${BASH_REMATCH[1]}"
+  else
+    wf_read_fields "$1"
+    printf '%s' "$WF_TITLE_NUMBER"
+  fi
+}
+
+ACTIVE_FILES=()
+DONE_FILES=()
+declare -A EFFORTS=() ACTIVE=() DONE=() ACTIVE_IDS=() DONE_IDS=() DEFINITIONS=()
+register_task() {
+  local file="$1" state="$2" effort id relative
+  id=$(task_id "$file")
+  effort=$(field "$file" Effort)
+  # Older archives omit Effort:, but numbered tasks still belong to their folder.
+  if [ -z "$effort" ] && [ "$state" = done ] && [ -n "$id" ]; then
+    relative=${file#"$DONE_DIR/"}; effort=${relative%%/*}
+  fi
+  [ -n "$effort" ] && [ "$effort" != none ] || return 0
+  if ! valid_slug "$effort"; then
+    printf "Warning: ignoring invalid effort slug '%s' in %s\n" "$effort" "$file" >&2
+    return 0
+  fi
+  EFFORTS["$effort"]=1
+  if [ "$state" = active ]; then
+    ACTIVE["$effort"]=$(( ${ACTIVE["$effort"]:-0} + 1 ))
+    [ -z "$id" ] || ACTIVE_IDS["$effort/$id"]=1
+  else
+    [ -n "$id" ] || return 0
+    DONE["$effort"]=$(( ${DONE["$effort"]:-0} + 1 ))
+    DONE_IDS["$effort/$id"]=1
+  fi
+}
+if [ -d "$TASKS_DIR" ]; then
+  while IFS= read -r -d '' file; do
+    ACTIVE_FILES+=("$file"); register_task "$file" active
+  done < <(find "$TASKS_DIR" -type f -name '*.md' -print0)
+fi
+if [ -d "$DONE_DIR" ]; then
+  while IFS= read -r -d '' file; do
+    DONE_FILES+=("$file")
+    [ "${file##*/}" = retrospective.md ] || register_task "$file" done
+  done < <(find "$DONE_DIR" -type f -name '*.md' -print0)
+fi
+if [ -d "$EFFORTS_DIR" ]; then
+  for file in "$EFFORTS_DIR"/*.md; do
+    [ -f "$file" ] || continue
+    effort=${file##*/}; effort=${effort%.md}
+    valid_slug "$effort" || continue
+    EFFORTS["$effort"]=1; DEFINITIONS["$effort"]="$file"
+  done
+fi
+exists() { [ "${EFFORTS[$1]:-0}" -eq 1 ]; }
+completed() {
+  local effort="$1" status= active=${ACTIVE[$1]:-0} done=${DONE[$1]:-0}
+  if [ -n "${DEFINITIONS[$effort]:-}" ]; then status=$(field "${DEFINITIONS[$effort]}" Status); fi
+  # Active tasks always remain visible, even if a definition is stale.
+  [ "$active" -eq 0 ] || return 1
+  case "$status" in complete|completed|archived) return 0 ;; esac
+  [ "$done" -gt 0 ]
+}
+
+# Count a task once if any blocker remains unresolved. Completed references are ready.
+task_blocked() {
+  local file="$1" effort="$2" blockers piece target id seen=0
+  local none_re='^none([,.]?[[:space:]]*can[[:space:]]+start[[:space:]]+now)?[.]?$'
+  local reference_re='^(([a-z0-9]+(-[a-z0-9]+)*)/)?([0-9]+)($|[[:space:].:;(])'
+  blockers=$(field "$file" 'Blocked by')
+  [[ "${blockers,,}" =~ $none_re ]] && return 1
+  blockers=${blockers//\`/}; blockers=${blockers//\[/}; blockers=${blockers//\]/}
+  local refs=()
+  IFS=',' read -r -a refs <<< "$blockers"
+  for piece in "${refs[@]}"; do
+    piece=${piece#"${piece%%[![:space:]]*}"}; piece=${piece#\#}
+    if [[ "$piece" =~ $reference_re ]]; then
+      target=${BASH_REMATCH[2]:-$effort}; id=${BASH_REMATCH[4]}; seen=1
+    elif [ "$seen" -eq 1 ] && [ -n "$piece" ]; then
+      continue # A comma can be part of the preceding task title.
+    else
+      return 0
+    fi
+    id=$(normalize_id "$id")
+    [ "${ACTIVE_IDS["$target/$id"]:-0}" -eq 0 ] || return 0
+    [ "${DONE_IDS["$target/$id"]:-0}" -eq 1 ] || return 0
+  done
+  [ "$seen" -eq 0 ]
+}
+
+list_efforts() {
+  local effort active done found=0
+  printf '%sEfforts:%s\n\n' "$BOLD" "$RESET"
+  while IFS= read -r effort; do
+    [ -n "$effort" ] || continue
+    if [ "$ARCHIVED" -eq 0 ] && completed "$effort"; then continue; fi
+    found=1; active=${ACTIVE[$effort]:-0}; done=${DONE[$effort]:-0}
+    printf '%s%s%s\n   Tasks: %d active, %d done, %d total\n\n' "$BOLD" "$effort" "$RESET" "$active" "$done" "$((active + done))"
+  done < <(printf '%s\n' "${!EFFORTS[@]}" | sort)
+  [ "$found" -eq 1 ] || printf 'No efforts found%s\n' "$([ "$ARCHIVED" -eq 0 ] && printf ' (use --archived to include completed efforts)' || true)"
+}
+show_status() {
+  local effort="$1" active=${ACTIVE[$1]:-0} done=${DONE[$1]:-0} total progress=0 filled bar file value
+  local blocked_files=()
+  exists "$effort" || error "effort '$effort' not found"
+  total=$((active + done))
+  printf '%sEffort: %s%s\n\n' "$BOLD" "$effort" "$RESET"
+  if [ -n "${DEFINITIONS[$effort]:-}" ]; then
+    for key in Status Priority Started; do
+      value=$(field "${DEFINITIONS[$effort]}" "$key")
+      [ -z "$value" ] || printf '%s: %s\n' "$key" "$value"
+    done
+    awk '/^## Goal([ \t]|$)/ {goal=1; next} /^## / {goal=0} goal && /[^ \t\r]/ {print "Goal: " $0; exit}' "${DEFINITIONS[$effort]}"
+    echo
+  fi
+  for file in "${ACTIVE_FILES[@]}"; do
+    [ "$(field "$file" Effort)" = "$effort" ] || continue
+    if task_blocked "$file" "$effort"; then blocked_files+=("$file"); fi
+  done
+  [ "$total" -eq 0 ] || progress=$((done * 100 / total))
+  filled=$((progress * 20 / 100))
+  printf -v bar '%*s' "$filled" ''; bar=${bar// /#}
+  printf -v value '%*s' "$((20-filled))" ''; bar+=${value// /-}
+  printf 'Tasks:\n  Total: %d\n  Active: %d\n  Done: %d\n  Blocked: %d\n  Progress: [%s] %d%%\n' "$total" "$active" "$done" "${#blocked_files[@]}" "$bar" "$progress"
+  if [ "${#blocked_files[@]}" -gt 0 ]; then
+    printf '\nBlocked tasks:\n'
+    for file in "${blocked_files[@]}"; do printf '  %s (Blocked by: %s)\n' "${file##*/}" "$(field "$file" 'Blocked by')"; done
+  fi
+  if [ -f "$DONE_DIR/$effort/retrospective.md" ]; then printf '\nRetrospective: %s\n' "$DONE_DIR/$effort/retrospective.md"; fi
+}
+create_effort() {
+  local effort="$1" file="$EFFORTS_DIR/$1.md"
+  exists "$effort" && error "effort '$effort' already exists"
+  mkdir -p "$EFFORTS_DIR" || error 'cannot create efforts directory'
+  cat > "$file" <<EOF || error "cannot create effort definition: $file"
+# Effort: $effort
+
+Priority: normal
+Status: planning
+Started: $(date -u '+%Y-%m-%dT%H:%M:%SZ')
+
+## Goal
+
+## Scope
+
+## Success Criteria
+
+## Dependencies
+
+## Notes
+EOF
+  printf 'Created effort definition: %s\n' "$file"
+}
+
+TEMP_FILE=
+trap '[ -z "$TEMP_FILE" ] || rm -f -- "$TEMP_FILE"' EXIT
+rewrite() {
+  local file="$1" old="$2" new="$3" mode="$4"
+  TEMP_FILE=$(mktemp "${file}.XXXXXX") || error "cannot update $file"
+  cp -p -- "$file" "$TEMP_FILE" || error "cannot preserve permissions for $file"
+  awk -v old="$old" -v new="$new" -v mode="$mode" '
+    { line=$0; cr=""; if (sub(/\r$/, "", line)) cr="\r"
+      if (line ~ /^[ \t]*(```|~~~)/) {code=!code; print line cr; next}
+      if (code) {print line cr; next}
+      if (mode=="complete" && match(tolower(line),/^[ \t]*([-*][ \t]+)?(\*\*)?status(\*\*)?:(\*\*)?[ \t]*/)) {
+        print substr(line,1,RLENGTH) "complete" cr; seen=1; next
+      }
+      if (mode=="rename") {
+        if (match(tolower(line),/^[ \t]*([-*][ \t]+)?(\*\*)?effort(\*\*)?:(\*\*)?[ \t]*/)) {
+          prefix=substr(line,1,RLENGTH); value=substr(line,RLENGTH+1); trimmed=value; sub(/[ \t]+$/, "", trimmed)
+          if (trimmed==old) line=prefix new
+        } else if (line == "# Effort: " old) line="# Effort: " new
+        if (tolower(line) ~ /^[ \t]*([-*][ \t]+)?(\*\*)?blocked by(\*\*)?:(\*\*)?/) {
+          pattern="(^|[[:space:],`\\[#])" old "/"
+          while (match(line,pattern)) {
+            before=substr(line,1,RSTART-1); matchtext=substr(line,RSTART,RLENGTH)
+            sub(old "/$",new "/",matchtext); line=before matchtext substr(line,RSTART+RLENGTH)
+          }
+        }
+      }
+      print line cr
+    }
+    END {if(mode=="complete" && !seen) print "Status: complete" cr}' "$file" > "$TEMP_FILE" || error "cannot update $file"
+  if cmp -s "$file" "$TEMP_FILE"; then rm -f -- "$TEMP_FILE"; else
+    mv -- "$TEMP_FILE" "$file" || error "cannot replace $file"
+  fi
+  TEMP_FILE=
+}
+rename_effort() {
+  local old="$1" new="$2" file
+  exists "$old" || error "effort '$old' not found"
+  [ "$old" != "$new" ] || usage_error 'old and new slugs are identical'
+  exists "$new" && error "effort '$new' already exists"
+  [ ! -e "$DONE_DIR/$new" ] && [ ! -e "$EFFORTS_DIR/$new.md" ] || error "rename destination '$new' already exists"
+  for file in "${ACTIVE_FILES[@]}" "${DONE_FILES[@]}"; do rewrite "$file" "$old" "$new" rename; done
+  if [ -n "${DEFINITIONS[$old]:-}" ]; then
+    rewrite "${DEFINITIONS[$old]}" "$old" "$new" rename
+    mv -- "${DEFINITIONS[$old]}" "$EFFORTS_DIR/$new.md" || error 'cannot rename effort definition'
+  fi
+  if [ -d "$DONE_DIR/$old" ]; then mv -- "$DONE_DIR/$old" "$DONE_DIR/$new" || error 'cannot rename effort archive'; fi
+  printf "Renamed effort '%s' to '%s'\n" "$old" "$new"
+}
+complete_effort() {
+  local effort="$1"
+  exists "$effort" || error "effort '$effort' not found"
+  [ "${ACTIVE[$effort]:-0}" -eq 0 ] || error "effort '$effort' has ${ACTIVE[$effort]} active tasks; complete them first"
+  [ -n "${DEFINITIONS[$effort]:-}" ] || error "no effort definition for '$effort'"
+  rewrite "${DEFINITIONS[$effort]}" '' '' complete
+  printf "Marked effort '%s' as complete\nRetrospective: %s/%s/retrospective.md\n" "$effort" "$DONE_DIR" "$effort"
+}
+
+case "$COMMAND" in
+  list) list_efforts ;;
+  status) show_status "${ARGS[1]}" ;;
+  create) create_effort "${ARGS[1]}" ;;
+  rename) rename_effort "${ARGS[1]}" "${ARGS[2]}" ;;
+  complete) complete_effort "${ARGS[1]}" ;;
+esac
