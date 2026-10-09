@@ -1,0 +1,919 @@
+#!/usr/bin/env python3
+"""workflow-core.py - `validate` and `next` for the workflow toolkit.
+
+Called by bin/workflow as `python3 workflow-core.py validate|next ...`.
+Python 3.8+, standard library only. Reads task files under .workflow/tasks/
+and .workflow/done/, specs under .workflow/specs/, and .workflow/decisions.md.
+
+Metadata grammar (CONVENTIONS §2): fields are `Name: value` lines, plain,
+bulleted (`- Name: value`) or bolded (`**Name:** value`); fenced code blocks
+and HTML comments are ignored; indented or bulleted lines continue the
+previous field (`Blocked by` joins with ", ", other fields with a space);
+blank lines, headings, checklists and new fields end a continuation.
+`## Goal` and `## Check` headings start sections whose lines join the same
+way. The first occurrence of a field wins; later ones are duplicates.
+"""
+
+import json
+import os
+import re
+import subprocess
+import sys
+
+VERSION = "2.5.0"
+
+KNOWN_FIELDS = {
+    "task", "effort", "task type", "base commit", "delivers", "blocked by",
+    "files", "read first", "check", "done when", "priority", "status",
+    "started", "finished", "question", "time box", "goal", "scope", "spec",
+    "dependencies", "notes",
+}
+FIELD_ALIASES = {"base": "base commit", "type": "task type"}
+TASK_TYPES = ("feature", "bugfix", "spike", "refactor")
+PRIORITY_RANK = {"critical": 0, "urgent": 0, "high": 1, "normal": 2, "low": 3}
+DECISION_FIELDS = ("Decided", "Instead of", "Because", "Mine", "Revisit when")
+
+SLUG_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
+TASK_FILE_RE = re.compile(r"^([0-9]+)-.+\.md$")
+FENCE_RE = re.compile(r"^\s*(```|~~~)")
+TITLE_RE = re.compile(r"^#\s+([0-9]+):\s*(.*)$")
+H2_RE = re.compile(r"^##\s+(.*)$")
+CHECKLIST_RE = re.compile(r"^[-*]\s+\[[\sxX]\]")
+BULLET_RE = re.compile(r"^[-*]\s+(.*)$")
+BOLD_FIELD_RE = re.compile(r"^\*\*([^*]+)\*\*\s*:?\s*(.*)$")
+PLAIN_FIELD_RE = re.compile(r"^([A-Za-z][A-Za-z0-9_. -]*):\s*(.*)$")
+NONE_RE = re.compile(r"^none(\s*,\s*can\s+start\s+now)?$")
+QUALIFIED_REF_RE = re.compile(r"^([a-z0-9]+(-[a-z0-9]+)*)/([0-9]+)$")
+BARE_REF_RE = re.compile(r"^([0-9]+)$")
+
+
+# ---------------------------------------------------------------- helpers
+
+def project_root():
+    try:
+        out = subprocess.run(["git", "rev-parse", "--show-toplevel"],
+                             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                             universal_newlines=True, check=False)
+        if out.returncode == 0 and out.stdout.strip():
+            return out.stdout.strip()
+    except OSError:
+        pass
+    return os.getcwd()
+
+
+def read_lines(path):
+    """Lines of a file with the newline and one trailing CR removed."""
+    with open(path, "r", encoding="utf-8", errors="replace", newline="") as fh:
+        text = fh.read()
+    lines = text.split("\n")
+    if lines and lines[-1] == "":
+        lines.pop()
+    return [line[:-1] if line.endswith("\r") else line for line in lines]
+
+
+def has_crlf(path):
+    """Line number of the first CRLF line, or 0."""
+    with open(path, "rb") as fh:
+        for number, raw in enumerate(fh, 1):
+            if raw.endswith(b"\r\n") or raw.endswith(b"\r"):
+                return number
+    return 0
+
+
+def norm_number(value):
+    stripped = value.lstrip("0")
+    return stripped if stripped else "0"
+
+
+def task_ref(effort, number):
+    return "%s/%02d" % (effort, int(number))
+
+
+def task_files(directory):
+    """Every Markdown file under a task directory, at any depth, sorted."""
+    found = []
+    if not os.path.isdir(directory):
+        return found
+    for base, dirs, files in os.walk(directory, followlinks=False):
+        for name in files:
+            if name.endswith(".md"):
+                found.append(os.path.join(base, name))
+        for name in dirs:
+            full = os.path.join(base, name)
+            if os.path.islink(full) and name.endswith(".md") and os.path.isfile(full):
+                found.append(full)
+    return sorted(found, key=lambda p: p.encode("utf-8", "surrogateescape"))
+
+
+def dir_effort(base, path):
+    rel = os.path.relpath(path, base).replace(os.sep, "/")
+    return rel.split("/", 1)[0] if "/" in rel else ""
+
+
+def strip_comments(line, in_comment):
+    """Remove HTML comment text; returns (line, in_comment)."""
+    while True:
+        if in_comment:
+            if "-->" in line:
+                line = line.split("-->", 1)[1]
+                in_comment = False
+            else:
+                return "", True
+        elif "<!--" in line:
+            before, after = line.split("<!--", 1)
+            if "-->" in after:
+                line = before + after.split("-->", 1)[1]
+            else:
+                return before, True
+        else:
+            return line, False
+
+
+class Meta(object):
+    """Fields of one task or spec file."""
+
+    def __init__(self):
+        self.field = {}
+        self.line = {}
+        self.dups = []          # (line, name)
+        self.title = ""
+        self.title_number = ""
+
+    def get(self, name, default=""):
+        return self.field.get(name, default)
+
+
+def read_fields(path, lines=None):
+    meta = Meta()
+    if lines is None:
+        lines = read_lines(path)
+    in_fence = in_comment = False
+    current = kind = None
+    section_content = False
+    title_seen = False
+    sections = {}
+    for lineno, line in enumerate(lines, 1):
+        line, in_comment = strip_comments(line, in_comment)
+        if FENCE_RE.match(line):
+            in_fence = not in_fence
+            current = kind = None
+            continue
+        if in_fence:
+            continue
+        rawline = line
+        line = line.strip()
+        if not line:
+            if kind and (kind == "field" or section_content):
+                current = kind = None
+            continue
+        m = TITLE_RE.match(line)
+        if m:
+            if not title_seen:
+                title_seen = True
+                meta.title = m.group(2).strip()
+                meta.title_number = norm_number(m.group(1))
+            current = kind = None
+            continue
+        m = H2_RE.match(line)
+        if m:
+            heading = m.group(1).lower()
+            if heading.endswith(":"):
+                heading = heading[:-1]
+            heading = heading.strip()
+            current = kind = None
+            if heading in ("goal", "check"):
+                current, kind, section_content = heading, "section", False
+            continue
+        if line.startswith("#") or CHECKLIST_RE.match(line):
+            current = kind = None
+            continue
+        clean = line
+        m = BULLET_RE.match(clean)
+        if m:
+            clean = m.group(1)
+        m = BOLD_FIELD_RE.match(clean) or PLAIN_FIELD_RE.match(clean)
+        if m:
+            key = m.group(1).lower()
+            if key.endswith(":"):
+                key = key[:-1]
+            key = FIELD_ALIASES.get(key.strip(), key.strip())
+            if key in KNOWN_FIELDS:
+                if key not in meta.line:
+                    meta.field[key] = m.group(2).strip()
+                    meta.line[key] = lineno
+                    current, kind = key, "field"
+                else:
+                    meta.dups.append((lineno, key))
+                    current, kind = None, "dup"
+                continue
+            current = kind = None
+            continue
+        if kind == "section":
+            if current not in meta.line:
+                old = meta.field.get(current, "")
+                meta.field[current] = (old + " " + line) if old else line
+            else:
+                old = sections.get(current, "")
+                sections[current] = (old + " " + line) if old else line
+            section_content = True
+            continue
+        if kind in ("field", "dup") and (rawline[:1].isspace() or BULLET_RE.match(line)):
+            if kind == "field":
+                old = meta.field.get(current, "")
+                sep = ", " if current == "blocked by" else " "
+                meta.field[current] = (old + sep + clean) if old else clean
+            continue
+        current = kind = None
+    if not meta.field.get("check") and sections.get("check"):
+        meta.field["check"] = sections["check"]
+    return meta
+
+
+class BlockerError(Exception):
+    def __init__(self, token, trailing=False):
+        Exception.__init__(self, token)
+        self.token = token
+        self.trailing = trailing
+
+
+def parse_blockers(raw):
+    """[(normalized ref, raw token)] for a Blocked by value; raises BlockerError."""
+    raw = raw.strip()
+    if NONE_RE.match(raw.lower()):
+        return []
+    if not raw:
+        raise BlockerError("")
+    if raw.endswith(","):
+        raise BlockerError("", trailing=True)
+    refs = []
+    for token in raw.split(","):
+        token = token.strip()
+        m = QUALIFIED_REF_RE.match(token)
+        if m:
+            refs.append((m.group(1) + "/" + norm_number(m.group(3)), token))
+            continue
+        m = BARE_REF_RE.match(token)
+        if m:
+            refs.append((norm_number(m.group(1)), token))
+            continue
+        raise BlockerError(token)
+    return refs
+
+
+def resolve_ref(ref, effort):
+    if "/" in ref:
+        ref_effort, number = ref.split("/", 1)
+        return task_ref(ref_effort, number)
+    return task_ref(effort, ref)
+
+
+def colors_enabled(no_color_flag):
+    return (not no_color_flag and not os.environ.get("NO_COLOR")
+            and sys.stdout.isatty())
+
+
+def usage_error(message, usage):
+    sys.stderr.write("Error: %s\n" % message)
+    if usage:
+        sys.stderr.write(usage)
+    return 2
+
+
+def parse_common(args, usage, allowed):
+    """Parse --format/--no-color/--strict; returns (options, exit code or None)."""
+    opts = {"format": "text", "no_color": False, "strict": False}
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        if arg in ("-h", "--help"):
+            sys.stdout.write(usage)
+            return opts, 0
+        if arg == "--no-color":
+            opts["no_color"] = True
+        elif arg == "--strict" and "strict" in allowed:
+            opts["strict"] = True
+        elif arg == "--format":
+            if i + 1 >= len(args):
+                return opts, usage_error("--format requires text or json", "")
+            opts["format"] = args[i + 1]
+            i += 1
+        elif arg.startswith("--format="):
+            opts["format"] = arg[len("--format="):]
+        else:
+            return opts, usage_error("unknown option: %s" % arg, usage)
+        i += 1
+    if opts["format"] not in ("text", "json"):
+        return opts, usage_error("invalid format: %s (use text or json)" % opts["format"], "")
+    return opts, None
+
+
+# --------------------------------------------------------------- validate
+
+VALIDATE_USAGE = """workflow validate - validate task files and the decision log
+
+Usage: workflow validate [--strict] [--format text|json] [--no-color]
+Checks required Task, Effort, Check and Blocked by fields; effort slugs;
+that a task in tasks/<effort>/ says the same Effort; that the heading number
+matches the filename; blockers; Base commit refs; task-number collisions within
+efforts; dependency cycles; and decision format. Checks active and completed
+task files; problems in completed files warn instead of failing.
+
+  --strict     Treat warnings as errors
+  --format F   Output text (default) or JSON
+  --no-color   Disable color output
+  --help       Show help
+
+Exit: 0 = valid, 1 = warnings, 2 = errors (including usage errors).
+"""
+
+
+class Validator(object):
+    def __init__(self, root):
+        self.root = root
+        self.wf = os.path.join(root, ".workflow")
+        self.issues = []
+        self.errors = self.warnings = 0
+        self.files = []
+        self.meta = {}
+        self.number = {}
+        self.effort = {}
+        self.dir_effort = {}
+        self.index = {}
+        self.active = set()
+        self.done_dir = os.path.join(self.wf, "done") + os.sep
+        self.lines_cache = {}
+
+    def rel(self, path):
+        rel = os.path.relpath(path, self.root)
+        return rel.replace(os.sep, "/")
+
+    def issue(self, severity, path, line, message, suggestion):
+        if severity == "ERROR":
+            self.errors += 1
+        else:
+            self.warnings += 1
+        self.issues.append({"severity": severity, "file": self.rel(path),
+                            "line": int(line or 1), "message": message,
+                            "suggestion": suggestion})
+
+    def sev(self, path):
+        return "WARNING" if path.startswith(self.done_dir) else "ERROR"
+
+    def line_of(self, path, key):
+        return self.meta[path].line.get(key, 1)
+
+    def run(self):
+        if not os.path.isdir(self.wf):
+            self.issue("ERROR", self.wf, 1, "missing .workflow directory", "Run: workflow init")
+            return
+        if not os.path.isdir(os.path.join(self.wf, "tasks")):
+            self.issue("WARNING", os.path.join(self.wf, "tasks"), 1,
+                       "tasks directory is missing", "Run: workflow init")
+        self.collect()
+        self.check_required()
+        self.check_types_and_slugs()
+        self.check_layout()
+        self.check_collisions()
+        edges = self.check_blockers()
+        self.check_bases()
+        self.check_cycles(edges)
+        self.check_decisions()
+        self.check_line_endings()
+
+    def collect(self):
+        for sub in ("tasks", "done"):
+            directory = os.path.join(self.wf, sub)
+            for path in task_files(directory):
+                m = TASK_FILE_RE.match(os.path.basename(path))
+                if not m:
+                    continue
+                self.files.append(path)
+                self.number[path] = norm_number(m.group(1))
+                self.dir_effort[path] = dir_effort(directory, path)
+                meta = read_fields(path)
+                self.meta[path] = meta
+                for line, name in meta.dups:
+                    self.issue(self.sev(path), path, line, "duplicate %s field" % name,
+                               "Keep one %s field." % name)
+                self.effort[path] = meta.get("effort")
+                key = task_ref(self.effort[path], self.number[path])
+                self.index.setdefault(key, path)
+                if sub == "tasks":
+                    self.active.add(key)
+
+    def check_required(self):
+        for path in self.files:
+            meta = self.meta[path]
+            for name in ("Task", "Effort", "Check", "Blocked by"):
+                if name == "Task":
+                    value = meta.title or meta.get("task")
+                    line = 1 if meta.title else meta.line.get("task", 1)
+                else:
+                    key = name.lower()
+                    value = meta.get(key)
+                    line = meta.line.get(key, 1)
+                if not value:
+                    self.issue(self.sev(path), path, line,
+                               "missing or empty required %s field" % name,
+                               "Add a nonempty %s field (Task may be '# NN: title'; "
+                               "Check may be a section)." % name)
+
+    def check_types_and_slugs(self):
+        for path in self.files:
+            value = self.meta[path].get("task type")
+            if value and value not in TASK_TYPES:
+                self.issue(self.sev(path), path, self.line_of(path, "task type"),
+                           "invalid Task type '%s'" % value,
+                           "Use feature, bugfix, spike, or refactor.")
+            effort = self.effort[path]
+            if effort and not SLUG_RE.match(effort):
+                self.issue(self.sev(path), path, self.line_of(path, "effort"),
+                           "invalid effort slug '%s'" % effort,
+                           "Use lowercase letters, digits and hyphens.")
+
+    def check_layout(self):
+        for path in self.files:
+            directory, effort = self.dir_effort[path], self.effort[path]
+            if directory and effort and directory != effort:
+                self.issue(self.sev(path), path, self.line_of(path, "effort"),
+                           "task is under %s/ but its Effort is '%s'" % (directory, effort),
+                           "Move it to the %s/ directory or correct the Effort field." % effort)
+            title_number = self.meta[path].title_number
+            if title_number and title_number != self.number[path]:
+                self.issue(self.sev(path), path, 1,
+                           "heading number %s does not match filename number %s"
+                           % (title_number, self.number[path]),
+                           "Make the '# NN:' heading and the filename use the same number.")
+
+    def check_collisions(self):
+        seen = {}
+        for path in self.files:
+            key = task_ref(self.effort[path], self.number[path])
+            if key in seen:
+                self.issue("ERROR", path, 1,
+                           "task-number collision: %s also occurs in %s" % (key, self.rel(seen[key])),
+                           "Renumber one task and update its blocker references.")
+            else:
+                seen[key] = path
+
+    def check_blockers(self):
+        edges = {}
+        suggestion = "Use NN or effort/NN, comma-separated, or None."
+        for path in self.files:
+            blocked = self.meta[path].get("blocked by")
+            if not blocked:
+                continue
+            line = self.line_of(path, "blocked by")
+            key = task_ref(self.effort[path], self.number[path])
+            try:
+                refs = parse_blockers(blocked)
+            except BlockerError as exc:
+                if exc.trailing:
+                    self.issue(self.sev(path), path, line, "malformed blocker: trailing comma", suggestion)
+                else:
+                    self.issue(self.sev(path), path, line, "malformed blocker '%s'" % exc.token, suggestion)
+                continue
+            for ref, raw in refs:
+                target = resolve_ref(ref, self.effort[path])
+                if target not in self.index:
+                    self.issue(self.sev(path), path, line, "orphaned blocker '%s'" % raw,
+                               "Create task %s or correct the Blocked by reference." % target)
+                elif key in self.active and target in self.active:
+                    edges.setdefault(key, []).append(target)
+        return edges
+
+    def check_bases(self):
+        values = {}
+        for path in self.files:
+            value = self.meta[path].get("base commit").strip()
+            if value and value not in ("<commit-sha>", "not-started"):
+                values.setdefault(value, []).append(path)
+        if not values:
+            return
+        is_git = subprocess.run(["git", "-C", self.root, "rev-parse", "--git-dir"],
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
+        for value in sorted(values):
+            ok = False
+            if is_git:
+                ok = subprocess.run(["git", "-C", self.root, "rev-parse", "--verify", "--quiet",
+                                     "--end-of-options", value + "^{commit}"],
+                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
+            if not ok:
+                for path in values[value]:
+                    self.issue(self.sev(path), path, self.line_of(path, "base commit"),
+                               "invalid Base commit '%s'" % value,
+                               "Use an existing git commit ref, or <commit-sha> for drafts.")
+
+    def check_cycles(self, edges):
+        state = {}
+
+        def visit(node, path):
+            state[node] = 1
+            for target in edges.get(node, ()):
+                status = state.get(target, 0)
+                if status == 1:
+                    task = self.index[node]
+                    self.issue("ERROR", task, self.line_of(task, "blocked by"),
+                               "circular dependency: %s -> %s" % (" -> ".join(path), target),
+                               "Remove or change one blocker in the cycle.")
+                elif status == 0:
+                    visit(target, path + [target])
+            state[node] = 2
+
+        sys.setrecursionlimit(max(1000, len(self.active) * 4 + 100))
+        for node in sorted(self.active):
+            if state.get(node, 0) == 0:
+                visit(node, [node])
+
+    def check_decisions(self):
+        path = os.path.join(self.wf, "decisions.md")
+        if not os.path.isfile(path):
+            self.issue("WARNING", path, 1, "decision log is missing",
+                       "Create .workflow/decisions.md with ## Entries.")
+            return
+        for line, message, suggestion in decision_problems(read_lines(path)):
+            self.issue("ERROR", path, line, message, suggestion)
+
+    def check_line_endings(self):
+        candidates = list(self.files)
+        decisions = os.path.join(self.wf, "decisions.md")
+        if os.path.isfile(decisions):
+            candidates.append(decisions)
+        for path in candidates:
+            line = has_crlf(path)
+            if line:
+                self.issue("WARNING", path, line, "CRLF line endings",
+                           "Convert the file to LF line endings.")
+
+
+ISO_TIME_RE = re.compile(r"^[0-9-]+T[0-9][0-9]:[0-9][0-9](:[0-9][0-9](\.[0-9]+)?)?"
+                         r"(Z|[+-][0-9][0-9]:[0-9][0-9])?$")
+DATE_RE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
+DECISION_HEADING_RE = re.compile(r"^[^ \t]+[ \t]+-[ \t]+[^ \t]")
+DECISION_OUTSIDE_RE = re.compile(r"^[ \t]*-[ \t]+\*\*(Decided|Instead of|Because|Mine|Revisit when):")
+MINE_RE = re.compile(r"^(yes|no)([ \t.(]|$)")
+
+
+def valid_iso(value):
+    base = value.split("T", 1)[0]
+    if not DATE_RE.match(base):
+        return False
+    year, month, day = int(base[:4]), int(base[5:7]), int(base[8:10])
+    if month < 1 or month > 12:
+        return False
+    if month == 2:
+        days = 29 if (year % 4 == 0 and (year % 100 != 0 or year % 400 == 0)) else 28
+    elif month in (4, 6, 9, 11):
+        days = 30
+    else:
+        days = 31
+    if day < 1 or day > days:
+        return False
+    if value == base:
+        return True
+    if not ISO_TIME_RE.match(value):
+        return False
+    rest = value[11:]
+    hour, minute = int(rest[0:2]), int(rest[3:5])
+    second = int(rest[6:8]) if rest[5:6] == ":" else 0
+    if hour > 23 or minute > 59 or second > 59:
+        return False
+    m = re.search(r"[+-]", rest)
+    if m:
+        offset = rest[m.start() + 1:]
+        if int(offset[0:2]) > 23 or int(offset[3:5]) > 59:
+            return False
+    return True
+
+
+def decision_problems(lines):
+    """[(line, message, suggestion)] for decisions.md content."""
+    problems = []
+    state = {"entry": False, "start": 0, "values": {}}
+
+    def finish():
+        if not state["entry"]:
+            return
+        for name in DECISION_FIELDS:
+            if not state["values"].get(name):
+                problems.append((state["start"], "missing or empty decision field %s" % name,
+                                 "Add - **%s:** meaningful content." % name))
+
+    in_comment = in_fence = entries = False
+    seen = {}
+    pending = ""
+    for number, s in enumerate(lines, 1):
+        if in_comment:
+            if "-->" in s:
+                in_comment = False
+            continue
+        if "<!--" in s:
+            if "-->" not in s:
+                in_comment = True
+            continue
+        if FENCE_RE.match(s):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+        if re.match(r"^##[ \t]+Entries[ \t]*$", s):
+            finish()
+            entries, state["entry"] = True, False
+            continue
+        if not entries:
+            continue
+        if re.match(r"^##[ \t]+[^#]", s):
+            finish()
+            state.update(entry=True, start=number, values={})
+            seen, pending = {}, ""
+            title = re.sub(r"^##[ \t]+", "", s)
+            date = re.split(r"[ \t]", title, 1)[0]
+            if not valid_iso(date) or not DECISION_HEADING_RE.match(title):
+                problems.append((number, "malformed decision heading",
+                                 "Use ## ISO-date - title with a valid ISO8601 date or timestamp."))
+            continue
+        if not state["entry"]:
+            if DECISION_OUTSIDE_RE.match(s):
+                problems.append((number, "decision field outside an entry",
+                                 "Add ## ISO-date - title above it."))
+            continue
+        v = re.sub(r"^[ \t]*-[ \t]+", "", s.replace("**", ""), 1)
+        key = v.split(":", 1)[0]
+        if key in DECISION_FIELDS:
+            seen[key] = seen.get(key, 0) + 1
+            if seen[key] > 1:
+                problems.append((number, "duplicate decision field %s" % key,
+                                 "Keep one %s field per entry." % key))
+            v = v.split(":", 1)[1].strip(" \t\r") if ":" in v else ""
+            state["values"][key] = bool(v)
+            pending = key
+            if key == "Mine" and not MINE_RE.match(v):
+                problems.append((number, "invalid Mine field",
+                                 "Use yes for agent decisions, no for user decisions."))
+        elif pending and re.match(r"^[ \t]+[^ \t]", s):
+            state["values"][pending] = True
+        elif s.strip(" \t\r"):
+            pending = ""
+    finish()
+    if not entries:
+        problems.append((1, "missing ## Entries section", "Add ## Entries before the decision log."))
+    return problems
+
+
+def cmd_validate(args):
+    opts, code = parse_common(args, VALIDATE_USAGE, ("strict",))
+    if code is not None:
+        return code
+    validator = Validator(project_root())
+    validator.run()
+    errors, warnings = validator.errors, validator.warnings
+    if errors or (opts["strict"] and warnings):
+        status = 2
+    elif warnings:
+        status = 1
+    else:
+        status = 0
+    if opts["format"] == "json":
+        out = {"valid": status == 0 and errors == 0 and warnings == 0, "errors": errors,
+               "warnings": warnings, "tasks": len(validator.files), "issues": validator.issues}
+        sys.stdout.write(json.dumps(out, ensure_ascii=False, separators=(",", ":")) + "\n")
+        return status
+    color = colors_enabled(opts["no_color"])
+    red, yellow, blue, off = ("\033[31m", "\033[33m", "\033[34m", "\033[0m") if color else ("",) * 4
+    out = []
+    for item in validator.issues:
+        warn = item["severity"] == "WARNING"
+        out.append("%s%s:%s %s:%d: %s\n  Fix: %s\n" % (
+            yellow if warn else red, "Warning" if warn else "Error", off,
+            item["file"], item["line"], item["message"], item["suggestion"]))
+    if status == 0:
+        out.append("%sWorkflow is valid (%d task files).%s\n" % (blue, len(validator.files), off))
+    else:
+        out.append("%d error(s), %d warning(s).\n" % (errors, warnings))
+    sys.stdout.write("".join(out))
+    return status
+
+
+# ------------------------------------------------------------------- next
+
+NEXT_USAGE = """workflow next - suggest what to work on next
+
+Usage: workflow next [--format text|json] [--no-color]
+
+Shows the top five tasks marked "Blocked by: None" (also accepts
+"None, can start now") whose blockers are all archived under
+.workflow/done/, with their effort goal and Check preview. Efforts rank by the
+**Priority:** of .workflow/specs/<effort>.md: critical, high, normal (default),
+low; ties sort by task number. Tasks with Status: blocked are never ready.
+Also lists paused tasks, and when none are ready, the blockers holding the most
+tasks.
+
+Options:
+  --format TYPE  Output text (default) or JSON
+  --no-color     Disable terminal colors
+  -h, --help     Show this help
+"""
+
+
+def spec_info(wf, effort, cache):
+    """(priority, rank, goal) for an effort from specs/<effort>.md."""
+    if effort in cache:
+        return cache[effort]
+    priority, goal = "normal", "(not specified)"
+    path = os.path.join(wf, "specs", effort + ".md")
+    if effort != "none" and os.path.isfile(path):
+        lines = read_lines(path)
+        priority = read_fields(path, lines).get("priority", "normal").lower() or "normal"
+        goal = spec_goal(lines) or goal
+    if priority not in PRIORITY_RANK:
+        sys.stderr.write("Warning: unknown priority '%s' for effort %s; using normal\n" % (priority, effort))
+        priority = "normal"
+    cache[effort] = (priority, PRIORITY_RANK[priority], goal)
+    return cache[effort]
+
+
+def spec_goal(lines):
+    """First non-empty line under `## What this is for`."""
+    in_fence = in_comment = inside = False
+    for line in lines:
+        line, in_comment = strip_comments(line, in_comment)
+        if FENCE_RE.match(line):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+        text = line.strip()
+        if text.startswith("#"):
+            if inside:
+                return ""
+            m = H2_RE.match(text)
+            if m and m.group(1).strip().rstrip(":").strip().lower() == "what this is for":
+                inside = True
+            continue
+        if inside and text:
+            return text
+    return ""
+
+
+def cmd_next(args):
+    opts, code = parse_common(args, NEXT_USAGE, ())
+    if code is not None:
+        return code
+    root = project_root()
+    wf = os.path.join(root, ".workflow")
+    tasks_dir, done_dir = os.path.join(wf, "tasks"), os.path.join(wf, "done")
+    if not os.path.isdir(wf):
+        sys.stderr.write("Error: no .workflow directory at %s; run 'workflow init' first\n" % root)
+        return 1
+    as_json = opts["format"] == "json"
+    if not os.path.isdir(tasks_dir):
+        if as_json:
+            sys.stdout.write('{"ready_count":0,"task_count":0,"blocked_count":0,'
+                             '"ready_tasks":[],"blockers":[]}\n')
+        else:
+            sys.stdout.write("No tasks found (tasks directory is missing).\n")
+        return 0
+
+    # Blockers archived under done/<effort>/ are finished and never block.
+    archived = set()
+    for path in task_files(done_dir):
+        m = TASK_FILE_RE.match(os.path.basename(path))
+        effort = dir_effort(done_dir, path)
+        if not m or not effort:
+            continue
+        effort = read_fields(path).get("effort") or effort
+        archived.add(task_ref(effort, norm_number(m.group(1))))
+
+    ready, paused = [], []
+    block_tasks, block_numbers = {}, {}
+    task_count = blocked_count = 0
+    specs = {}
+
+    def record(blocker, ref, number):
+        block_tasks.setdefault(blocker, []).append(ref)
+        block_numbers.setdefault(blocker, []).append(int(number))
+
+    for path in task_files(tasks_dir):
+        name = os.path.basename(path)
+        m = TASK_FILE_RE.match(name)
+        if not m:
+            sys.stderr.write("Warning: ignoring task with invalid filename: %s\n" % name)
+            continue
+        number = norm_number(m.group(1))
+        meta = read_fields(path)
+        status = meta.get("status").lower()
+        if status in ("done", "completed", "archived"):
+            continue
+        effort = meta.get("effort") or dir_effort(tasks_dir, path) or "none"
+        if not SLUG_RE.match(effort):
+            sys.stderr.write("Warning: %s has an invalid effort reference; using default priority\n" % name)
+            effort = "none"
+        task_count += 1
+        ref = task_ref(effort, number)
+        title = meta.title or meta.get("task") or "Untitled"
+        blocked = False
+        raw = meta.get("blocked by")
+        if not raw:
+            blocked = True
+            record("(missing Blocked by field)", ref, number)
+        else:
+            try:
+                open_refs = []
+                for token, _ in parse_blockers(raw):
+                    target = resolve_ref(token, effort)
+                    if target not in archived and target not in open_refs:
+                        open_refs.append(target)
+                for target in open_refs:
+                    record(target, ref, number)
+                blocked = bool(open_refs)
+            except BlockerError:
+                blocked = True
+                sys.stderr.write("Warning: %s has malformed Blocked by: %s\n" % (name, raw))
+                record("(malformed Blocked by field)", ref, number)
+        if status == "blocked":
+            blocked = True
+            record("(Status: blocked, needs replanning)", ref, number)
+        if blocked:
+            blocked_count += 1
+            continue
+        priority, rank, goal = spec_info(wf, effort, specs)
+        task = {"number": int(number), "title": title, "effort": effort, "priority": priority,
+                "goal": goal, "check": meta.get("check") or "(not specified)",
+                "start_command": "flow-implement " + ref}
+        ready.append((rank, int(number), len(ready), ref, task))
+        if status == "paused":
+            paused.append((ref, title))
+
+    ready.sort(key=lambda item: item[:3])
+    blockers = sorted(block_tasks, key=lambda b: (-len(block_tasks[b]), b.encode("utf-8")))[:5]
+
+    if as_json:
+        out = {"ready_count": len(ready), "task_count": task_count, "blocked_count": blocked_count,
+               "ready_tasks": [item[4] for item in ready[:5]],
+               "blockers": [{"dependency": b, "count": len(block_tasks[b]), "tasks": block_numbers[b]}
+                            for b in blockers]}
+        sys.stdout.write(json.dumps(out, ensure_ascii=False, separators=(",", ":")) + "\n")
+        return 0
+
+    color = colors_enabled(opts["no_color"])
+    bold, dim, off = ("\033[1m", "\033[2m", "\033[0m") if color else ("", "", "")
+    out = []
+    if not ready:
+        if task_count == 0:
+            out.append("No tasks found.\n")
+        else:
+            out.append("No ready tasks. %d task(s) blocked.\n" % blocked_count)
+            out.append("Blockers affecting the most tasks:\n")
+            for b in blockers:
+                out.append("  %s: %d task(s) (tasks: %s)\n" % (b, len(block_tasks[b]), ", ".join(block_tasks[b])))
+            out.append("Complete blockers and update Blocked by to None when dependencies are satisfied.\n")
+        sys.stdout.write("".join(out))
+        return 0
+    out.append("%sReady tasks%s (%d total; showing up to 5):\n" % (bold, off, len(ready)))
+    for i, item in enumerate(ready[:5], 1):
+        ref, task = item[3], item[4]
+        out.append("%d) %s%s%s %s (priority: %s)\n" % (i, bold, ref, off, task["title"], task["priority"]))
+        out.append("   %sGoal:%s %s\n" % (dim, off, task["goal"]))
+        out.append("   %sCheck:%s %s\n" % (dim, off, task["check"]))
+        out.append("   Start: flow-implement %s\n" % ref)
+    if paused:
+        out.append("Paused (resume before starting new work): %s\n"
+                   % ", ".join("%s %s" % pair for pair in paused))
+    if blocked_count:
+        out.append("Blocked: %d task(s); top blockers: %s\n" % (
+            blocked_count, ", ".join("%s (%d)" % (b, len(block_tasks[b])) for b in blockers)))
+    sys.stdout.write("".join(out))
+    return 0
+
+
+# ------------------------------------------------------------------- main
+
+MAIN_USAGE = """workflow-core.py %s - validate and next for the workflow toolkit
+
+Usage: workflow-core.py validate [--strict] [--format text|json] [--no-color]
+       workflow-core.py next [--format text|json] [--no-color]
+       workflow-core.py <command> --help
+""" % VERSION
+
+
+def main(argv):
+    if not argv or argv[0] in ("-h", "--help"):
+        (sys.stdout if argv else sys.stderr).write(MAIN_USAGE)
+        return 0 if argv else 2
+    command, args = argv[0], argv[1:]
+    if command == "validate":
+        return cmd_validate(args)
+    if command == "next":
+        return cmd_next(args)
+    sys.stderr.write("Error: unknown command: %s\n" % command)
+    sys.stderr.write(MAIN_USAGE)
+    return 2
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main(sys.argv[1:]))
+    except BrokenPipeError:
+        sys.exit(0)
+    except KeyboardInterrupt:
+        sys.exit(130)
