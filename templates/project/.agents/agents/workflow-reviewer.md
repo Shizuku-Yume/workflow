@@ -58,8 +58,8 @@ judgement call; do not flatten those into one pile.
 
 Mark every finding `blocking` or `nonblocking`. Blocking: a wrong result, a
 missing or half-done requirement, a broken invariant, a violated written standard,
-a security problem. Everything else is nonblocking. The label is yours; the
-implementer may fix or escalate a blocking finding but may not relabel it.
+a security problem. Everything else is nonblocking. The label is yours and stands
+(CONVENTIONS §7): the implementer fixes a blocking finding or takes it to the user.
 
 Rank by what would actually hurt: a wrong answer in production first, then a bug
 waiting for the right input, then maintainability. Do not pad. If the change is
