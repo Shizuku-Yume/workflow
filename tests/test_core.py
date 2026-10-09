@@ -368,8 +368,75 @@ class NextTests(Base):
         self.assertEqual((data["ready_count"], data["task_count"], data["blocked_count"]), (1, 4, 3))
         deps = {b["dependency"]: b for b in data["blockers"]}
         self.assertEqual(deps["core/02"]["tasks"], [3])
-        self.assertEqual(deps["(Status: blocked, needs replanning)"]["count"], 1)
         self.assertIn("(malformed Blocked by field)", deps)
+        self.assertEqual([(t["task"], t["status"], t["branch"]) for t in data["in_progress"]],
+                         [("core/04", "blocked", None)])
+        text = self.p.run("next", "--no-color").stdout
+        self.assertIn("Needs replanning (Status: blocked; flow-break amend):\n  core/04 C (this working tree)", text)
+
+    def git(self, *args):
+        subprocess.run(["git", "-C", self.p.root, "-c", "user.email=t@t", "-c", "user.name=t"] + list(args),
+                       check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    def commit_all(self, message):
+        self.git("add", "-A")
+        self.git("commit", "-qm", message)
+
+    def test_started_tasks_are_not_ready(self):
+        # Status in this tree: active, paused and blocked tasks are listed, never ready.
+        self.p.write(".workflow/tasks/core/01-a.md", task("01", "A", "core", extra="**Status:** active\n"))
+        self.p.write(".workflow/tasks/core/02-b.md", task("02", "B", "core", extra="**Status:** paused\n"))
+        self.p.write(".workflow/tasks/core/03-c.md", task("03", "C", "core"))
+        data = self.p.next()
+        self.assertEqual([t["number"] for t in data["ready_tasks"]], [3])
+        self.assertEqual([(t["task"], t["status"]) for t in data["in_progress"]],
+                         [("core/02", "paused"), ("core/01", "active")])
+        text = self.p.run("next", "--no-color").stdout
+        self.assertLess(text.index("Paused"), text.index("Ready tasks"))
+        self.assertNotIn("Goal: (not specified)", text)
+
+    def test_task_branches_show_claims_pauses_and_blocks(self):
+        for number, slug in (("01", "a"), ("02", "b"), ("03", "c"), ("04", "d"), ("05", "e")):
+            self.p.write(".workflow/tasks/core/%s-%s.md" % (number, slug), task(number, slug.upper(), "core"))
+        self.commit_all("plan")
+        main = subprocess.run(["git", "-C", self.p.root, "symbolic-ref", "--short", "HEAD"],
+                              stdout=subprocess.PIPE, universal_newlines=True).stdout.strip()
+        # 01 paused and 02 blocked on their branches; 03 claimed with no Status yet.
+        for number, slug, extra in (("01", "a", "**Status:** paused\n"), ("02", "b", "**Status:** blocked\n"),
+                                    ("03", "c", "")):
+            self.git("checkout", "-q", "-b", "core/%s-%s" % (number, slug), main)
+            if extra:
+                self.p.write(".workflow/tasks/core/%s-%s.md" % (number, slug),
+                             task(number, slug.upper(), "core", extra=extra))
+                self.commit_all("state")
+        # 04 finished on its branch (archived there) but not landed.
+        self.git("checkout", "-q", "-b", "core/04-d", main)
+        self.git("mv", ".workflow/tasks/core/04-d.md", ".workflow/tasks/core/04-moved.md")
+        os.makedirs(os.path.join(self.p.root, ".workflow/done/core"), exist_ok=True)
+        self.git("mv", ".workflow/tasks/core/04-moved.md", ".workflow/done/core/04-d.md")
+        self.commit_all("archive")
+        # A remote-only branch counts too (teammate's claim under pr).
+        self.git("checkout", "-q", main)
+        self.git("update-ref", "refs/remotes/origin/core/05-e", "HEAD")
+        data = self.p.next()
+        self.assertEqual(data["ready_tasks"], [])
+        got = [(t["task"], t["status"], t["branch"]) for t in data["in_progress"]]
+        self.assertEqual(got, [("core/01", "paused", "core/01-a"), ("core/02", "blocked", "core/02-b"),
+                               ("core/03", "active", "core/03-c"), ("core/05", "active", "core/05-e"),
+                               ("core/04", "finished", "core/04-d")])
+        # On a task's own branch, the working tree is the source and the branch isn't listed twice.
+        self.git("checkout", "-q", "core/03-c")
+        data = self.p.next()
+        self.assertEqual([t["number"] for t in data["ready_tasks"]], [3])
+        self.assertNotIn("core/03", [t["task"] for t in data["in_progress"]])
+
+    def test_branch_of_a_landed_task_is_ignored(self):
+        self.p.write(".workflow/done/core/01-a.md", task("01", "A", "core"))
+        self.p.write(".workflow/tasks/core/02-b.md", task("02", "B", "core", blocked="01"))
+        self.commit_all("landed")
+        self.git("branch", "core/01-a")
+        data = self.p.next()
+        self.assertEqual(([t["number"] for t in data["ready_tasks"]], data["in_progress"]), ([2], []))
 
     def test_no_ready_tasks_and_no_tasks(self):
         text = self.p.run("next").stdout
@@ -377,10 +444,11 @@ class NextTests(Base):
         self.p.write(".workflow/tasks/core/01-a.md", task("01", "A", "core", blocked="02"))
         self.p.write(".workflow/tasks/core/02-b.md", task("02", "B", "core", blocked="01"))
         text = self.p.run("next").stdout
-        self.assertIn("No ready tasks. 2 task(s) blocked.", text)
-        self.assertIn("core/01: 1 task(s) (tasks: core/02)", text)
+        self.assertIn("No ready tasks.", text)
+        self.assertIn("Waiting on dependencies: 2 task(s); top blockers: core/01 (1), core/02 (1)", text)
         data = self.p.next()
-        self.assertEqual(sorted(data), ["blocked_count", "blockers", "ready_count", "ready_tasks", "task_count"])
+        self.assertEqual(sorted(data), ["blocked_count", "blockers", "in_progress", "ready_count", "ready_tasks",
+                                        "task_count"])
 
     def test_missing_workflow(self):
         shutil.rmtree(os.path.join(self.p.root, ".workflow"))

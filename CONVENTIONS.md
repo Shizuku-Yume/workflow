@@ -166,8 +166,8 @@ Hotfix path: skip grill, spec, break and verify; fix now and verify where the fa
 was observed, or hand that check to the user. The
 security pass (§7) still runs. Before the session ends, write both:
 
-1. A decision entry in `.workflow/decisions.md`:
-   - **Decided:** `Hotfix:` followed by the temporary fix applied
+1. A decision entry in `.workflow/decisions.md`, headed `## <date> - Hotfix: <title>`:
+   - **Decided:** the temporary fix applied
    - **Instead of:** the proper solution (or "unclear, needs investigation")
    - **Because:** why it couldn't wait
    - **Mine:** yes
@@ -175,8 +175,9 @@ security pass (§7) still runs. Before the session ends, write both:
 
    If it can't be written honestly, it wasn't a hotfix: reclassify.
 2. The proper fix as a `Task type: bugfix` task (§8) in the effort owning the code,
-   else `maintenance`, with `Read first` naming the hotfix entry. That open task is the
-   tracker; `flow-start` reports it until it lands.
+   else `maintenance`, with `Read first` citing the hotfix entry by its heading. That
+   open task is the tracker: `grep -rl 'Hotfix:' .workflow/tasks/` finds every open one,
+   and `flow-start` reports them until they land.
 
 **Small task** — all of these hold: a single behaviour change or bug fix; it affects
 fewer than 3 modules' behaviour; requirements clear; no architectural decisions;
@@ -245,8 +246,11 @@ justified it.
 | Debt entry in `technical-debt.md` | listed → removed | `flow-architect` (or any skill that finds one) adds it; the fixing task deletes it in its commit; if the user declines, delete it and append a decision entry (`Decided: not fixing <symptom>`, `Mine: no`) so reviews don't re-propose it |
 
 An effort without a spec has no status: it is done when its last task lands, with no
-`flow-close`. `next` never offers a `blocked` task; resume a `paused` one before
-starting anything new.
+`flow-close`. Under `local-merge` and `pr` a started task's file, with its `Status`,
+`## Progress` and `## Blocked`, lives on the task branch until it lands; `next` reads
+task branches, so claimed, paused and blocked tasks show from the main branch
+(`merge-strategy.md`). `next` never offers a started task as ready; resume a `paused`
+one before starting anything new.
 
 **Pause handoff.** The resuming session never saw this one. Before setting
 `Status: paused`, `## Progress` says: what is done, the next concrete step, open review

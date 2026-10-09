@@ -22,10 +22,10 @@ A missing file goes in the report; a project without decisions or glossary is ne
 
 ## 2. Check workflow state
 
-- `.workflow/bin/workflow next --no-color` — ready tasks ranked by priority, plus paused and blocked ones. Read `.workflow/tasks/*/` files directly when you need more.
-- `Status: paused` is interrupted work: offer to resume it (its `## Progress` says where it stopped) before starting anything new.
+- `.workflow/bin/workflow next --no-color` — ready tasks ranked by priority, and above them every started task: paused, needing replanning, in progress, or finished but not landed, with the branch it lives on. Under `Landing: pr`, `git fetch -q` first so teammates' task branches show. Read `.workflow/tasks/*/` files directly when you need more.
+- A paused task is interrupted work: offer to resume it before starting anything new. Under `local-merge` and `pr` its handoff is in the task file on its branch, so check out that branch first.
 - `Status: blocked` is a plan waiting to be fixed (CONVENTIONS §5).
-- Open `Task type: bugfix` tasks whose `Read first` names a hotfix entry are hotfixes still waiting for the proper fix.
+- `grep -rl 'Hotfix:' .workflow/tasks/` — hotfix follow-up tasks still waiting for the proper fix (CONVENTIONS §4).
 - `grep -n 'Priority:\*\* fix-now' .workflow/technical-debt.md` — debt marked fix-now.
 
 Hotfix follow-ups and fix-now debt don't pick the next task; they go in the report so they aren't forgotten.

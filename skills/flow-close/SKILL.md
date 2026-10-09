@@ -37,7 +37,7 @@ Handle findings per CONVENTIONS §7. A fix that passes as a small task (CONVENTI
 
 List the effort's decisions with `grep -n 'Effort:\*\* <effort>' .workflow/decisions.md`, plus any entry the spec cites. For each, read `Revisit when` and ask whether what this effort built or learned has triggered it. A triggered entry goes into the report with what triggered it. Reversing it is a new entry made with the user (CONVENTIONS §2), not here on your own.
 
-List open hotfix follow-ups: bugfix tasks under `.workflow/tasks/` whose `Read first` names a hotfix entry this effort touched. They stay open until their own task lands.
+List open hotfix follow-ups (`grep -rl 'Hotfix:' .workflow/tasks/`) that touch this effort's code. They stay open until their own task lands.
 
 ## 5. Show the user
 

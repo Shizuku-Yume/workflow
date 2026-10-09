@@ -52,5 +52,6 @@ Landing: <direct | local-merge | pr>
 
 How finished work reaches the main branch: `direct` commits on the current branch,
 `local-merge` (the default) lands a branch locally, `pr` through a pull request.
+Several people sharing a remote: use `pr`.
 `.workflow/merge-strategy.md` describes each. Name the main branch here if it is
 neither `main` nor `master`.

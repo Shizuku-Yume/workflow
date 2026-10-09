@@ -28,7 +28,7 @@ Requirements: Bash 3.2 or newer (stock macOS is fine), git, python3, and the usu
 | `workflow doctor` | report what's installed and missing; runs `validate` |
 | `workflow hook install` | run `validate` before each commit; blocks on errors, warnings pass |
 | `workflow validate` | check task files and the decision log (exit 0 valid, 1 warnings, 2 errors) |
-| `workflow next` | ready tasks ranked by spec priority; also lists paused and blocked ones |
+| `workflow next` | ready tasks ranked by spec priority; started tasks (paused, blocked, in progress, finished on a branch) listed above them, never as ready |
 
 `validate` and `next` take `--format json` and `--no-color`. Their report goes to stdout (pure JSON with `--format json`); usage errors and side warnings go to stderr. Everything else in `.workflow/` is plain Markdown that agents read and grep directly.
 
@@ -77,7 +77,7 @@ Where each rule lives, and which wins when two disagree, is in `CONVENTIONS.md`:
 - **Small tasks** skip grill, spec, break and verify but still run the tests and prove the change works (CONVENTIONS §4). They land on a `small/<slug>` branch or directly, as `Landing:` says.
 - **When the plan is wrong**, the task is marked `Status: blocked`, the spec is fixed, and `flow-break` amends the remaining tasks (CONVENTIONS §5).
 - **Review levels:** `flow-implement <effort>/<NN>` runs `flow-verify`; add `thorough` to also run `flow-architect` on the touched area. A change crossing a trust boundary gets a security pass on every path (CONVENTIONS §7).
-- **Landing:** `Landing:` in `standards.md` says how finished work reaches the main branch: `direct`, `local-merge` (default) or `pr` (`merge-strategy.md`).
+- **Landing:** `Landing:` in `standards.md` says how finished work reaches the main branch: `direct`, `local-merge` (default, one person) or `pr` (several people sharing a remote). Under the branch modes a started task's state lives on its branch, and `next` reads task branches, so claims, pauses and blocks show from the main branch (`merge-strategy.md`).
 - **Efforts** are the slug that groups tasks. An effort with a spec ends with `flow-close`; one without (a lone bugfix, `maintenance`) is done when its last task lands.
 - **Task references** are `<effort>/<NN>`: numbers are unique within an effort, not across efforts.
 

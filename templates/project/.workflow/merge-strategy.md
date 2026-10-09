@@ -15,11 +15,13 @@ one person working in one tree; there is no parallel work to protect.
 **`local-merge`** (default when `Landing:` is unset) — one branch per task,
 `<effort>/<NN>-<slug>`, created from the main branch. After the task's commit:
 rebase onto the main branch, rerun the tests, the task's Check and the real path
-once, fast-forward the main branch, delete the task branch. Nothing is pushed.
+once, fast-forward the main branch, delete the task branch. Nothing is pushed, so
+it suits one person, with parallel tasks in separate worktrees.
 
 **`pr`** — one branch per task as above, pushed, merged through a pull request.
 The task is landed when its PR is merged. Push and open the PR as the last step of
-`flow-implement`.
+`flow-implement`. Use it whenever several people share a remote: pushed task
+branches are how they see each other's claims.
 
 ## Work without a task file
 
@@ -29,13 +31,16 @@ branch as `small/<slug>` (a hotfix: `hotfix/<slug>`) and land it like a task
 branch. There is nothing to archive. A hotfix still leaves its follow-up `bugfix`
 task (CONVENTIONS §4).
 
-## Claiming a task
+## Claiming a task and where its state lives
 
-Under `local-merge` and `pr`, the task branch is the claim. Before starting,
-`git branch -a --list '*<effort>/<NN>-*'`: if a branch exists and this session
-isn't resuming it, someone else has the task. `Status: active` in the task file
-is not a claim; other worktrees can't see it until it lands. Under `direct` there
-is one working tree, so there is nothing to claim.
+Under `local-merge` and `pr`, the task branch is the claim, and the started task's
+file (`Status`, `## Progress`, `## Blocked`) lives on that branch until it lands.
+`.workflow/bin/workflow next` reads task branches, local and remote, and lists those
+tasks as paused, needing replanning, in progress or finished-not-landed instead of
+ready; under `pr`, `git fetch` first so teammates' branches show. A branch that
+exists for a task you are not resuming means someone else has it. To resume a
+paused or blocked task, check out its branch. Under `direct` there is one working
+tree and the task file's `Status` is the whole story.
 
 ## Dependent tasks
 

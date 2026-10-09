@@ -3,6 +3,45 @@
 What changed in each version and what an existing project has to do about it.
 Usage lives in the README and in `--help`.
 
+## 2.5.1
+
+### Upgrade
+
+From the toolkit checkout, in each project: `~/tools/workflow/bin/workflow update`,
+then commit. Teams sharing a remote should set `Landing: pr` in `standards.md`.
+When you next draft a follow-up for an older hotfix entry, write `Hotfix:` into its
+`Read first` so the grep below finds it.
+
+### Changes
+
+- **`next` sees task branches.** Under `local-merge` and `pr` a started task's
+  file lives on its branch until it lands, so from the main branch a paused or
+  blocked task looked ready: a fresh session would try to start it, find the
+  branch and conclude someone else had claimed it, and `flow-break` amend
+  couldn't see `## Blocked`. `next` now reads `<effort>/<NN>-<slug>` branches,
+  local and remote, and lists those tasks as paused, needing replanning, in
+  progress or finished-not-landed, with the branch name. Tasks with a `Status` in
+  the working tree count as started too (2.5.0 offered an `active` task as
+  ready). JSON output gains an `in_progress` list; the `(Status: blocked, needs
+  replanning)` pseudo-blocker is gone from `blockers`.
+- **Resuming from a branch is written down:** `flow-start` and `flow-implement`
+  check out the task's branch to resume; a blocked task's file is committed on
+  its branch, `flow-break` amend reads it there and carries its `Base commit` and
+  `## Progress` to the main branch; a task whose deliverable changed gets its old
+  branch renamed to `attempt/<effort>-<NN>`.
+- **`local-merge` is for one person, `pr` for teams.** `local-merge` pushes
+  nothing, so teammates never saw its claims. `merge-strategy.md` and the
+  `standards.md` template now say so.
+- **Hotfix follow-ups are greppable:** the hotfix decision entry is headed
+  `## <date> - Hotfix: <title>` and the follow-up task cites that heading, so
+  `grep -rl 'Hotfix:' .workflow/tasks/` lists every open one.
+- **`next` output:** started tasks come first, paused ones at the top; a blocked
+  task is named instead of shown as a pseudo-blocker; `Goal: (not specified)` is
+  no longer printed.
+- `init` mentions that `flow-start` can fill `standards.md` from the repository.
+- `flow-map` and `flow-architect` are written in the same plain voice as the other
+  skills.
+
 ## 2.5.0
 
 Lighter: fewer files, fewer commands, fewer stops, no Bash 4. Plus the gaps a

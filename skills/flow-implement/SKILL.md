@@ -25,6 +25,11 @@ the touched area, for large refactors and code with many callers.
 `Task type: spike`: also follow `.workflow/spike-tasks.md`. `bugfix`: CONVENTIONS §8
 governs the build.
 
+Under `local-merge` and `pr` a started task's file lives on its branch (`next`
+names it): check that branch out first and read the task file there. If
+`flow-break` amend has since changed the task on the main branch, rebase onto the
+main branch and keep the main branch's copy of the task file.
+
 `Status: blocked`: say so and stop. `Status: paused`: resume from `## Progress`,
 restore what it names (branch, worktree, stash), keep its Base commit and
 `Dirty at start`, set `Status: active`, continue from the next step it gives.
@@ -138,7 +143,8 @@ really several tasks: fix the plan, not the build.
    (file, command, output), what has to be decided.
 2. Leave partial code on the task branch or in a stash named
    `<effort>/<NN> blocked`, and say where.
-3. Commit the task file on its own.
+3. Commit the task file on its own: on the task branch under `local-merge` and
+   `pr` (push it under `pr`), where `next` and `flow-break` amend find it.
 4. Report and route per CONVENTIONS §5. The task resumes once `flow-break` amend
    clears `blocked`.
 

@@ -24,7 +24,7 @@
 # need no checkout of this toolkit and nothing on PATH.
 set -euo pipefail
 
-VERSION="2.5.0"
+VERSION="2.5.1"
 BIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 KIT="$(cd "$BIN_DIR/.." && pwd)"
 
@@ -1201,7 +1201,8 @@ cmd_init() {
 
 ${C_OK}Done.${C_OFF} Next step:
 
-  1. Fill in .workflow/standards.md: commands, layout, rules (five minutes).
+  1. Fill in .workflow/standards.md, or let flow-start fill it from the repository
+     on first use and confirm what it found.
   2. Commit ${commit_paths}.
      .workflow/bin/workflow is the CLI the skills call; it travels with the repo.
   3. Optional: .workflow/bin/workflow hook install, to run validate before each commit.

@@ -20,7 +20,7 @@ import re
 import subprocess
 import sys
 
-VERSION = "2.5.0"
+VERSION = "2.5.1"
 
 KNOWN_FIELDS = {
     "task", "effort", "task type", "base commit", "delivers", "blocked by",
@@ -689,13 +689,17 @@ NEXT_USAGE = """workflow next - suggest what to work on next
 
 Usage: workflow next [--format text|json] [--no-color]
 
-Shows the top five tasks marked "Blocked by: None" (also accepts
-"None, can start now") whose blockers are all archived under
-.workflow/done/, with their effort goal and Check preview. Efforts rank by the
-**Priority:** of .workflow/specs/<effort>.md: critical, high, normal (default),
-low; ties sort by task number. Tasks with Status: blocked are never ready.
-Also lists paused tasks, and when none are ready, the blockers holding the most
-tasks.
+Shows the top five ready tasks: not started, and every blocker archived under
+.workflow/done/ ("Blocked by: None" also accepts "None, can start now"), with
+their effort goal and Check preview. Efforts rank by the **Priority:** of
+.workflow/specs/<effort>.md: critical, high, normal (default), low; ties sort
+by task number.
+
+Started tasks are listed above them, never as ready: paused, needing replanning
+(Status: blocked), in progress, or finished on a branch but not landed. A task
+counts as started when its file in this tree has a Status, or when a task branch
+<effort>/<NN>-<slug> exists locally or on a remote (under pr, git fetch first);
+the branch's copy of the task file gives its Status.
 
 Options:
   --format TYPE  Output text (default) or JSON
@@ -744,6 +748,62 @@ def spec_goal(lines):
     return ""
 
 
+# A started task's file lives on its branch until it lands (merge-strategy.md), so
+# `next` reads task branches to tell claimed, paused and blocked tasks from ready ones.
+TASK_BRANCH_RE = re.compile(r"^([a-z0-9]+(?:-[a-z0-9]+)*)/([0-9]+)-(.+)$")
+STARTED_ORDER = {"paused": 0, "blocked": 1, "active": 2, "finished": 3}
+
+
+def git_out(root, *args):
+    """stdout of a git command run in root, or None when it fails."""
+    try:
+        proc = subprocess.run(["git", "-C", root] + list(args), stdout=subprocess.PIPE,
+                              stderr=subprocess.DEVNULL, universal_newlines=True)
+    except OSError:
+        return None
+    return proc.stdout if proc.returncode == 0 else None
+
+
+def task_branches(root):
+    """{task ref: (refname, branch)} for <effort>/<NN>-<slug> branches.
+
+    Local branches win over remote ones; the checked-out branch is skipped because
+    the working tree already shows its task file."""
+    listing = git_out(root, "for-each-ref", "--format=%(refname)", "refs/heads", "refs/remotes")
+    if not listing:
+        return {}
+    current = (git_out(root, "symbolic-ref", "-q", "--short", "HEAD") or "").strip()
+    found = {}
+    for refname in listing.split():
+        if refname.startswith("refs/heads/"):
+            name = refname[len("refs/heads/"):]
+        else:
+            parts = refname[len("refs/remotes/"):].split("/", 1)
+            if len(parts) < 2 or parts[1] == "HEAD":
+                continue
+            name = parts[1]
+        m = TASK_BRANCH_RE.match(name)
+        if not m or name == current:
+            continue
+        ref = task_ref(m.group(1), norm_number(m.group(2)))
+        found.setdefault(ref, (refname, name))
+    return found
+
+
+def branch_task_status(root, refname, branch):
+    """active | paused | blocked | finished, read from the task file on a branch."""
+    effort, rest = branch.split("/", 1)
+    for rel in (".workflow/tasks/%s/%s.md" % (effort, rest), ".workflow/tasks/%s.md" % rest):
+        text = git_out(root, "show", "%s:%s" % (refname, rel))
+        if text is not None:
+            lines = [line[:-1] if line.endswith("\r") else line for line in text.split("\n")]
+            status = read_fields(rel, lines).get("status").lower()
+            return status if status in ("paused", "blocked") else "active"
+    if git_out(root, "cat-file", "-e", "%s:.workflow/done/%s/%s.md" % (refname, effort, rest)) is not None:
+        return "finished"
+    return "active"
+
+
 def cmd_next(args):
     opts, code = parse_common(args, NEXT_USAGE, ())
     if code is not None:
@@ -773,9 +833,10 @@ def cmd_next(args):
         effort = read_fields(path).get("effort") or effort
         archived.add(task_ref(effort, norm_number(m.group(1))))
 
-    ready, paused = [], []
+    branches = task_branches(root)
+    ready, started = [], []
     block_tasks, block_numbers = {}, {}
-    task_count = blocked_count = 0
+    task_count = blocked_count = waiting = 0
     specs = {}
 
     def record(blocker, ref, number):
@@ -800,6 +861,19 @@ def cmd_next(args):
         task_count += 1
         ref = task_ref(effort, number)
         title = meta.title or meta.get("task") or "Untitled"
+
+        # Started here (Status in this tree) or on its own task branch: not ready.
+        branch = None
+        if ref in branches:
+            refname, branch = branches[ref]
+            if status not in ("active", "paused", "blocked"):
+                status = branch_task_status(root, refname, branch)
+        if status in STARTED_ORDER:
+            started.append((STARTED_ORDER[status], int(number), ref, title, status, branch, effort))
+            if status == "blocked":
+                blocked_count += 1
+            continue
+
         blocked = False
         raw = meta.get("blocked by")
         if not raw:
@@ -819,58 +893,61 @@ def cmd_next(args):
                 blocked = True
                 sys.stderr.write("Warning: %s has malformed Blocked by: %s\n" % (name, raw))
                 record("(malformed Blocked by field)", ref, number)
-        if status == "blocked":
-            blocked = True
-            record("(Status: blocked, needs replanning)", ref, number)
         if blocked:
             blocked_count += 1
+            waiting += 1
             continue
         priority, rank, goal = spec_info(wf, effort, specs)
         task = {"number": int(number), "title": title, "effort": effort, "priority": priority,
                 "goal": goal, "check": meta.get("check") or "(not specified)",
                 "start_command": "flow-implement " + ref}
         ready.append((rank, int(number), len(ready), ref, task))
-        if status == "paused":
-            paused.append((ref, title))
 
     ready.sort(key=lambda item: item[:3])
+    started.sort(key=lambda item: (item[0], item[6], item[1]))
     blockers = sorted(block_tasks, key=lambda b: (-len(block_tasks[b]), b.encode("utf-8")))[:5]
 
     if as_json:
         out = {"ready_count": len(ready), "task_count": task_count, "blocked_count": blocked_count,
                "ready_tasks": [item[4] for item in ready[:5]],
                "blockers": [{"dependency": b, "count": len(block_tasks[b]), "tasks": block_numbers[b]}
-                            for b in blockers]}
+                            for b in blockers],
+               "in_progress": [{"task": item[2], "number": item[1], "effort": item[6], "title": item[3],
+                                "status": item[4], "branch": item[5]} for item in started]}
         sys.stdout.write(json.dumps(out, ensure_ascii=False, separators=(",", ":")) + "\n")
         return 0
 
     color = colors_enabled(opts["no_color"])
     bold, dim, off = ("\033[1m", "\033[2m", "\033[0m") if color else ("", "", "")
     out = []
-    if not ready:
-        if task_count == 0:
-            out.append("No tasks found.\n")
-        else:
-            out.append("No ready tasks. %d task(s) blocked.\n" % blocked_count)
-            out.append("Blockers affecting the most tasks:\n")
-            for b in blockers:
-                out.append("  %s: %d task(s) (tasks: %s)\n" % (b, len(block_tasks[b]), ", ".join(block_tasks[b])))
-            out.append("Complete blockers and update Blocked by to None when dependencies are satisfied.\n")
-        sys.stdout.write("".join(out))
+    if task_count == 0:
+        sys.stdout.write("No tasks found.\n")
         return 0
-    out.append("%sReady tasks%s (%d total; showing up to 5):\n" % (bold, off, len(ready)))
-    for i, item in enumerate(ready[:5], 1):
-        ref, task = item[3], item[4]
-        out.append("%d) %s%s%s %s (priority: %s)\n" % (i, bold, ref, off, task["title"], task["priority"]))
-        out.append("   %sGoal:%s %s\n" % (dim, off, task["goal"]))
-        out.append("   %sCheck:%s %s\n" % (dim, off, task["check"]))
-        out.append("   Start: flow-implement %s\n" % ref)
-    if paused:
-        out.append("Paused (resume before starting new work): %s\n"
-                   % ", ".join("%s %s" % pair for pair in paused))
-    if blocked_count:
-        out.append("Blocked: %d task(s); top blockers: %s\n" % (
-            blocked_count, ", ".join("%s (%d)" % (b, len(block_tasks[b])) for b in blockers)))
+    headings = (("paused", "Paused (resume before starting new work):"),
+                ("blocked", "Needs replanning (Status: blocked; flow-break amend):"),
+                ("active", "In progress:"),
+                ("finished", "Finished on a branch, not landed yet:"))
+    for state, heading in headings:
+        rows = [item for item in started if item[4] == state]
+        if rows:
+            out.append("%s\n" % heading)
+            for item in rows:
+                where = "branch %s" % item[5] if item[5] else "this working tree"
+                out.append("  %s%s%s %s (%s)\n" % (bold, item[2], off, item[3], where))
+    if ready:
+        out.append("%sReady tasks%s (%d total; showing up to 5):\n" % (bold, off, len(ready)))
+        for i, item in enumerate(ready[:5], 1):
+            ref, task = item[3], item[4]
+            out.append("%d) %s%s%s %s (priority: %s)\n" % (i, bold, ref, off, task["title"], task["priority"]))
+            if task["goal"] != "(not specified)":
+                out.append("   %sGoal:%s %s\n" % (dim, off, task["goal"]))
+            out.append("   %sCheck:%s %s\n" % (dim, off, task["check"]))
+            out.append("   Start: flow-implement %s\n" % ref)
+    else:
+        out.append("No ready tasks.\n")
+    if waiting:
+        out.append("Waiting on dependencies: %d task(s); top blockers: %s\n" % (
+            waiting, ", ".join("%s (%d)" % (b, len(block_tasks[b])) for b in blockers)))
     sys.stdout.write("".join(out))
     return 0
 

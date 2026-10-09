@@ -117,10 +117,10 @@ Build with `flow-implement`, one task at a time per working tree; parallel tasks
 
 Runs when a task of the effort is `Status: blocked`, or the spec changed under tasks already written. The plan is fixed here, not worked around in code.
 
-1. Read what changed: the blocked task's `## Blocked` section, and the spec change or decision entry that answered it (`git diff` on the spec).
+1. Read what changed: the blocked task's `## Blocked` section, and the spec change or decision entry that answered it (`git diff` on the spec). Under `local-merge` and `pr` the blocked task file is on its branch: `next` names it, `git show <branch>:<path>` reads it.
 2. Go through every remaining task under `.workflow/tasks/<effort>/`, the blocked one first: does `Delivers` still match the spec? Do `Read first`, `Files`, `Check` and `Covers` point at the right things? Is `Blocked by` still the real gate?
 3. Rewrite what is stale. Delete a task with no reason left to exist: name it and why in the decision entry for the change, and fix every `Blocked by` that pointed at it. New tasks take numbers after the highest the effort has used, archived ones included; never renumber.
-4. On the blocked task, remove `## Blocked`. If what it delivers is unchanged, set `Status: paused` and make sure `## Progress` says where the earlier work is, so `flow-implement` resumes on the same Base commit. If it changed, reset `Base commit` to the `<commit-sha>` placeholder, drop `Started` and `Status`, and name reusable work in `## Progress`.
+4. Edit the blocked task from its branch copy, so `Base commit`, `Started` and `## Progress` reach the main branch with it, and remove `## Blocked`. If what it delivers is unchanged, set `Status: paused` and make sure `## Progress` says where the earlier work is, so `flow-implement` resumes on the same Base commit. If it changed, reset `Base commit` to the `<commit-sha>` placeholder, drop `Started` and `Status`, name reusable work in `## Progress`, and rename the old task branch to `attempt/<effort>-<NN>` so the task can be claimed afresh.
 5. Rerun the coverage gate.
 6. Present the changes as one round, as in step 3: what was rewritten, added, dropped, and why.
 7. Run `.workflow/bin/workflow validate`, then commit the spec, decision entries and task changes together on the main branch, as in step 4.
