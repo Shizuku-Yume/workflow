@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# workflow-tasks - list and filter active tasks
+# workflow-tasks (mode probe) - list and filter active tasks
 set -euo pipefail
 KIT_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/workflow-lib.bash"
 source "$KIT_LIB"
