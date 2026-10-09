@@ -11,14 +11,13 @@ Read `.workflow/CONVENTIONS.md` §1 (decision protocol) and §2 (file structure)
 `.workflow/STYLE.md`. Per CONVENTIONS §0, check the codebase before asking; many
 apparent decisions are facts waiting to be found.
 
-Use this skill when the plan can't be written yet because it depends on things
-nobody has worked out: the work spans sessions, grilling keeps stopping on questions
-that hang on other open questions, or the user knows the goal but not the first
-step. If you can already list the tasks, use `flow-spec` and `flow-break`; a map for
+Use it when the plan can't be written yet because it depends on unanswered
+questions: the work spans sessions, grilling keeps stalling on questions that hang
+on others, or the user knows the goal but not the first step. If you can already list the tasks, use `flow-spec` and `flow-break`; a map for
 clear work is ceremony.
 
-The map lists the questions that gate the work. Answer one per session until the way
-is clear. Expect fog, and clear it with answers, not guesses.
+Answer the gating questions one per session until the way is clear. Expect fog;
+clear it with answers, not guesses.
 
 ## Map or spec
 
@@ -52,16 +51,14 @@ Write `.workflow/maps/<slug>.md`:
 **Started:** <date>   **Status:** charting | working | clear
 
 ## Route so far
-<!-- One line per answered question, newest last. This is the index; detail
-lives in each question's section. -->
+<!-- One line per answer, newest last; detail lives in its question's section. -->
 
 ## Open questions
-<!-- Answerable now: everything they depend on is settled. Grouped by what they
-block. -->
+<!-- Answerable now: all dependencies settled. Grouped by what they block. -->
 
 ## Not yet clear
-<!-- Coming, but they hang on answers we don't have, so they can't be phrased
-sharply yet. Write loosely. This is fog. -->
+<!-- Coming, but hanging on answers we don't have, so not sharp yet. Written
+loosely. This is fog. -->
 
 ## Ruled out
 <!-- Beyond the destination: named, out of this effort, with a reason. Never
@@ -79,8 +76,8 @@ Give each open question its own section below the header blocks:
 **Answer:** <filled in when answered>
 ```
 
-Route so far only points at answers; each answer's detail lives in its question's
-section. A map that states its answers twice will drift.
+Route so far only points; detail lives in each question's section. A map that
+states its answers twice drifts.
 
 Commit the new map (and any decision entries) when the charting session ends, per
 CONVENTIONS §2.
@@ -89,19 +86,18 @@ CONVENTIONS §2.
 
 Each kind says how to answer the question.
 
-- **research**: a fact someone can find in docs, a third-party API or a library.
+- **research**: a findable fact: docs, a third-party API, a library.
   Answer it with a subagent, in parallel, without the user.
 - **decide**: a real choice between options. Answer it with `flow-grill`.
 - **build-a-bad-version**: how something should look or behave, which talking can't
-  settle. Build the cheapest rough thing to react to (a stub, a sketch, a throwaway
-  page), then keep it or throw it away.
+  settle. Build the cheapest rough thing to
+  react to (stub, sketch, throwaway page); keep or discard it after.
 - **do-something-first**: nothing to decide, but discussion needs something to exist
-  first: an API account to judge behaviour, moved data to see its shape, access. Do
-  the work; the answer records what was done and the facts that came out.
+  first (an API account, moved data, access). Do it; the answer records what was
+  done and what came out.
 
-Fill in `Depends on` once all the questions exist, so the numbers are real. A
-question whose dependencies are all answered is **open**; the rest are blocked or
-still fog.
+Fill in `Depends on` once all questions exist, so the numbers are real. A question
+with every dependency answered is **open**; the rest are blocked or fog.
 
 ## Where lines go
 
@@ -137,5 +133,5 @@ When no open questions or promotable fog remain, the route is clear. Write the s
 it implies (`flow-spec`), cut them into tasks (`flow-break`), and mark the map
 `Status: clear` with a closing line saying what it produced.
 
-Keep the map. It records why the plan looks the way it does, which is exactly what
-someone will ask in three months.
+Keep the map: it records why the plan looks as it does, which someone will ask in
+three months.

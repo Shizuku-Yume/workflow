@@ -56,7 +56,7 @@ the boundary should be.
 
 **Modules that are just plumbing**: a layer that only forwards calls, or an
 interface as complicated as its body. Ask: if I deleted it, would the complexity
-concentrate somewhere better, or just move? If it would just move, leave it.
+concentrate somewhere better, or just move? If it just moves, leave it.
 
 **Logic that can't be tested where it sits**: real behaviour inside functions that
 need a database, network or UI to run at all. Say what would let it be checked.
@@ -81,7 +81,7 @@ diagrams; a short before/after sketch is fine where structure is the point.
 # Architecture review: <area> (<date>)
 
 ## Where time goes
-<two or three lines: which files/modules recent changes keep landing in>
+<two or three lines: where recent changes keep landing>
 
 ## Findings
 
@@ -100,7 +100,7 @@ diagrams; a short before/after sketch is fine where structure is the point.
 the next audit doesn't re-propose them>
 ```
 
-End with two lines: the number of findings and the one you would do first.
+End with two lines: the finding count and the one you'd do first.
 
 ## Rules
 
@@ -115,7 +115,7 @@ End with two lines: the number of findings and the one you would do first.
 - **Correctness bugs found along the way** get one line under a separate heading,
   then drop them. This skill is about structure, not a bug hunt.
 - **Stop when the money is on the table**: five sharp findings beat twenty padded
-  ones. If there are only two, report two and say the area is in good shape.
+  ones. If you find only two, report two and say the area is in good shape.
 
 ## After the report
 
