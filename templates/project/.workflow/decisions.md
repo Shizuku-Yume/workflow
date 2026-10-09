@@ -26,8 +26,14 @@ boundary is a level-2 heading: `## <date> - <title>`. Subsections (`###`) are no
 entry boundaries. Fenced code blocks and comments are not entries and are ignored.
 Other documents cite an entry by its heading text: `decisions.md: <date> - <title>`.
 
-One mechanical exception to append-only: `.workflow/bin/workflow hotfix-review --mark-resolved`
-rewrites a hotfix entry's `Revisit when` to `resolved`, keeping the old condition.
+Two mechanical exceptions to append-only:
+
+- `.workflow/bin/workflow hotfix-review --mark-resolved` rewrites a hotfix entry's
+  `Revisit when` to `resolved`, keeping the old condition.
+- When a new entry reverses an old one, the new entry carries
+  `**Supersedes:** <old heading>` and one line is appended to the old entry:
+  `**Superseded by:** <new heading>`. Without the forward pointer, a search finds
+  the old entry and nothing says it no longer holds.
 
 Every entry must include all five nonempty fields:
 
@@ -37,11 +43,13 @@ Every entry must include all five nonempty fields:
 - **Mine:** yes if agent decided, no if user decided
 - **Revisit when:** the condition or observation that would overturn this
 
-An entry may also carry one optional tag:
+An entry may also carry these optional fields:
 
 - **Effort:** the effort slug this decision belongs to. `.workflow/bin/workflow decisions
   --effort <slug>` filters by it and `--field Effort` searches it. Omit the tag
   when the decision is not tied to one effort.
+- **Supersedes:** / **Superseded by:** the reversal pair above. An entry with
+  `Superseded by` is history: follow the pointer before acting on it.
 
 The "Instead of" field must pass this test: could you defend that option to
 someone who favors it? If not, it's a strawman. Find the real alternative or
@@ -65,7 +73,9 @@ agent and which from a person. An agent-made decision is still a real decision;
 it is just one the user is entitled to overturn on sight.
 
 `Revisit when` is the observation that would make this wrong. "Never" is an
-acceptable answer but a suspicious one.
+acceptable answer but a suspicious one. `flow-close` reads the `Revisit when` of
+every entry tagged with the effort it closes and reports the ones that have
+triggered.
 
 ## Entries
 

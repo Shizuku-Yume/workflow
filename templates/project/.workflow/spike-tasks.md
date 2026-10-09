@@ -17,6 +17,8 @@ A spike is a task where:
 - "How does this API actually work?"
 - "Is this architecture viable?"
 - "What's the performance of approach A vs B?"
+- "What causes this bug?" when it reproduces but nobody can say why
+  (CONVENTIONS §8); the fix task is `Blocked by` the spike
 
 **Bad reasons:**
 - Feature is hard → build it properly

@@ -28,7 +28,7 @@ Work through these questions in order. Stop at the first match.
 **No** → **Clear context**.
 
 Examples:
-- After archiving a task, starting the next unrelated task
+- After archiving and landing a task, starting the next unrelated task
 - After `flow-architect` report is read, starting new feature work
 - After finishing research that produced a document
 
@@ -122,6 +122,11 @@ Before crossing a phase boundary:
 - [ ] Glossary updated if new terms were agreed
 - [ ] Documents that changed are committed (if applicable)
 
+**Leaving a task unfinished** (clearing, compacting or switching mid-task):
+- [ ] `## Progress` in the task file holds the handoff CONVENTIONS §6 describes
+- [ ] `Status: paused` set
+- [ ] Uncommitted work is where `## Progress` says it is
+
 **Next phase:**
 - [ ] Input is clear (what file to read, what task to build)
 - [ ] No unresolved blockers
@@ -137,7 +142,7 @@ flow-break (produces 2 tasks) → Continue
 flow-implement task 1 → Continue
 flow-implement task 2 → Done
 ```
-Continue throughout. The window never got full, and all phases benefit from shared understanding.
+Continue throughout. The window never got full, and all phases benefit from shared understanding. Task 2 starts after task 1 is archived and landed: one task at a time, in sequence, not interleaved.
 
 **Large feature, long planning:**
 ```
@@ -162,7 +167,7 @@ Subagent for research. Main session continues, retrieves results when needed.
 
 1. **Keep phases 1-3 unbroken** (`flow-grill` → `flow-spec` → `flow-break`) so grilling, spec, task breakdown build on same thinking.
 
-2. **Each implementation starts fresh** (clear or compact) unless it's very next task in same session.
+2. **One task at a time.** A task starts after the previous one is archived, paused or blocked, never interleaved with it. The next task may start in the same session while question 4 says the window is fine; otherwise clear first. Each task only needs its task file and the spec, so clearing costs nothing.
 
 3. **Compact at phase boundaries, never mid-phase.** If context pressure builds during phase, finish phase first or delegate remaining work to subagent.
 
@@ -178,6 +183,8 @@ Subagent for research. Main session continues, retrieves results when needed.
 
 **`flow-grill` and `flow-spec`** should stay in same context when possible (spec benefits from grilling discussion).
 
-**`flow-implement`** can start fresh per task, using task file and spec as input rather than relying on conversation history.
+**`flow-implement`** can start fresh per task, using task file and spec as input rather than relying on conversation history. A task left unfinished at a boundary is paused with its handoff written, so the next session doesn't need this one.
+
+**`flow-close`** reads only committed files (spec, archived tasks, decisions), so it can run fresh after the last task lands.
 
 **Subagents** appropriate during any phase for independent lookups: during `flow-grill` for research, during `flow-implement` for impact analysis, during `flow-architect` for deep investigation.

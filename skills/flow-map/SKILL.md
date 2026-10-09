@@ -95,7 +95,7 @@ One question per session. Not two: point of map is each answer gets clean contex
 1. Read map header and Route so far. Not every question section.
 2. Pick next open question: first one whose dependencies all answered. If user named one, use theirs.
 3. Answer it, in way its kind says. Read any related question sections needed.
-4. Write answer into question's section: decision, option it beat, what it was based on. If real decision, add one complete decision entry to `.workflow/decisions.md`.
+4. Write answer into question's section: decision, option it beat, what it was based on. If real decision, add one complete decision entry to `.workflow/decisions.md`. The first answered question moves the map from `Status: charting` to `Status: working` (CONVENTIONS §6).
 5. Update map: add answer to Route so far, answer any question it just unblocked, promote whatever fog now sharp enough to phrase. Remove promoted fog from "Not yet clear" so lives in exactly one place.
 6. If answer shows something beyond destination, move to "Ruled out" with reason, rather than resolving on route.
 

@@ -13,8 +13,8 @@ document layout (§2), and which skill to reach for (§5). Read it before runnin
 any `flow-*` skill.
 
 The steps themselves are skills: `flow-start`, `flow-grill`, `flow-spec`,
-`flow-break`, `flow-implement`, `flow-verify`, `flow-map`, `flow-architect`,
-installed under `.agents/skills/`. Start a session with `flow-start` when the
+`flow-break`, `flow-implement`, `flow-verify`, `flow-close`, `flow-map`,
+`flow-architect`, installed under `.agents/skills/`. Start a session with `flow-start` when the
 next step isn't obvious.
 
 ## Rules that always hold
@@ -32,13 +32,21 @@ next step isn't obvious.
 5. **Specs and tasks guide building, but current user instruction wins.** If an
    instruction changes the deliverable, update the task/spec rather than
    drifting. A fact a spec states gets fixed in the same change that breaks it.
+   A plan that turns out wrong is fixed in the plan (CONVENTIONS §5), not worked
+   around in code.
 6. **Review across three checks with two agent roles.** `workflow-reviewer`
    covers built-as-asked and code-quality; `workflow-process` evaluates
-   process. Two invocations are enough. Review agents report; they don't edit.
-7. **Keep one task in one session.** Run parallel tasks only in separate git
-   worktrees or isolated checkout directories; a branch in the same working tree
-   is not isolation. When a task does not fit, split it.
-8. **Archive what ships.** A finished task moves to `.workflow/done/<effort>/`
-   committed together with its code.
+   process. Two invocations are enough. Review agents report and mark findings
+   blocking or not; they don't edit. Only the user waives a blocking finding.
+   A change crossing a trust boundary gets a security pass on every path.
+7. **One task at a time per working tree.** Don't interleave tasks; finish,
+   pause (with a handoff in the task file) or block one before starting another.
+   Run parallel tasks only in separate git worktrees or isolated checkout
+   directories; a branch in the same working tree is not isolation. When a task
+   does not fit, split it.
+8. **Archive what ships, close what's done.** A finished task moves to
+   `.workflow/done/<effort>/` committed together with its code, then lands as
+   `standards.md` says. An effort is complete when `flow-close` has checked the
+   whole against the spec, not when its last task merges.
 
 <!-- workflow:end -->

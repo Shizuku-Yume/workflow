@@ -57,7 +57,12 @@ One entry per real alternative:
 Only real options considered. Don't invent alternatives to look thorough.
 
 ## How we will know it works
-- Checks that prove behavior: what command, what result.
+Checks that prove behavior, each with an ID. Tasks list the IDs they make pass
+in `Covers`; `flow-close` runs all of them against the finished effort.
+- **W1.** <what command, what result>
+- **W2.** ...
+
+Also:
 - What's tested at which level, and why that level.
 - Observable signal when it breaks.
 - Edges worth testing: empty input, big input, concurrent use, failure of each
@@ -77,7 +82,8 @@ related specs.
 ## Rules
 
 - **Numbers not adjectives** — "Handles large imports" is nothing. "10k rows under 2s" is spec. If nobody knows number, say that.
-- **Updated in place, never annotated** — reversed decision rewrites spec (CONVENTIONS §2). No contradicting answers in one document.
+- **Updated in place, never annotated** — reversed decision rewrites spec (CONVENTIONS §2). No contradicting answers in one document. Once tasks exist, a spec change goes through `flow-break` amend so they follow it (CONVENTIONS §5).
+- **Check IDs are stable** — never renumber a check tasks already cite. A dropped check keeps its ID out of use; a new one takes the next free number.
 - **Write for someone reading in six months** — not for person who just had conversation.
 - **No file paths that will move** — name module, not `src/foo/bar.ts`.
 - **Delete sections with nothing to say** — empty section is noise. Deletions pass convergence gate: if you have nothing for "What was considered and rejected" because no alternatives existed, delete the heading. Missing section conveys "this didn't apply", empty section suggests forgotten content.
@@ -91,7 +97,7 @@ Before presenting, verify:
 - "What it does" describes observable user-facing behavior
 - "How it is built" names modules, boundaries, data shapes
 - "What it must not do" lists reasonable out-of-scope items (or section deleted if scope obvious)
-- "How we will know it works" specifies runnable checks
+- "How we will know it works" specifies runnable checks, each with an ID
 - Sections with no content are deleted, not left empty
 - No duplicate facts across sections
 - No contradictions (resolve per latest decision)
@@ -121,4 +127,6 @@ After passing convergence gate, write file and report:
 
 If spec changes materially after confirmation, re-run convergence gate and get fresh confirmation.
 
-Next step: `flow-break` if work is bigger than one session, or straight to building if not.
+Next step: `flow-break`, also when the work fits one session. Building needs a task file: it carries the Base commit `flow-verify` compares against, the Check, and the archive. A one-task breakdown skips flow-break's review round, so it costs little.
+
+The spec is written with `**Status:** proposed`; `flow-implement` and `flow-close` move it on (CONVENTIONS §6).

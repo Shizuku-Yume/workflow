@@ -40,7 +40,7 @@ The CLI is copied into the project as `.workflow/bin/workflow` and committed wit
 
 ```
 AGENTS.md                     workflow block with pointer to rules
-.agents/skills/flow-*/        eight workflow steps
+.agents/skills/flow-*/        nine workflow steps
 .agents/agents/workflow-*.md  review agents
 CLAUDE.md, .claude/           with --claude: import of AGENTS.md, skills, agents
 .workflow/
@@ -49,7 +49,7 @@ CLAUDE.md, .claude/           with --claude: import of AGENTS.md, skills, agents
   STYLE.md                    writing guide
   thinking.md                 first principles framework
   phase-boundaries.md         context management
-  merge-strategy.md           branch and rebase guidelines
+  merge-strategy.md           landing modes, task claims, rebase
   spike-tasks.md              exploratory work guidelines
   technical-debt.md           architecture debt tracking
   standards.md                project-specific rules
@@ -69,15 +69,20 @@ Skills and agents are copied, not linked. `workflow update` pulls newer versions
 | `flow-start` | Load context, classify request, route | routing decision |
 | `flow-grill` | Align on what to build, batch questions | `decisions.md`, `glossary.md` |
 | `flow-spec` | Write the design down | `specs/<slug>.md` |
-| `flow-break` | Cut into session-sized tasks | `tasks/<effort>/<NN>-<slug>.md` |
-| `flow-implement` | Build, prove, review, archive, commit | code, docs, `done/<effort>/` |
-| `flow-verify` | Three-axis review (what/quality/process) | report |
+| `flow-break` | Cut into session-sized tasks; amend them when the plan changes | `tasks/<effort>/<NN>-<slug>.md` |
+| `flow-implement` | Build, prove, review, archive, commit, land | code, docs, `done/<effort>/` |
+| `flow-verify` | Three-axis review (what/quality/process), per task or per effort | report |
+| `flow-close` | Check the finished effort against its spec, demo, retrospective | `done/<effort>/retrospective.md` |
 | `flow-architect` | Find expensive-to-change code | report |
 | `flow-map` | Plan foggy work one question at a time | `maps/<slug>.md` |
 
-**Small task fast path:** small tasks skip grill, spec, break and verify, but still run the tests and prove the change works. What counts as small (and as a hotfix) is defined once, in CONVENTIONS §4.
+**Small task fast path:** small tasks skip grill, spec, break and verify, but still run the tests and prove the change works. What counts as small (and as a hotfix), and the tripwires that upgrade a small task mid-change, are defined once, in CONVENTIONS §4.
 
-**Intensity levels** (`flow-implement <effort>/<NN> [level]`): `quick` (skip review), `standard` (default), `thorough` (add architect check).
+**When the plan is wrong:** the task is marked `Status: blocked`, the spec is fixed, and `flow-break` amends the effort's remaining tasks (CONVENTIONS §5). `workflow next` never offers a blocked task. Who moves every status field is in CONVENTIONS §6.
+
+**Intensity levels** (`flow-implement <effort>/<NN> [level]`): `quick` (skip review agents), `standard` (default), `thorough` (add architect check). A change crossing a trust boundary gets a security pass at every level (CONVENTIONS §7).
+
+**Landing:** `Landing:` in `standards.md` says how a finished task reaches the main branch: `direct`, `local-merge` (default) or `pr`. `merge-strategy.md` describes each.
 
 **Task references:** task numbers are unique within an effort, not across efforts, and each effort's tasks live in `tasks/<effort>/`. Refer to a task as `<effort>/<NN>`; every command prints tasks in that form. Projects from before 2.3 keep working with tasks directly under `tasks/`; `doctor` counts them and `git mv` moves them.
 

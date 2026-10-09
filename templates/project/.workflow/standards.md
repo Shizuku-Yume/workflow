@@ -43,6 +43,17 @@ If a rule is long enough to need a section, it belongs in its own document under
 <The approaches this project has ruled out, with the reason. This is the section
 that stops the same argument from being had again.>
 
+## Branches and landing
+
+Landing: <direct | local-merge | pr>
+
+How a finished task reaches the main branch; `.workflow/merge-strategy.md`
+describes each mode. `direct`: commit straight onto the current branch.
+`local-merge`: a branch per task, rebased and fast-forwarded into the main branch
+locally. `pr`: a branch per task, pushed, merged through a pull request. Unset
+means `local-merge`. Name the main branch here if it is neither `main` nor
+`master`.
+
 ## Where things go
 
 Local files below are the workflow task and spec source unless a supported tracker integration exists.

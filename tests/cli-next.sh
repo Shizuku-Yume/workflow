@@ -274,6 +274,31 @@ EOF
 capture "$cross_archived" --format json
 json_check 'assert [t["start_command"] for t in data["ready_tasks"]] == ["flow-implement core/02"]' 'qualified blocker is satisfied by the named effort archive'
 
+# Status: blocked waits for replanning even with no Blocked by entries; paused is
+# offered so it gets resumed.
+replan="$TMP/replan"
+next_project "$replan"
+cat > "$replan/.workflow/tasks/01-wrong.md" <<'EOF'
+# 01: Wrong plan
+**Effort:** core
+**Status:** blocked
+**Blocked by:** None
+**Check:** Check wrong.
+EOF
+cat > "$replan/.workflow/tasks/02-paused.md" <<'EOF'
+# 02: Paused work
+**Effort:** core
+**Status:** paused
+**Blocked by:** None
+**Check:** Check paused.
+EOF
+capture "$replan" --no-color
+status 0 'status fixture succeeds'
+excludes 'flow-implement core/01' 'Status: blocked task is not offered'
+contains 'flow-implement core/02' 'Status: paused task is offered for resuming'
+capture "$replan" --format json
+json_check 'assert [t["number"] for t in data["ready_tasks"]] == [2]; assert data["blocked_count"] == 1; assert [b["dependency"] for b in data["blockers"]] == ["(Status: blocked, needs replanning)"]' 'Status: blocked is counted and reported as its own blocker'
+
 # Exercise dispatcher once the integration owner has added next.
 if (cd "$project" && "$KIT/bin/workflow" next --no-color) > "$TMP/stdout" 2> "$TMP/stderr"; then
   pass 'workflow dispatcher integrates next'

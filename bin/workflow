@@ -19,7 +19,7 @@
 # need no checkout of this toolkit and nothing on PATH.
 set -euo pipefail
 
-VERSION="2.3.0"
+VERSION="2.4.0"
 KIT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$KIT/bin/workflow-lib.bash"
 

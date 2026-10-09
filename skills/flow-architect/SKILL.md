@@ -93,7 +93,7 @@ End with two lines: count of findings and one you'd do first.
 
 ## After report
 
-Nothing changed. User picks what to act on. Each finding they want becomes own effort: `flow-grill` to settle approach, then `flow-spec` and `flow-break` if bigger than one session. Small findings can just be fixed.
+Nothing changed. User picks what to act on. Each finding they want becomes own effort: `flow-grill` to settle approach, then `flow-spec` and `flow-break`. Findings that pass as small tasks (CONVENTIONS §4) can just be fixed.
 
 **Track unaddressed findings** in `.workflow/technical-debt.md`, one per finding, with flags so no prompt opens:
 

@@ -186,7 +186,7 @@ def roundtrips():
         'commit-sha': base.stdout.strip(), 'observable behavior': 'README documents the demonstrated behavior',
         'where work happens': 'README.md', 'spec sections, glossary terms, files': 'README.md',
         'command': 'git status --short', 'result that means it works': 'working tree status is displayed',
-        'acceptance point': 'The demonstrated behavior is documented',
+        'acceptance point': 'The demonstrated behavior is documented', 'check IDs': 'W1',
         'Filled in after spike': 'Spike findings have been recorded below.',
     }
     field = re.compile(r'^((?:-\s+)?(?:\*\*)?[A-Za-z][A-Za-z ]*:(?:\*\*)?\s*)(.*)$')

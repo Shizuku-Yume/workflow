@@ -174,6 +174,13 @@ for file in "${WF_FILES[@]}"; do
       fi
     fi
   fi
+  # Status: blocked means the plan under this task turned out wrong (CONVENTIONS
+  # §5): it waits for replanning whatever its Blocked by line says.
+  task_status="${META[status]:-}"
+  if [ "${task_status,,}" = "blocked" ]; then
+    task_blocked=1
+    record_blocker '(Status: blocked, needs replanning)' "$ref" "$num"
+  fi
   if [ "$task_blocked" -eq 1 ]; then
     BLOCKED_COUNT=$((BLOCKED_COUNT + 1))
     continue
