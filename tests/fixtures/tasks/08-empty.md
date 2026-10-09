@@ -1,3 +1,0 @@
-Effort:
-Blocked by:
-Status:
