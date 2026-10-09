@@ -1,81 +1,56 @@
 # Output Style
 
 How to write anything a person reads: chat replies, documents, commit messages,
-UI copy, code comments. Applies to every response, not only to workflow tasks.
+UI text, code comments, in every response, workflow task or not. It ranks last:
+the user's instruction, `.workflow/standards.md` and the repository's existing
+conventions win over it (see "Precedence" in `CONVENTIONS.md`).
 
 ## Language
 
-Write in the language the user wrote in. Do not mix languages inside one
-document: an English document stays English, a Chinese document stays Chinese.
-Code, identifiers, commands, file paths and API names stay in their original form
-inside either. Structured format field names (e.g., decisions.md headers) use
-English for tool compatibility; content follows the user's language.
+Write in the language the user wrote in, and keep each document in one language.
+Code, identifiers, commands, file paths and API names keep their original form
+inside either. Field names in structured formats (such as the decisions.md
+headers) stay in English for tool compatibility; their content follows the
+user's language.
 
-Do not switch languages mid-sentence for emphasis, and do not sprinkle English
-words into a Chinese sentence when a plain Chinese word exists. The reverse also
-holds. Mixed-language output reads as translation, not as writing.
+## Chat
 
-## Sound like a person
-
-Say it the way a competent colleague would say it out loud. If a sentence sounds
-like it was run through a translator, rewrite it.
-
-- No translated idioms.
-- No stock openings. Do not restate the question, do not announce what you are
-  about to do, do not start with "Great question".
-- No summary paragraph that repeats what was just written. If the reader can see
-  it above, they do not need it again below.
-- No marketing adjectives: powerful, robust, seamless, blazing, elegant, effortless,
-  comprehensive, cutting-edge. Say what it does, or say nothing.
-- No hyphenated noun piles ("a state-of-the-art, enterprise-grade solution").
-  One noun and one verb beat three adjectives.
-- Vary sentence length. Uniform sentence length is the loudest machine tell there is.
-- Contractions are fine. So is starting a sentence with And or But.
+Lead with the answer and stop when it is complete; the reader can already see the
+question and what came before. Use the plain words a competent colleague would say
+out loud.
 
 ## Terms
 
-Use the project's own vocabulary. If the project calls it an "issue", do not call
-it a ticket.
-
-Define a technical term the first time it appears, in the same sentence, or do not
-use it. Unexplained jargon is not precision; it is a decision that was never made.
-
-Never invent a metaphor for something that already has a name.
+Use the project's own vocabulary: if the project calls it an "issue", so do you.
+Define a technical term in the sentence where it first appears. Call a thing by
+its established name.
 
 ## Front-end text
 
-Text a user sees is not for developers. On a page a person uses:
+Text on a page a person uses is written for that person:
 
-- Say what the thing is and what happens when they press it. Nothing else.
-- No technical vocabulary, no implementation names, no framework words, no error
-  codes. A user does not know what an API, a token, a payload or a cache is, and
-  does not want to.
-- No jargon that only makes sense with the code open. "Sync failed" not
-  "HTTP 409 from the upstream provider".
-- When something breaks, say what happened to the user's data and what they can do
-  next. A raw error message is not an explanation.
-- Empty states, tooltips and buttons get real sentences, not labels.
+- Say what the thing is and what happens when they press it.
+- Use words the user knows; implementation names, framework terms and error codes
+  belong in the code. "Sync failed", not "HTTP 409 from the upstream provider".
+- When something breaks, say what happened to their data and what they can do next.
+- Give empty states, tooltips and buttons real sentences.
 
-Put the technical detail in code comments next to the relevant line, where the
-person maintaining it will read it. Comments explain why, not what.
+Technical detail goes in a code comment next to the relevant line.
 
 ## Code comments
 
-Write a comment when the code cannot say the thing itself: why this order, why
-this awkward guard, what breaks if it changes. Never comment what the next line
-obviously does.
+Comment what the code cannot say itself: why this order, why this guard, what
+breaks if it changes. Let the code show what it does.
 
 ## Commit messages
 
-One line, imperative, saying what changed and why it matters. No "chore:", no
-"minor fix", no "various improvements". If the change needs a paragraph, the
-paragraph belongs in the commit body or in a decision record.
+Follow the repository's existing convention, as seen in `git log --oneline -10`.
+When it has none, write one imperative line saying what changed and why. Details
+go in the body.
 
-## Length
+## Length and reporting
 
-Match the answer to the question. A yes/no question gets yes or no plus one line
-of why. A design question gets the design. Padding is not thoroughness; it makes
-the real content harder to find.
+Match length to the question: a yes/no question gets the answer plus one line of
+why; a design question gets the design.
 
-When you are reporting work: what you changed, what you verified, what you did not
-do. Three lines beats three paragraphs.
+A work report says what changed, what was verified, and what was not done.
