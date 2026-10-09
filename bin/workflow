@@ -10,6 +10,11 @@
 #   workflow doctor      check what is installed and what is missing
 #   workflow uninstall   remove everything it installed
 #   workflow hook        install a pre-commit hook that runs workflow validate
+#   workflow validate    check task files and the decision log (bin/workflow-core.py)
+#   workflow next        list ready tasks (bin/workflow-core.py)
+#
+# Runs on Bash 3.2 (stock macOS) with BSD or GNU awk and sed; validate and next
+# need python3.
 #
 # Skills are copied, not linked, so a project keeps working if this toolkit is
 # moved or deleted. Use `workflow update` to pull in newer versions.
@@ -19,9 +24,9 @@
 # need no checkout of this toolkit and nothing on PATH.
 set -euo pipefail
 
-VERSION="2.4.0"
-KIT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-source "$KIT/bin/workflow-lib.bash"
+VERSION="2.5.0"
+BIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+KIT="$(cd "$BIN_DIR/.." && pwd)"
 
 # The project's committed copy (.workflow/bin/workflow) has no skills or
 # templates beside it. It runs the daily commands, doctor and hook; init, update
@@ -32,10 +37,14 @@ TOOLKIT_URL="https://github.com/Shizuku-Yume/workflow"
 HOOK_MARKER="# workflow:pre-commit"
 MARKER_START="<!-- workflow:start -->"
 MARKER_END="<!-- workflow:end -->"
+GA_START="# workflow:start"
+GA_END="# workflow:end"
 
 # Framework files installed with the workflow and checked by doctor.
-# technical-debt.md is user data (workflow debt writes it), installed once.
-MANAGED_FRAMEWORK="thinking.md phase-boundaries.md merge-strategy.md spike-tasks.md"
+# technical-debt.md is user data, installed once.
+MANAGED_FRAMEWORK="phase-boundaries.md merge-strategy.md spike-tasks.md"
+# Framework files earlier versions installed; update removes unedited copies.
+RETIRED_FRAMEWORK="thinking.md"
 
 # ---------------------------------------------------------------- output
 
@@ -52,6 +61,73 @@ warn() { printf '%s!%s %s\n' "$C_WARN" "$C_OFF" "$*" >&2; }
 die()  { printf '%s✗%s %s\n' "$C_ERR" "$C_OFF" "$*" >&2; exit 1; }
 
 # ---------------------------------------------------------------- helpers
+
+# bump VAR [N] - add N (default 1) to the caller's counter named VAR.
+bump() { eval "$1=\$((\$$1 + ${2:-1}))"; }
+
+# Print an absolute path with every symlink resolved and . and .. removed;
+# components that do not exist are kept as written (like GNU `realpath -m`,
+# which BSD lacks). Fails on a symlink loop.
+normalize_path() {
+  local rest="$1" out="" part target hops=0
+  case "$rest" in /*) ;; *) rest="$PWD/$rest" ;; esac
+  while :; do
+    while [ "${rest#/}" != "$rest" ]; do rest="${rest#/}"; done
+    [ -n "$rest" ] || break
+    part="${rest%%/*}"
+    if [ "$part" = "$rest" ]; then rest=""; else rest="${rest#*/}"; fi
+    case "$part" in
+      .) continue ;;
+      ..) out="${out%/*}"; continue ;;
+    esac
+    if [ -L "$out/$part" ]; then
+      hops=$((hops + 1)); [ "$hops" -le 40 ] || return 1
+      target="$(readlink "$out/$part")" || return 1
+      case "$target" in /*) out="" ;; esac
+      rest="$target/$rest"
+      continue
+    fi
+    out="$out/$part"
+  done
+  printf '%s\n' "${out:-/}"
+}
+
+# task_field FILE NAME - first value of a `Name: value` field (plain, bulleted
+# or bolded; NAME in lowercase), outside fenced code blocks.
+task_field() {
+  awk -v want="$2" '
+    /^[[:space:]]*```/ { fence = !fence; next }
+    fence { next }
+    {
+      line = $0
+      sub(/^[[:space:]]*[-*][[:space:]]+/, "", line)
+      gsub(/\*\*/, "", line)
+      i = index(line, ":")
+      if (i == 0) next
+      name = tolower(substr(line, 1, i - 1))
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", name)
+      if (name != want) next
+      value = substr(line, i + 1)
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+      print value
+      exit
+    }
+  ' "$1"
+}
+
+# Is python3 (3.8+) on PATH? validate and next run on it.
+have_python() {
+  command -v python3 >/dev/null 2>&1 &&
+    python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 8) else 1)' >/dev/null 2>&1
+}
+
+# Does a Base commit value name a real commit in ROOT?
+base_commit_ok() {
+  local root="$1" value="$2"
+  case "$value" in ""|"<commit-sha>"|not-started) return 1 ;; esac
+  git -C "$root" rev-parse --git-dir >/dev/null 2>&1 &&
+    git -C "$root" rev-parse --verify --end-of-options "$value^{commit}" >/dev/null 2>&1
+}
 
 # Find the project root with Git, falling back to the requested directory.
 project_root() {
@@ -120,7 +196,7 @@ require_kit() {
 check_path_symlink_safety() {
   local root="$1" path="$2"
   local c_root resolved
-  c_root="$(cd "$root" 2>/dev/null && pwd -P || realpath -m "$root")"
+  c_root="$(cd "$root" 2>/dev/null && pwd -P || normalize_path "$root")"
   c_root="${c_root%/}"
   [ -z "$c_root" ] && c_root="/"
 
@@ -129,7 +205,7 @@ check_path_symlink_safety() {
     abs_path="$root/$abs_path"
   fi
 
-  resolved="$(realpath -m "$abs_path" 2>/dev/null || true)"
+  resolved="$(normalize_path "$abs_path" 2>/dev/null || true)"
   resolved="${resolved%/}"
   if [ "$resolved" != "$c_root" ] && [[ "$resolved" != "$c_root"/* ]]; then
     return 1
@@ -151,7 +227,7 @@ check_path_symlink_safety() {
       cur="$cur/$part"
       if [ -L "$cur" ]; then
         local link_res
-        link_res="$(realpath -m "$cur" 2>/dev/null || true)"
+        link_res="$(normalize_path "$cur" 2>/dev/null || true)"
         link_res="${link_res%/}"
         if [ "$link_res" != "$c_root" ] && [[ "$link_res" != "$c_root"/* ]]; then
           return 1
@@ -171,7 +247,7 @@ check_symlink_safety() {
   fi
 
   local top link sublink
-  for top in "$root/.workflow" "$root/.agents" "$root/AGENTS.md" "$root/.claude" "$root/CLAUDE.md"; do
+  for top in "$root/.workflow" "$root/.agents" "$root/AGENTS.md" "$root/.claude" "$root/CLAUDE.md" "$root/.gitattributes"; do
     if [ -e "$top" ] || [ -L "$top" ]; then
       if ! check_path_symlink_safety "$root" "$top"; then
         return 1
@@ -220,9 +296,13 @@ check_symlink_safety() {
     check_path_symlink_safety "$root" "$root/.workflow/.${f%.md}.workflow-managed" || return 1
   done
 
-  for f in standards.md glossary.md decisions.md; do
+  for f in standards.md glossary.md decisions.md technical-debt.md $MANAGED_FRAMEWORK $RETIRED_FRAMEWORK; do
     check_path_symlink_safety "$root" "$root/.workflow/$f" || return 1
   done
+  for f in $MANAGED_FRAMEWORK $RETIRED_FRAMEWORK; do
+    check_path_symlink_safety "$root" "$root/.workflow/.${f%.md}.workflow-managed" || return 1
+  done
+  check_path_symlink_safety "$root" "$root/.gitattributes" || return 1
 
   for d in specs tasks maps done; do
     check_path_symlink_safety "$root" "$root/.workflow/$d" || return 1
@@ -392,19 +472,13 @@ install_rulebooks() {
 
   # technical-debt.md is user data: install once, never overwrite edits.
   install_file "$root/.workflow/technical-debt.md" "$KIT/templates/project/.workflow/technical-debt.md"
-
-  # Create efforts directory if needed
-  if [ ! -d "$root/.workflow/efforts" ]; then
-    mkdir -p "$root/.workflow/efforts"
-    ok "created efforts/ directory"
-  fi
 }
 
 check_glossary() {
-  local file="$1"
-  local -n p_ref="$2"
+  local file="$1" p_var="$2"
   [ -f "$file" ] || return 0
-  local -A seen_terms=()
+  local nl=$'\n'
+  local seen_terms="$nl"
   local in_terms=0
   local has_terms_section=0
   if grep -qE '^[[:space:]]*##[[:space:]]+Terms' "$file"; then
@@ -421,11 +495,11 @@ check_glossary() {
   check_pending_def() {
     if [ "$last_item" = "term" ] && [ "$term_has_def" -eq 0 ]; then
       warn "glossary.md: missing definition for term: $cur_term"
-      p_ref=$((p_ref + 1))
+      bump "$p_var"
       term_has_def=1
     elif [ "$last_item" = "avoid" ] && [ "$avoid_has_def" -eq 0 ]; then
       warn "glossary.md: empty Avoid entry: $last_avoid_line"
-      p_ref=$((p_ref + 1))
+      bump "$p_var"
       avoid_has_def=1
     fi
   }
@@ -480,7 +554,7 @@ check_glossary() {
         if [[ "$avoid_rest" =~ ^[[:space:]]*[:-][[:space:]]*(.*)$ ]]; then
           if [ -z "$cur_term" ]; then
             warn "glossary.md: orphan Avoid entry: $line"
-            p_ref=$((p_ref + 1))
+            bump "$p_var"
             last_item="none"
             continue
           fi
@@ -497,7 +571,7 @@ check_glossary() {
           continue
         else
           warn "glossary.md: malformed Avoid entry: $line"
-          p_ref=$((p_ref + 1))
+          bump "$p_var"
           last_item="none"
           continue
         fi
@@ -523,17 +597,19 @@ check_glossary() {
         term="${term%"${term##*[![:space:]]}"}"
       else
         warn "glossary.md: malformed line: $line"
-        p_ref=$((p_ref + 1))
+        bump "$p_var"
         last_item="none"
         continue
       fi
 
       local norm_term="${term// /}"
-      if [ -n "${seen_terms[$norm_term]:-}" ]; then
-        warn "glossary.md: duplicate term: $term"
-        p_ref=$((p_ref + 1))
-      fi
-      seen_terms[$norm_term]=1
+      case "$seen_terms" in
+        *"$nl$norm_term$nl"*)
+          warn "glossary.md: duplicate term: $term"
+          bump "$p_var"
+          ;;
+        *) seen_terms="$seen_terms$norm_term$nl" ;;
+      esac
 
       term_def="${term_def#"${term_def%%[![:space:]]*}"}"
       term_def="${term_def%"${term_def##*[![:space:]]}"}"
@@ -555,7 +631,7 @@ check_glossary() {
         avoid_has_def=1
       else
         warn "glossary.md: unexpected line format: $line"
-        p_ref=$((p_ref + 1))
+        bump "$p_var"
       fi
       continue
     fi
@@ -565,7 +641,7 @@ check_glossary() {
     last_item="none"
     cur_term=""
     warn "glossary.md: unexpected line format: $line"
-    p_ref=$((p_ref + 1))
+    bump "$p_var"
   done < "$file"
 
   check_pending_def
@@ -574,8 +650,7 @@ check_glossary() {
 
 
 check_maps() {
-  local root="$1"
-  local -n p_ref="$2"
+  local root="$1" p_var="$2"
   [ -d "$root/.workflow/maps" ] || return 0
   for map in "$root/.workflow/maps/"*.md; do
     [ -f "$map" ] || continue
@@ -630,7 +705,7 @@ check_maps() {
     read -r open fog <<< "$map_state"
     if [ "$open" -eq 0 ] && [ "$fog" -eq 1 ]; then
       warn "map $(basename "$map"): Status working but no open questions and fog remains; consider promoting or closing"
-      p_ref=$((p_ref + 1))
+      bump "$p_var"
     fi
   done
 }
@@ -771,8 +846,12 @@ install_cli() {
       [ -n "$name" ] || continue
       grep -qx "$name" < <(cli_files) && continue
       target="$dest/$name"
-      if [ -f "$target" ] && [ "$(cksum < "$target" | cut -d' ' -f1)" = "$recorded" ]; then
+      [ -f "$target" ] || continue
+      if [ "$(cksum < "$target" | cut -d' ' -f1)" = "$recorded" ]; then
         rm -f "$target"
+        ok "removed .workflow/bin/$name (no longer in the toolkit)"
+      else
+        warn "kept .workflow/bin/$name: no longer in the toolkit, but edited locally and yours to keep"
       fi
     done < "$manifest"
   fi
@@ -888,6 +967,82 @@ install_marked_block() {
   ok "$name (workflow block updated)"
 }
 
+# The .gitattributes block (CONVENTIONS §2): decisions.md and glossary.md use
+# git's union merge, so parallel branches that add entries do not conflict.
+gitattributes_block() {
+  printf '%s\n' "$GA_START" ".workflow/decisions.md merge=union" ".workflow/glossary.md merge=union" "$GA_END"
+}
+
+# Print "<starts> <ends>" for the workflow block markers in .gitattributes.
+gitattributes_state() {
+  if [ ! -f "$1" ]; then printf '0 0\n'; return 0; fi
+  awk -v s="$GA_START" -v e="$GA_END" '
+    $0 == s { starts++ } $0 == e { ends++ }
+    END { print starts + 0, ends + 0 }
+  ' "$1"
+}
+
+# Create .gitattributes with the block, append the block, or refresh it.
+install_gitattributes() {
+  local root="$1" file="$1/.gitattributes" state tmp
+  assert_symlink_safety "$root" "$file"
+  if [ ! -f "$file" ]; then
+    gitattributes_block > "$file"
+    ok ".gitattributes (created, union merge for decisions and glossary)"
+    return 0
+  fi
+  state="$(gitattributes_state "$file")"
+  tmp="$(mktemp)"
+  case "$state" in
+    "0 0")
+      cat "$file" > "$tmp"
+      if [ -s "$file" ] && [ -n "$(tail -c 1 "$file")" ]; then printf '\n' >> "$tmp"; fi
+      gitattributes_block >> "$tmp"
+      ;;
+    "1 1")
+      WF_BLOCK="$(gitattributes_block)" awk -v s="$GA_START" -v e="$GA_END" '
+        BEGIN { repl = ENVIRON["WF_BLOCK"] }
+        $0 == s { print repl; skipping = 1; next }
+        $0 == e { skipping = 0; next }
+        !skipping { print }
+      ' "$file" > "$tmp"
+      ;;
+    *)
+      rm -f "$tmp"
+      warn "skipped .gitattributes: incomplete or repeated workflow block; fix the markers by hand"
+      return 0
+      ;;
+  esac
+  if cmp -s "$tmp" "$file"; then
+    rm -f "$tmp"
+    skip ".gitattributes (workflow block up to date)"
+  else
+    cat "$tmp" > "$file"; rm -f "$tmp"
+    ok ".gitattributes (workflow block written)"
+  fi
+}
+
+# Take the block out of .gitattributes; delete the file if nothing else is left.
+remove_gitattributes() {
+  local root="$1" file="$1/.gitattributes" tmp
+  [ -f "$file" ] || return 0
+  [ "$(gitattributes_state "$file")" = "1 1" ] || return 0
+  tmp="$(mktemp)"
+  awk -v s="$GA_START" -v e="$GA_END" '
+    $0 == s { skipping = 1; next }
+    $0 == e { skipping = 0; next }
+    !skipping { print }
+  ' "$file" > "$tmp"
+  if grep -q '[^[:space:]]' "$tmp"; then
+    cat "$tmp" > "$file"
+    ok "removed the workflow block from .gitattributes"
+  else
+    rm -f "$file"
+    ok "removed .gitattributes (only the workflow block was in it)"
+  fi
+  rm -f "$tmp"
+}
+
 # Write a file only if it does not exist. Never clobbers user edits.
 install_file() {
   local dest="$1" src="$2"
@@ -958,6 +1113,24 @@ prune_stale_files() {
     done
   fi
   done
+  # Framework files the toolkit no longer ships (thinking.md since 2.5).
+  local f target
+  for f in $RETIRED_FRAMEWORK $MANAGED_FRAMEWORK; do
+    [ -f "$KIT/templates/project/.workflow/$f" ] && continue
+    target="$root/.workflow/$f"
+    marker="$root/.workflow/.${f%.md}.workflow-managed"
+    [ -f "$marker" ] || continue
+    if [ ! -f "$target" ]; then
+      rm -f "$marker"
+    elif managed_ok "$target" "$marker" ""; then
+      rm -f "$target" "$marker"
+      ok "removed .workflow/$f (no longer in the toolkit)"
+    else
+      warn "kept .workflow/$f: no longer in the toolkit, but edited locally and yours to keep"
+    fi
+  done
+  # Effort definitions are gone (2.5); drop the directory if it is empty.
+  rmdir "$root/.workflow/efforts" 2>/dev/null || true
 }
 
 # ---------------------------------------------------------------- commands
@@ -997,10 +1170,11 @@ cmd_init() {
   done
 
   install_agents_block "$root" "$KIT/templates/project/AGENTS.md" "$force"
+  install_gitattributes "$root"
   install_cli "$root" "$force"
-  local claude=no commit_paths=".workflow/, .agents/ and AGENTS.md"
+  local claude=no commit_paths=".workflow/, .agents/, AGENTS.md and .gitattributes"
   if claude_enabled "$root" "$CLAUDE_CHOICE"; then
-    install_claude "$root" "$force"; claude=yes; commit_paths=".workflow/, .agents/, AGENTS.md, .claude/ and CLAUDE.md"
+    install_claude "$root" "$force"; claude=yes; commit_paths=".workflow/, .agents/, AGENTS.md, .gitattributes, .claude/ and CLAUDE.md"
   fi
   write_manifest "$root" "$claude"
 
@@ -1031,6 +1205,7 @@ cmd_update() {
   if [ "$force" = 1 ]; then rulebooks_mode="force"; fi
   install_rulebooks "$root" "$rulebooks_mode"
   install_agents_block "$root" "$KIT/templates/project/AGENTS.md" "$force"
+  install_gitattributes "$root"
   install_cli "$root" "$force"
   local claude=no
   if claude_enabled "$root" "$CLAUDE_CHOICE"; then install_claude "$root" "$force"; claude=yes; fi
@@ -1044,12 +1219,16 @@ cmd_update() {
 
 # Doctor reports what is installed. Task and decision checks are not
 # re-implemented here: it runs `workflow validate`, the one source of those
-# rules, and counts its errors. Validate warnings (an optional effort
-# definition, an archived file) are shown but are not install problems.
+# rules, and counts its errors. Validate warnings (an archived file, say) are
+# shown but are not install problems.
 run_validate_for_doctor() {
-  local root="$1" out status=0 errors=0 warnings=0 summary
-  local -n v_problems="$2"
-  out="$(cd "$root" && bash "$KIT/bin/workflow-validate" --no-color 2>&1)" || status=$?
+  local root="$1" v_var="$2" out status=0 errors=0 warnings=0 summary
+  if [ ! -f "$BIN_DIR/workflow-core.py" ]; then
+    warn "workflow validate: $BIN_DIR/workflow-core.py missing; run 'workflow update'"
+    bump "$v_var"; return 0
+  fi
+  have_python || { skip "workflow validate: skipped, python3 not found"; return 0; }
+  out="$(cd "$root" && python3 "$BIN_DIR/workflow-core.py" validate --no-color 2>&1)" || status=$?
   summary="$(printf '%s\n' "$out" | tail -n 1)"
   if [[ "$summary" =~ ^([0-9]+)\ error\(s\),\ ([0-9]+)\ warning\(s\)\.$ ]]; then
     errors="${BASH_REMATCH[1]}"; warnings="${BASH_REMATCH[2]}"
@@ -1061,19 +1240,18 @@ run_validate_for_doctor() {
   printf '%s\n' "$out" | sed '$d' | sed 's/^/  /' >&2
   if [ "$status" -ge 2 ]; then
     warn "workflow validate: $errors error(s), $warnings warning(s)"
-    v_problems=$((v_problems + (errors > 0 ? errors : 1)))
+    bump "$v_var" "$((errors > 0 ? errors : 1))"
   else
     skip "workflow validate: $warnings warning(s), no errors"
   fi
 }
 
 check_cli() {
-  local root="$1" dest="$1/.workflow/bin" manifest="$1/.workflow/bin/.workflow-managed"
-  local -n c_problems="$2"
+  local root="$1" dest="$1/.workflow/bin" manifest="$1/.workflow/bin/.workflow-managed" c_var="$2"
   local name recorded installed=""
   if [ ! -f "$dest/workflow" ]; then
     warn ".workflow/bin/workflow missing; run 'workflow update' from a toolkit checkout"
-    c_problems=$((c_problems + 1)); return 0
+    bump "$c_var"; return 0
   fi
   installed="$(sed -n 's/^VERSION="\(.*\)"$/\1/p' "$dest/workflow" | head -n 1)"
   local edited=0
@@ -1081,15 +1259,15 @@ check_cli() {
     while read -r recorded name; do
       [ -n "$name" ] || continue
       if [ ! -f "$dest/$name" ]; then
-        warn ".workflow/bin/$name missing"; c_problems=$((c_problems + 1))
+        warn ".workflow/bin/$name missing"; bump "$c_var"
       elif [ "$(cksum < "$dest/$name" | cut -d' ' -f1)" != "$recorded" ]; then
-        warn ".workflow/bin/$name edited"; edited=1; c_problems=$((c_problems + 1))
+        warn ".workflow/bin/$name edited"; edited=1; bump "$c_var"
       fi
     done < "$manifest"
   fi
   if [ "$VENDORED" = 0 ] && [ "$installed" != "$VERSION" ]; then
     warn ".workflow/bin is version ${installed:-unknown}, toolkit is $VERSION; run 'workflow update'"
-    c_problems=$((c_problems + 1))
+    bump "$c_var"
   elif [ "$edited" = 0 ]; then
     ok ".workflow/bin/workflow ($installed)"
   fi
@@ -1181,6 +1359,22 @@ cmd_doctor() {
     fi
   fi
 
+  local ga_state; ga_state="$(gitattributes_state "$root/.gitattributes")"
+  if [ "$ga_state" = "1 1" ] && grep -qxF '.workflow/decisions.md merge=union' "$root/.gitattributes" &&
+     grep -qxF '.workflow/glossary.md merge=union' "$root/.gitattributes"; then
+    ok ".gitattributes has the workflow union-merge block"
+  else
+    warn ".gitattributes is missing the workflow union-merge block; run 'workflow update'"
+    problems=$((problems + 1))
+  fi
+
+  if have_python; then
+    ok "python3 available ($(python3 -c 'import platform; print(platform.python_version())' 2>/dev/null))"
+  else
+    warn "python3 3.8+ not found; workflow validate and next need it"
+    problems=$((problems + 1))
+  fi
+
   check_cli "$root" problems
 
   for f in CONVENTIONS.md STYLE.md; do
@@ -1220,18 +1414,19 @@ cmd_doctor() {
   fi
 
   if [ -d "$root/.workflow/tasks" ]; then
-    wf_task_files "$root/.workflow/tasks"
-    local tf active=0 drafts=0 flat=0 state
-    for tf in "${WF_FILES[@]}"; do
+    local tf rel active=0 drafts=0 flat=0
+    while IFS= read -r tf; do
       [[ "${tf##*/}" =~ ^[0-9]+-.+\.md$ ]] || continue
       active=$((active + 1))
-      wf_dir_effort "$root/.workflow/tasks" "$tf"; [ -n "$WF_DIR_EFFORT" ] || flat=$((flat + 1))
+      rel="${tf#"$root/.workflow/tasks/"}"
+      case "$rel" in */*) ;; *) flat=$((flat + 1)) ;; esac
       # Started means flow-implement pinned a real Base commit or wrote Started;
       # everything else (placeholder, no Base commit yet) is still a draft.
-      wf_read_fields "$tf"
-      state="$(wf_base_commit_state "$root" "${WF_FIELD[base commit]:-}")"
-      if [ "$state" != ok ] && [ -z "${WF_FIELD[started]:-}" ]; then drafts=$((drafts + 1)); fi
-    done
+      if ! base_commit_ok "$root" "$(task_field "$tf" "base commit")" &&
+         [ -z "$(task_field "$tf" started)" ]; then
+        drafts=$((drafts + 1))
+      fi
+    done < <(find "$root/.workflow/tasks" \( -type f -o -type l \) -name '*.md' 2>/dev/null | LC_ALL=C sort)
     if [ "$active" -gt 0 ]; then
       say "Tasks: $active active ($drafts draft, $((active - drafts)) started)"
     fi
@@ -1259,7 +1454,6 @@ cmd_doctor() {
 # out of AGENTS.md or CLAUDE.md if it is unedited; keep the rest of the file.
 remove_marked_block() {
   local root="$1" name="$2" agents_src="$3" agents_marker="$4"
-  local -n r_removed="$5"
   local agents_file="$root/$name"
 
   if [ -f "$agents_file" ]; then
@@ -1327,7 +1521,6 @@ remove_marked_block() {
 # Remove the copied CLI, keeping files edited since install.
 remove_cli() {
   local root="$1" dest="$1/.workflow/bin" manifest="$1/.workflow/bin/.workflow-managed" recorded name
-  local -n c_removed="$2"
   [ -f "$manifest" ] || return 0
   while read -r recorded name; do
     [ -n "$name" ] && [ -f "$dest/$name" ] || continue
@@ -1443,6 +1636,7 @@ cmd_uninstall() {
       "$root/.workflow/.claude-block.workflow-managed" removed
   fi
   remove_cli "$root" removed
+  remove_gitattributes "$root"
   local hook; hook="$(hook_path "$root" 2>/dev/null || true)"
   if [ -n "$hook" ] && [ -f "$hook" ] && grep -qF "$HOOK_MARKER" "$hook"; then
     rm -f "$hook"; ok "removed the pre-commit hook"
@@ -1536,15 +1730,12 @@ Anywhere, including the project's own copy, .workflow/bin/workflow:
   workflow doctor              report what is installed and what is missing
   workflow hook install|uninstall|status [--force]
                                pre-commit hook that blocks on validate errors
-  workflow tasks [OPTIONS]     list and filter tasks
-  workflow deps [OPTIONS]      visualize task dependencies
-  workflow decisions [CMD]     search and manage decision log
-  workflow effort [CMD]        manage effort lifecycle
-  workflow debt [CMD]          track technical debt
-  workflow hotfix-review       list unresolved hotfixes
-  workflow validate [OPTIONS]  validate workflow structure
-  workflow next [OPTIONS]      suggest ready tasks
-All commands support --help for details.
+  workflow validate [--strict] [--format text|json]
+                               check task files and the decision log
+  workflow next [--format text|json]
+                               ready tasks by priority, then paused and blocked
+  workflow version             print the version
+Commands support --help. validate and next need python3 (3.8+).
 
 Installs into the nearest git repository above the current directory, or the
 current directory if there is no git repository. Nothing is written outside that
@@ -1552,21 +1743,32 @@ project. Symlinks escaping that project are rejected. Skills are copied into
 .agents/skills/, rules go into AGENTS.md between workflow:start/end markers, and
 the CLI into .workflow/bin/. --claude also writes .claude/skills/,
 .claude/agents/ and a CLAUDE.md that imports AGENTS.md; it is on by default when
-the project already has CLAUDE.md or .claude/.
+the project already has CLAUDE.md or .claude/. A block in .gitattributes gives
+.workflow/decisions.md and glossary.md git's union merge.
 EOF
 }
 
-# Dispatch to subcommands if they exist
-dispatch_subcommand() {
-  local cmd="$1"
-  shift
-  local script="$KIT/bin/workflow-$cmd"
+# validate and next live in workflow-core.py beside this script.
+run_core() {
+  local core="$BIN_DIR/workflow-core.py"
+  [ -f "$core" ] || die "missing $core; run 'workflow update' from a toolkit checkout ($TOOLKIT_URL)"
+  have_python || die "workflow $1 needs python3 (3.8+) on PATH; install it and retry"
+  exec python3 "$core" "$@"
+}
 
-  if [ -f "$script" ]; then
-    exec bash "$script" "$@"
-  else
-    die "unknown command: $cmd (try 'workflow help')"
-  fi
+# Commands removed in 2.5: say what to do instead, exit 2.
+removed_command() {
+  local hint
+  case "$1" in
+    tasks) hint="run 'workflow next', or read .workflow/tasks/*/ directly" ;;
+    deps) hint="read 'Blocked by' in the task files; 'workflow next' lists blocked tasks" ;;
+    decisions) hint="read the end of .workflow/decisions.md, or grep -n -i '<term>' .workflow/decisions.md" ;;
+    effort) hint="an effort is its tasks/<effort>/ directory plus .workflow/specs/<effort>.md" ;;
+    debt) hint="read or grep .workflow/technical-debt.md" ;;
+    *) hint="the hotfix's follow-up task tracks it; see 'workflow next'" ;;
+  esac
+  printf 'workflow %s was removed in 2.5: %s\n' "$1" "$hint" >&2
+  exit 2
 }
 
 
@@ -1578,6 +1780,7 @@ case "${1:-}" in
   hook) shift; cmd_hook "$@" ;;
   version|--version|-v) printf '%s\n' "$VERSION" ;;
   ""|-h|--help|help) usage ;;
-  tasks|deps|decisions|effort|debt|hotfix-review|validate|next) dispatch_subcommand "$@" ;;
+  validate|next) run_core "$@" ;;
+  tasks|deps|decisions|effort|debt|hotfix-review) removed_command "$1" ;;
   *) die "unknown command: $1 (try 'workflow help')" ;;
 esac

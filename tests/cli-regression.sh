@@ -1876,7 +1876,7 @@ test_vendored_cli() {
   local repo="$TMPDIR/repo_vendored"
   setup_repo "$repo"
   local cli="$repo/.workflow/bin/workflow"
-  if [ -x "$cli" ] && [ -f "$repo/.workflow/bin/workflow-lib.bash" ] && [ -f "$repo/.workflow/bin/.workflow-managed" ]; then
+  if [ -x "$cli" ] && [ -f "$repo/.workflow/bin/workflow-core.py" ] && [ -f "$repo/.workflow/bin/.workflow-managed" ]; then
     pass "init copies the CLI into .workflow/bin"
   else
     fail "init should copy an executable CLI into .workflow/bin"
@@ -1895,17 +1895,17 @@ EOF
   out="$(cd "$repo" && "$cli" init 2>&1 || true)"
   if [[ "$out" == *"committed copy"* ]]; then pass "committed CLI refuses init and names the toolkit"; else fail "committed CLI init should refuse: $out"; fi
 
-  printf '# local tweak\n' >> "$repo/.workflow/bin/workflow-next"
+  printf '# local tweak\n' >> "$repo/.workflow/bin/workflow-core.py"
   out="$(cd "$repo" && "$WORKFLOW" update 2>&1)"
-  if [[ "$out" == *"skipped .workflow/bin/workflow-next"* ]] && tail -n 1 "$repo/.workflow/bin/workflow-next" | grep -q 'local tweak'; then
+  if [[ "$out" == *"skipped .workflow/bin/workflow-core.py"* ]] && tail -n 1 "$repo/.workflow/bin/workflow-core.py" | grep -q 'local tweak'; then
     pass "update keeps an edited CLI file"
   else
     fail "update should keep an edited CLI file: $out"
   fi
   out="$(cd "$repo" && "$WORKFLOW" doctor 2>&1 || true)"
-  if [[ "$out" == *".workflow/bin/workflow-next edited"* ]]; then pass "doctor reports an edited CLI file"; else fail "doctor should report the edited CLI file: $out"; fi
+  if [[ "$out" == *".workflow/bin/workflow-core.py edited"* ]]; then pass "doctor reports an edited CLI file"; else fail "doctor should report the edited CLI file: $out"; fi
   (cd "$repo" && "$WORKFLOW" update --force >/dev/null 2>&1)
-  if cmp -s "$repo/.workflow/bin/workflow-next" "$KIT/bin/workflow-next"; then pass "update --force restores the CLI file"; else fail "update --force should restore the CLI file"; fi
+  if cmp -s "$repo/.workflow/bin/workflow-core.py" "$KIT/bin/workflow-core.py"; then pass "update --force restores the CLI file"; else fail "update --force should restore the CLI file"; fi
 
   (cd "$repo" && "$WORKFLOW" uninstall >/dev/null 2>&1)
   if [ ! -e "$repo/.workflow/bin" ]; then pass "uninstall removes .workflow/bin"; else fail "uninstall should remove .workflow/bin"; fi
@@ -1995,22 +1995,87 @@ EOF
 **Check:** `true` passes
 **Blocked by:** api/01
 EOF
-  local tasks next deps
-  tasks="$(cd "$repo" && "$WORKFLOW" tasks --no-color 2>/dev/null)"
+  local next
   next="$(cd "$repo" && "$WORKFLOW" next --no-color 2>/dev/null)"
-  deps="$(cd "$repo" && "$WORKFLOW" deps --format text 2>/dev/null)"
-  if [[ "$tasks" == *"api/01 API setup"* && "$tasks" == *"web/01 Web setup"* && "$next" == *"api/01 API setup"* && "$deps" == *"Depends on: api/01"* ]]; then
-    pass "tasks, next and deps all read tasks/<effort>/ and name tasks <effort>/<NN>"
+  if [[ "$next" == *"api/01 API setup"* ]]; then
+    pass "next reads tasks/<effort>/ and names tasks <effort>/<NN>"
   else
-    fail "commands disagree on nested tasks: tasks=$tasks next=$next deps=$deps"
+    fail "next should read nested tasks: $next"
   fi
-  if [[ "$tasks" != *"Status: N/A"* ]]; then pass "tasks prints no Status line for tasks that are not interrupted"; else fail "tasks should not print Status: N/A"; fi
   if (cd "$repo" && "$WORKFLOW" validate --no-color >/dev/null 2>&1 || [ $? -eq 1 ]); then pass "same file name in two effort directories is valid"; else fail "two efforts may both have 01-setup.md"; fi
   sed -i 's/^\*\*Effort:\*\* web$/**Effort:** api/' "$repo/.workflow/tasks/web/01-setup.md"
   local out; out="$(cd "$repo" && "$WORKFLOW" validate --no-color 2>&1 || true)"
   if [[ "$out" == *"task is under web/ but its Effort is 'api'"* ]]; then pass "validate rejects an Effort that disagrees with its directory"; else fail "validate should reject a directory/Effort mismatch: $out"; fi
   out="$(cd "$repo" && "$WORKFLOW" doctor 2>&1 || true)"
   if [[ "$out" == *"task is under web/"* ]] && ! (cd "$repo" && "$WORKFLOW" doctor >/dev/null 2>&1); then pass "doctor reports validate's errors and fails"; else fail "doctor should surface validate errors: $out"; fi
+}
+
+# --- 2.5: .gitattributes union-merge block ---
+test_gitattributes_block() {
+  local repo="$TMPDIR/repo_gitattributes" out
+  setup_repo "$repo"
+  if grep -qx '# workflow:start' "$repo/.gitattributes" && grep -qx '.workflow/decisions.md merge=union' "$repo/.gitattributes" &&
+     grep -qx '.workflow/glossary.md merge=union' "$repo/.gitattributes" && grep -qx '# workflow:end' "$repo/.gitattributes"; then
+    pass "init writes the .gitattributes union-merge block"
+  else
+    fail "init should write the .gitattributes block"
+  fi
+  (cd "$repo" && "$WORKFLOW" update >/dev/null 2>&1)
+  if [ "$(grep -c '^# workflow:start$' "$repo/.gitattributes")" = 1 ]; then pass "update keeps one .gitattributes block"; else fail "update duplicated the .gitattributes block"; fi
+  (cd "$repo" && "$WORKFLOW" uninstall >/dev/null 2>&1)
+  if [ ! -e "$repo/.gitattributes" ]; then pass "uninstall deletes a .gitattributes that held only the block"; else fail "uninstall should delete the emptied .gitattributes"; fi
+
+  repo="$TMPDIR/repo_gitattributes_own"
+  mkdir -p "$repo"
+  printf '*.png binary\n' > "$repo/.gitattributes"
+  setup_repo "$repo"
+  out="$(cd "$repo" && "$WORKFLOW" doctor 2>&1 || true)"
+  if [[ "$out" == *".gitattributes has the workflow union-merge block"* ]] && grep -qx '\*.png binary' "$repo/.gitattributes"; then
+    pass "init appends the block to an existing .gitattributes and doctor sees it"
+  else
+    fail "init should append the block and keep the user's lines: $out"
+  fi
+  (cd "$repo" && "$WORKFLOW" uninstall >/dev/null 2>&1)
+  if [ "$(cat "$repo/.gitattributes")" = '*.png binary' ]; then pass "uninstall removes only the block from .gitattributes"; else fail "uninstall should leave the user's .gitattributes lines: $(cat "$repo/.gitattributes")"; fi
+
+  repo="$TMPDIR/repo_gitattributes_missing"
+  setup_repo "$repo"
+  rm -f "$repo/.gitattributes"
+  out="$(cd "$repo" && "$WORKFLOW" doctor 2>&1 || true)"
+  if [[ "$out" == *".gitattributes is missing the workflow union-merge block"* ]]; then pass "doctor reports a missing .gitattributes block"; else fail "doctor should report the missing block: $out"; fi
+}
+
+# --- 2.5: removed commands and stale managed copies ---
+test_removed_commands_and_stale_copies() {
+  local repo="$TMPDIR/repo_removed" out status cmd
+  setup_repo "$repo"
+  for cmd in tasks deps decisions effort debt hotfix-review; do
+    status=0; out="$(cd "$repo" && "$WORKFLOW" "$cmd" 2>&1 >/dev/null)" || status=$?
+    if [ "$status" -eq 2 ] && [[ "$out" == "workflow $cmd was removed in 2.5: "* ]]; then
+      pass "workflow $cmd exits 2 with a removal hint"
+    else
+      fail "workflow $cmd should exit 2 with a removal hint (exit $status): $out"
+    fi
+  done
+
+  local bin="$repo/.workflow/bin"
+  printf '#!/usr/bin/env bash\necho old\n' > "$bin/workflow-tasks"
+  printf '#!/usr/bin/env bash\necho old\n' > "$bin/workflow-deps"
+  printf '%s workflow-tasks\n%s workflow-deps\n' "$(cksum < "$bin/workflow-tasks" | cut -d' ' -f1)" \
+    "$(cksum < "$bin/workflow-deps" | cut -d' ' -f1)" >> "$bin/.workflow-managed"
+  printf '# local tweak\n' >> "$bin/workflow-deps"
+  printf 'old thinking notes\n' > "$repo/.workflow/thinking.md"
+  cksum < "$repo/.workflow/thinking.md" | cut -d' ' -f1 > "$repo/.workflow/.thinking.workflow-managed"
+  out="$(cd "$repo" && "$WORKFLOW" update 2>&1)"
+  if [ ! -e "$bin/workflow-tasks" ]; then pass "update deletes an unmodified stale .workflow/bin/workflow-tasks"; else fail "update should delete the stale workflow-tasks: $out"; fi
+  if [ -f "$bin/workflow-deps" ] && [[ "$out" == *"kept .workflow/bin/workflow-deps"* ]]; then pass "update keeps an edited stale CLI file with a warning"; else fail "update should keep the edited workflow-deps: $out"; fi
+  if [ -f "$KIT/templates/project/.workflow/thinking.md" ]; then
+    pass "thinking.md still shipped; stale removal not applicable"
+  elif [ ! -e "$repo/.workflow/thinking.md" ] && [ ! -e "$repo/.workflow/.thinking.workflow-managed" ]; then
+    pass "update deletes an unmodified .workflow/thinking.md"
+  else
+    fail "update should delete the unmodified thinking.md: $out"
+  fi
 }
 
 test_draft_placeholder_accepted
@@ -2055,6 +2120,8 @@ test_vendored_cli
 test_claude_adapter
 test_pre_commit_hook
 test_effort_directory_layout
+test_gitattributes_block
+test_removed_commands_and_stale_copies
 
 printf '\nResults: %d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" -eq 0 ]
