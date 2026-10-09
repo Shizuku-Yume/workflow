@@ -7,7 +7,7 @@ description: >-
 
 # Flow: Map
 
-Read `.workflow/CONVENTIONS.md` §1 (decision protocol) and §2 (where things live), and `.workflow/STYLE.md`.
+Read `.workflow/CONVENTIONS.md` §1 (decision protocol) and §2 (file structure), and `.workflow/STYLE.md`.
 
 Per CONVENTIONS §0: check codebase before asking. Many questions that feel like decisions are facts waiting to be discovered.
 
@@ -71,6 +71,8 @@ Each open question gets own section below header blocks:
 
 Map is index, not store. Each answered question's detail lives in own section; Route-so-far list just points at it. Map restating own answers twice will drift.
 
+Commit the new map (and any decision entries) when the charting session ends, per CONVENTIONS §2.
+
 ### 4. Four kinds
 
 Not decoration; each says how to answer it.
@@ -98,6 +100,7 @@ One question per session. Not two: point of map is each answer gets clean contex
 4. Write answer into question's section: decision, option it beat, what it was based on. If real decision, add one complete decision entry to `.workflow/decisions.md`. The first answered question moves the map from `Status: charting` to `Status: working` (CONVENTIONS §6).
 5. Update map: add answer to Route so far, answer any question it just unblocked, promote whatever fog now sharp enough to phrase. Remove promoted fog from "Not yet clear" so lives in exactly one place.
 6. If answer shows something beyond destination, move to "Ruled out" with reason, rather than resolving on route.
+7. Commit the map and any decision entries at the end of the session, per CONVENTIONS §2.
 
 ## Finishing
 

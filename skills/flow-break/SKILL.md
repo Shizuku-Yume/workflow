@@ -7,88 +7,75 @@ description: >-
 
 # Flow: Break
 
-Read `.workflow/CONVENTIONS.md` §2 first. Input: spec or settled conversation. Output: task files in `.workflow/tasks/<effort>/`, archived to `.workflow/done/<effort>/` when finished.
+Read `.workflow/CONVENTIONS.md` §2 first. Input: a spec (`.workflow/specs/<effort>.md`) or settled conversation. Output: task files in `.workflow/tasks/<effort>/`, archived to `.workflow/done/<effort>/` when finished.
 
-Run even when the work fits one session: building goes through a task file, because that is where the Base commit, the Check and the archive live. A one-task breakdown is quick (step 3 skips its round).
+Run it even when the work fits one session: the task file holds the Base commit, the Check and the archive. A one-task breakdown is quick.
 
-Also runs in amend mode when a task is `Status: blocked` or the spec changed under tasks already written ("Amending an effort", below).
+It also runs in amend mode when a task is `Status: blocked` or the spec changed under tasks already written (see "Amending an effort").
 
 ## Why tasks exist
 
-Long sessions degrade: attention is sharpest early. Each task sized to fit one fresh session with room to spare.
-
-Second reason: order. Tasks declare blockers, so independent ones can run in parallel (separate worktrees/branches/directories only; shared working tree is serial).
+Long sessions degrade, so each task fits one fresh session with room to spare. Tasks also declare blockers, so independent ones can run in parallel in separate worktrees.
 
 ## Good task shape
 
-- **Delivers working behavior** end to end: narrow path that runs, is visible, checkable. Not "add database layer" which delivers nothing usable.
-- **Fresh session can finish it** without reading whole codebase. Task says which files matter.
-- **Checkable** by something other than person who wrote it.
-- **Independent** of tasks declared after it. Everything needed is already in repo or in blocking task.
+- **Delivers working behavior** end to end: a narrow path that runs and can be checked. "Add database layer" delivers nothing usable.
+- **A fresh session can finish it** from its own file plus the spec sections it names.
+- **Checkable** by someone other than its author.
+- **Independent** of tasks declared after it.
 
-**Bugfix tasks** — `Task type: bugfix`. Built per CONVENTIONS §8: the `Check` is the failing test that reproduces the bug, and `Delivers` says what works again. If nobody knows the cause yet, draft an investigation spike first and block the fix on it.
+**Task types** (CONVENTIONS §2 owns what each Check proves):
+- `feature` (default) and `bugfix`: the Check fails before the change and passes after. A bugfix is built per CONVENTIONS §8: the Check reproduces the bug and `Delivers` says what works again. If nobody knows the cause yet, draft a spike first and block the fix on it.
+- `refactor`: behavior must not change; the Check passes before and after.
+- `spike`: the deliverable is an answer ("yes", "no", "yes but needs X"), possibly with throwaway code. Follow `.workflow/spike-tasks.md`. Time-box it as a scope limit (one prototype, one benchmark run), not hours.
 
-**Exception: spike tasks** — time-boxed technical exploration where deliverable is
-an answer, not code. Mark with `Task type: spike` and follow
-`.workflow/spike-tasks.md`. The time box is a scope limit stated as what to stop
-after (one prototype, one benchmark run), not wall-clock hours an agent can't
-measure. Produces written findings, code may be throwaway. Completing a spike
-means answering the question, whether answer is "yes", "no", or "yes but needs X".
-Use for: "Can library Y do Z?", "Is approach A feasible?", "How does existing
-module B work?".
+**Wide refactors.** A mechanical change whose blast radius breaks many call sites at once (rename a column, retype a shared symbol) can't be a vertical slice. Sequence it: expand (add the new form beside the old) → migrate in batches, each a task blocked by the expand → contract (remove the old form), blocked by every batch.
 
 ## Sizing
 
-Too big if can't describe what it delivers in one sentence without "and", or needs more than ~dozen files read to start. Too small if can't check on its own. When unsure, cut smaller: two small tasks in sequence beat one that stalls halfway with nothing working.
+Too big if you can't say what it delivers in one sentence without "and", or it needs more than about a dozen files read to start. Too small if it can't be checked on its own. When unsure, cut smaller.
 
 ## Process
 
 ### 1. Read spec and code
 
-Identify where work touches. Look for tidying that makes real change easier: rename confusing thing, extract shared piece, move function in wrong file. Tidying goes first as own task. Make change easy, then make easy change.
+Find where the work touches. Tidying that makes the real change easier (rename a confusing thing, extract a shared piece, move a misplaced function) goes first as its own task.
 
-Recorded debt is the first place to look: `.workflow/bin/workflow debt list --by-file --no-color`. An active item whose `Where` overlaps the files this work touches is a candidate tidy-first task, when fixing it makes this change easier. Otherwise leave it; name it in the hand-off so it isn't silently built around. A debt item a task fixes is resolved in that task's commit (`.workflow/bin/workflow debt resolve <id>`).
+Then read `.workflow/technical-debt.md` (or grep it for the modules involved). An entry whose `Where` overlaps this work is a candidate tidy-first task when fixing it makes the change easier; otherwise name it in the hand-off. A task that fixes an entry deletes it in its own commit.
 
 ### 2. Draft tasks
 
 For each:
-- **Effort** — lowercase slug `[a-z0-9]+(-[a-z0-9]+)*`, determines archive dir `.workflow/done/<effort>/`
-- **Task type** — `feature`, `bugfix`, `refactor`, `spike` (optional, defaults to `feature`)
-- **Base commit** — `<commit-sha>` placeholder when drafting. `flow-implement` captures real SHA when starting.
-- **Delivers** — behavior person can observe once done (for spike: "Answer to: <question>")
-- **Blocked by** — required: `None`, or comma-list of `NN` (same effort) or `<effort>/NN` (cross-effort). Numbers only; titles break `.workflow/bin/workflow validate`.
-- **Covers** — the IDs of the spec checks ("How we will know it works") this task makes pass, e.g. `W1, W3`. Omit when there is no spec or the task covers none (a tidy-first task).
-- **Files** — expected starting locations. Not closed whitelist; necessary tests/callers/docs may be added during implementation.
-- **Read first** — specific spec sections, glossary entries, files needed to start. Short list; long list means task too big.
-- **Check** — command to run and result that means it works (for spike: how answer will be validated)
-- **Done when** — acceptance points as checklist (for spike: question answered with evidence)
-Behavior and checks, not code. No snippets except when snippet carries decision prose can't (schema, state machine, type). Never paste file path if file likely to move; name module instead.
+- **Effort** — lowercase slug `[a-z0-9]+(-[a-z0-9]+)*`, the same slug as the spec; it names `tasks/<effort>/` and `done/<effort>/`
+- **Task type** — `feature`, `bugfix`, `refactor`, `spike` (optional, default `feature`)
+- **Base commit** — the `<commit-sha>` placeholder; `flow-implement` fills it when starting
+- **Delivers** — behavior someone can observe once done (spike: "Answer to: <question>")
+- **Blocked by** — `None`, or a comma list of `NN` (same effort) or `<effort>/NN`. Numbers only; `validate` rejects titles.
+- **Covers** — the spec check IDs this task makes pass, e.g. `W1, W3`. Omit when there is no spec or it covers none.
+- **Files** — expected starting locations, not a whitelist
+- **Read first** — spec sections, glossary entries, files needed to start. A long list means the task is too big.
+- **Check** — command and the result that means it works (spike: how the answer is validated)
+- **Done when** — acceptance checklist
 
-Don't create task for work nobody asked for.
+Behavior and checks, not code: a snippet only when it carries a decision prose can't (schema, state machine, type). Create tasks only for work someone asked for.
 
-**Coverage gate.** Every spec check ID appears in some task's `Covers`, or is named in the hand-off as checked only when the effort closes (`flow-close`), because it needs all the pieces at once. A check nobody covers and nobody named is a hole in the plan.
+If the user gave a priority, set `**Priority:**` in the spec header.
 
-### 3. Quiz user
+**Coverage gate.** Every spec check ID appears in some task's `Covers`, or is named in the hand-off as checked only at `flow-close` because it needs all the pieces. Any other uncovered check is a hole in the plan.
 
-Present whole breakdown as numbered list: title, what it delivers, what blocks it.
+### 3. Review round
 
-For parallel work, identify coordination needs:
-- **Truly independent** — no shared interfaces, can merge in any order
-- **Interface dependency** — not blocked by, but both touch same API/module boundary (note in task: "Coordinate with NN on <interface>")
-- **Merge sequence preferred** — merging N before M reduces conflicts, though M not blocked (note in task: "Easier after NN")
+Present one message:
+1. The spec summary in three to five lines: what it's for, what it does, the key decisions, open questions. Skip this when the spec was already confirmed in an earlier session.
+2. The breakdown as a numbered list: title, what it delivers, what blocks it. For parallel work, mark each pair as truly independent, sharing an interface ("Coordinate with NN on <interface>"), or easier merged in order ("Easier after NN").
 
-Ask three things:
-- Right size?
-- Dependencies right — each task depends only on what truly gates it?
-- Should any be joined or split?
+Ask: right size? Dependencies only what truly gates each task? Anything to join or split? One approval settles both the spec and the tasks. Iterate as one round, not a negotiation per task.
 
-Iterate until approved. One round, not negotiation per task.
-
-A breakdown of one task skips this round: say what the task delivers and how it will be checked, and go on.
+A one-task breakdown with an already confirmed spec skips the questions: say what the task delivers and how it's checked, and go on.
 
 ### 4. Write files
 
-`.workflow/tasks/<effort>/<NN>-<slug>.md`. Number within the effort, `01`, `02` in dependency order (blockers first). Another effort may reuse the same numbers and slugs in its own directory, so refer to tasks elsewhere as `<effort>/<NN>`.
+`.workflow/tasks/<effort>/<NN>-<slug>.md`, numbered `01`, `02` within the effort in dependency order (blockers first). Other efforts reuse numbers, so refer to tasks elsewhere as `<effort>/<NN>`.
 
 ```markdown
 # <NN>: <Title>
@@ -111,35 +98,29 @@ A breakdown of one task skips this round: say what the task delivers and how it 
 - [ ] <acceptance point>
 ```
 
-If `.workflow/efforts/<effort>.md` doesn't exist, run `.workflow/bin/workflow effort create <effort>` and fill in goal, scope, success criteria and priority from the spec. It starts as `Status: planning`; `flow-implement` moves it on (CONVENTIONS §6).
+Run `.workflow/bin/workflow validate` and fix every error.
 
-Then run `.workflow/bin/workflow validate`. Fix every error in the task files before handing off.
+Then commit the spec, decision and glossary entries and task files together, one commit on the main branch, before any task branch is cut (CONVENTIONS §2). Under `Landing: pr` that commit goes through a PR like any change.
 
 ### 5. Hand off
 
-Report list with:
+Report:
 - What can start now
-- What runs in parallel (truly independent vs needs coordination)
-- Recommended merge order if conflicts likely
-- Spec checks left to `flow-close`, and debt items in the way that weren't made tasks
+- What runs in parallel (truly independent vs needs coordination), and the merge order if conflicts are likely
+- Spec checks left to `flow-close`, and debt entries in the way that weren't made tasks
 
-Each task must be buildable from a fresh session that reads only its own file
-plus the spec sections it names; nobody should need conversation that produced it. If task would need that
-conversation, it's missing something; fix task file now.
+Each task must be buildable by a fresh session reading only its file and the spec sections it names. If it would need this conversation, fix the task file now.
 
-Build with `flow-implement`, one task at a time per working tree. Independent tasks run in parallel only in separate worktrees/directories; branch in same working tree is not isolation. A task whose branch `<effort>/<NN>-<slug>` already exists is claimed by whoever made it. Task can't start until all blockers are finished: archived under `.workflow/done/<effort>/` and landed (`merge-strategy.md`), or, under `Landing: pr`, stacked on the blocker's branch and recorded as `Base branch`. `.workflow/bin/workflow next` treats an archived blocker as finished, so it stops blocking without editing the dependent task's `Blocked by`.
-
-When task finishes, `flow-implement` archives to `.workflow/done/<effort>/`, commits code, docs, and archive move together, and lands it. When the effort's last task has landed, `flow-close` checks the whole against the spec.
-
-Genuinely exploratory task is decision task: settles question, produces answer written back into spec, not code. Mark it so nobody tries to build it.
+Build with `flow-implement`, one task at a time per working tree; parallel tasks need separate worktrees. A task whose branch `<effort>/<NN>-<slug>` exists is claimed. A task starts when every blocker is archived under `.workflow/done/<effort>/` and landed (`merge-strategy.md`), or, under `Landing: pr`, stacked on the blocker's branch and recorded as `Base branch`. `next` treats an archived blocker as finished.
 
 ## Amending an effort
 
-Runs when a task of the effort is `Status: blocked`, or when the spec changed under tasks already written. The plan is fixed in the plan, here, not worked around in code.
+Runs when a task of the effort is `Status: blocked`, or the spec changed under tasks already written. The plan is fixed here, not worked around in code.
 
 1. Read what changed: the blocked task's `## Blocked` section, and the spec change or decision entry that answered it (`git diff` on the spec).
-2. Go through every remaining task of the effort under `.workflow/tasks/<effort>/`, the blocked one first. For each: does `Delivers` still describe what the spec now wants? Do `Read first`, `Files`, `Check` and `Covers` still point at the right things? Is `Blocked by` still the real gate?
-3. Rewrite what is stale. A task with no reason left to exist is deleted: name it and why in the decision entry for the change, and fix every `Blocked by` that pointed at it. New tasks take numbers after the highest one the effort has used, archived ones included; never renumber, other files refer to the numbers.
-4. On the blocked task, remove `## Blocked`. If what it delivers is unchanged, set `Status: paused` and make sure `## Progress` says where the earlier work is, so `flow-implement` resumes it on the same Base commit. If what it delivers changed, reset `Base commit` to the `<commit-sha>` placeholder, drop `Started` and `Status`, and name any work worth reusing in `## Progress`; `flow-implement` then starts it on a clean baseline.
+2. Go through every remaining task under `.workflow/tasks/<effort>/`, the blocked one first: does `Delivers` still match the spec? Do `Read first`, `Files`, `Check` and `Covers` point at the right things? Is `Blocked by` still the real gate?
+3. Rewrite what is stale. Delete a task with no reason left to exist: name it and why in the decision entry for the change, and fix every `Blocked by` that pointed at it. New tasks take numbers after the highest the effort has used, archived ones included; never renumber.
+4. On the blocked task, remove `## Blocked`. If what it delivers is unchanged, set `Status: paused` and make sure `## Progress` says where the earlier work is, so `flow-implement` resumes on the same Base commit. If it changed, reset `Base commit` to the `<commit-sha>` placeholder, drop `Started` and `Status`, and name reusable work in `## Progress`.
 5. Rerun the coverage gate.
-6. Present the changes as one round, as in step 3: what was rewritten, added, dropped, and why. Then `.workflow/bin/workflow validate` and commit the task and spec changes together.
+6. Present the changes as one round, as in step 3: what was rewritten, added, dropped, and why.
+7. Run `.workflow/bin/workflow validate`, then commit the spec, decision entries and task changes together on the main branch, as in step 4.
