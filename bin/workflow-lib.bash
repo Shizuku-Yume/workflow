@@ -37,6 +37,36 @@ wf_project_root() {
   fi
 }
 
+# Collect every Markdown file under a task directory, at any depth, sorted, into
+# WF_FILES. Active tasks live in .workflow/tasks/<effort>/<NN>-<slug>.md; files
+# directly under tasks/ are the legacy flat layout and are still read. Every
+# command discovers tasks through this one function so none of them can miss a
+# file another one counts.
+wf_task_files() {
+  local dir="$1" f
+  WF_FILES=()
+  [ -d "$dir" ] || return 0
+  while IFS= read -r -d '' f; do
+    WF_FILES+=("$f")
+  done < <(find "$dir" \( -type f -o -type l \) -name '*.md' -print0 | LC_ALL=C sort -z)
+}
+
+# Effort directory a task file sits in: the first path component below the
+# tasks/ or done/ directory, or empty for a file directly inside it.
+wf_dir_effort() {
+  local base="$1" file="$2" rel
+  rel="${file#"$base"/}"
+  if [[ "$rel" == */* ]]; then WF_DIR_EFFORT="${rel%%/*}"; else WF_DIR_EFFORT=""; fi
+}
+
+# Format a task reference for display and for map keys: `<effort>/<NN>` with at
+# least two digits, the spelling CONVENTIONS §2 uses. Padding the key also makes
+# plain lexical sorts order 02 before 10.
+wf_ref() {
+  wf_normalize_number "$2"
+  printf -v WF_REF '%s/%02d' "$1" "$((10#$WF_NUMBER))"
+}
+
 # Quote one string for JSON, escaping backslashes, quotes, and control bytes.
 wf_json_string() {
   local value="$1" code control escaped

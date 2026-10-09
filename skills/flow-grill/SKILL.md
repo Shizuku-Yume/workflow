@@ -74,7 +74,7 @@ If user says "enough": write decisions log, list what's still open (one line eac
 
 ## Decision log
 
-Append to `.workflow/decisions.md` per CONVENTIONS §2 and the format in that file. Five fields required; tag the entry `**Effort:** <slug>` when it belongs to one effort. Run `workflow decisions validate` after appending.
+Append to `.workflow/decisions.md` per CONVENTIONS §2 and the format in that file. Five fields required; tag the entry `**Effort:** <slug>` when it belongs to one effort. Run `.workflow/bin/workflow decisions validate` after appending.
 
 Use draft entries written during step 3. If "Instead of" reads like a strawman, that alternative was never serious; find the real runner-up or acknowledge the choice needs no entry.
 

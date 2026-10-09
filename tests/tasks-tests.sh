@@ -189,7 +189,7 @@ class TasksTests(unittest.TestCase):
         (self.tasks / "01-api.md").unlink()
         result = self.run_tasks("--format", "json", "--effort", "api")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("missing task api/1", result.stderr)
+        self.assertIn("missing task api/01", result.stderr)
         self.assertTrue(json.loads(result.stdout)[0]["blocked"])
 
     def test_titles_are_rejected_in_blockers(self):

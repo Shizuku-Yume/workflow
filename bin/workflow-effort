@@ -122,17 +122,15 @@ register_task() {
     DONE_IDS["$effort/$id"]=1
   fi
 }
-if [ -d "$TASKS_DIR" ]; then
-  while IFS= read -r -d '' file; do
-    ACTIVE_FILES+=("$file"); register_task "$file" active
-  done < <(find "$TASKS_DIR" -type f -name '*.md' -print0)
-fi
-if [ -d "$DONE_DIR" ]; then
-  while IFS= read -r -d '' file; do
-    DONE_FILES+=("$file")
-    [ "${file##*/}" = retrospective.md ] || register_task "$file" done
-  done < <(find "$DONE_DIR" -type f -name '*.md' -print0)
-fi
+wf_task_files "$TASKS_DIR"
+for file in "${WF_FILES[@]}"; do
+  ACTIVE_FILES+=("$file"); register_task "$file" active
+done
+wf_task_files "$DONE_DIR"
+for file in "${WF_FILES[@]}"; do
+  DONE_FILES+=("$file")
+  [ "${file##*/}" = retrospective.md ] || register_task "$file" done
+done
 if [ -d "$EFFORTS_DIR" ]; then
   for file in "$EFFORTS_DIR"/*.md; do
     [ -f "$file" ] || continue
@@ -219,7 +217,9 @@ show_status() {
 }
 create_effort() {
   local effort="$1" file="$EFFORTS_DIR/$1.md"
-  exists "$effort" && error "effort '$effort' already exists"
+  # Tasks may already name the effort (flow-break writes them first, and
+  # validate suggests this command for them); only an existing definition stops it.
+  [ -z "${DEFINITIONS[$effort]:-}" ] && [ ! -e "$file" ] || error "effort '$effort' already has a definition: $file"
   mkdir -p "$EFFORTS_DIR" || error 'cannot create efforts directory'
   cat > "$file" <<EOF || error "cannot create effort definition: $file"
 # Effort: $effort
@@ -280,13 +280,15 @@ rename_effort() {
   exists "$old" || error "effort '$old' not found"
   [ "$old" != "$new" ] || usage_error 'old and new slugs are identical'
   exists "$new" && error "effort '$new' already exists"
-  [ ! -e "$DONE_DIR/$new" ] && [ ! -e "$EFFORTS_DIR/$new.md" ] || error "rename destination '$new' already exists"
+  [ ! -e "$DONE_DIR/$new" ] && [ ! -e "$TASKS_DIR/$new" ] && [ ! -e "$EFFORTS_DIR/$new.md" ] || error "rename destination '$new' already exists"
   for file in "${ACTIVE_FILES[@]}" "${DONE_FILES[@]}"; do rewrite "$file" "$old" "$new" rename; done
   if [ -n "${DEFINITIONS[$old]:-}" ]; then
     rewrite "${DEFINITIONS[$old]}" "$old" "$new" rename
     mv -- "${DEFINITIONS[$old]}" "$EFFORTS_DIR/$new.md" || error 'cannot rename effort definition'
   fi
   if [ -d "$DONE_DIR/$old" ]; then mv -- "$DONE_DIR/$old" "$DONE_DIR/$new" || error 'cannot rename effort archive'; fi
+  # tasks/<effort>/ must match the Effort field, so the directory moves with it.
+  if [ -d "$TASKS_DIR/$old" ]; then mv -- "$TASKS_DIR/$old" "$TASKS_DIR/$new" || error 'cannot rename effort task directory'; fi
   printf "Renamed effort '%s' to '%s'\n" "$old" "$new"
 }
 complete_effort() {

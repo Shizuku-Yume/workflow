@@ -31,7 +31,7 @@ _workflow() {
   if [[ $command == workflow ]]; then
     if (( CURRENT == 2 )); then
       _arguments '(-h --help)'{-h,--help}'[show help]' '(-v --version)'{-v,--version}'[show version]' \
-        '1:command:(init update doctor uninstall version tasks deps decisions effort debt hotfix-review validate next help)'
+        '1:command:(init update doctor uninstall hook version tasks deps decisions effort debt hotfix-review validate next help)'
       return
     fi
     words=("${words[@]:1}")
@@ -135,7 +135,12 @@ _workflow() {
       specs=('--interactive[select a task]' '--format[output format]:format:_workflow_completion_formats') ;;
     init|update)
       common=('(-h --help)-h[show help]' '(-h --help)--help[show help]')
-      specs=('--force[replace existing installation files]') ;;
+      specs=('--force[replace existing installation files]'
+        '(--no-claude)--claude[also install .claude/ skills, agents and CLAUDE.md]'
+        '(--claude)--no-claude[do not install the Claude Code adapter]') ;;
+    hook)
+      common=('(-h --help)-h[show help]' '(-h --help)--help[show help]')
+      specs=('1:action:(install uninstall status)' '--force[replace an existing pre-commit hook]') ;;
     doctor|uninstall|version|help)
       common=('(-h --help)-h[show help]' '(-h --help)--help[show help]') ;;
     *) return 1 ;;

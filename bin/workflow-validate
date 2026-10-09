@@ -7,7 +7,7 @@ ROOT=$(wf_project_root)
 WF="$ROOT/.workflow"
 FIX=0 STRICT=0 FORMAT=text ERRORS=0 WARNINGS=0
 ISSUES=() FILES=() FIX_FILES=()
-declare -A NUMBER=() EFFORT=() FIELD=() LINE=() INDEX=() ACTIVE=() DONE_FILE=() EDGES=() STATE=()
+declare -A NUMBER=() EFFORT=() FIELD=() LINE=() INDEX=() ACTIVE=() DONE_FILE=() EDGES=() STATE=() DIR_EFFORT=() TITLE_NUMBER=()
 C_RED= C_YELLOW= C_BLUE= C_OFF=
 if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
   C_RED=$'\033[31m'; C_YELLOW=$'\033[33m'; C_BLUE=$'\033[34m'; C_OFF=$'\033[0m'
@@ -18,9 +18,10 @@ workflow validate - validate the entire workflow structure
 
 Usage: workflow validate [--fix] [--strict] [--format text|json] [--no-color]
 Checks required Task, Effort, Check and Blocked by fields; effort references;
-blockers; Base commit refs; task-number collisions within efforts; dependency
-cycles; and decision format. Checks active and completed task files; problems
-in completed files warn instead of failing.
+that a task in tasks/<effort>/ says the same Effort; that the heading number
+matches the filename; blockers; Base commit refs; task-number collisions within
+efforts; dependency cycles; and decision format. Checks active and completed
+task files; problems in completed files warn instead of failing.
 
   --fix        Confirm each safe CRLF-to-LF repair (no semantic edits)
   --strict     Treat warnings as errors
@@ -54,14 +55,17 @@ collect_tasks() {
   local directory f filename key name dup
   for directory in "$WF/tasks" "$WF/done"; do
     [ -d "$directory" ] || continue
-    while IFS= read -r -d '' f; do
+    wf_task_files "$directory"
+    for f in "${WF_FILES[@]}"; do
       filename=${f##*/}
       [[ "$filename" =~ ^([0-9]+)-.+\.md$ ]] || continue
       wf_normalize_number "${BASH_REMATCH[1]}"
       NUMBER["$f"]="$WF_NUMBER"
       FILES+=("$f")
       if [[ "$f" == "$WF/done/"* ]]; then DONE_FILE["$f"]=1; fi
+      wf_dir_effort "$directory" "$f"; DIR_EFFORT["$f"]="$WF_DIR_EFFORT"
       wf_read_fields "$f"
+      TITLE_NUMBER["$f"]="$WF_TITLE_NUMBER"
       for name in "${!WF_FIELD[@]}"; do
         FIELD["$f|$name"]="${WF_FIELD[$name]}"
         LINE["$f|$name"]="${WF_LINE[$name]:-1}"
@@ -74,10 +78,25 @@ collect_tasks() {
         issue "$(sev_for "$f")" "$f" "${dup%%:*}" "duplicate ${dup#*:} field" "Keep one ${dup#*:} field."
       done
       EFFORT["$f"]="${FIELD["$f|effort"]:-}"
-      key="${EFFORT[$f]}/${NUMBER[$f]}"
+      wf_ref "${EFFORT[$f]}" "${NUMBER[$f]}"; key=$WF_REF
       if [ -z "${INDEX[$key]:-}" ]; then INDEX["$key"]="$f"; fi
       if [[ "$f" == "$WF/tasks/"* ]]; then ACTIVE["$key"]=1; fi
-    done < <(find "$directory" -type f -name '*.md' -print0)
+    done
+  done
+}
+# The directory a task sits in names its effort; the Effort field must agree,
+# or the archive move and `<effort>/<NN>` references point at the wrong place.
+validate_layout() {
+  local f dir effort title_number
+  for f in "${FILES[@]}"; do
+    dir=${DIR_EFFORT[$f]}; effort=${EFFORT[$f]}
+    if [ -n "$dir" ] && [ -n "$effort" ] && [ "$dir" != "$effort" ]; then
+      issue "$(sev_for "$f")" "$f" "${LINE["$f|effort"]:-1}" "task is under ${dir}/ but its Effort is '$effort'" "Move it to the $effort/ directory or correct the Effort field."
+    fi
+    title_number=${TITLE_NUMBER[$f]}
+    if [ -n "$title_number" ] && [ "$title_number" != "${NUMBER[$f]}" ]; then
+      issue "$(sev_for "$f")" "$f" 1 "heading number $title_number does not match filename number ${NUMBER[$f]}" "Make the '# NN:' heading and the filename use the same number."
+    fi
   done
 }
 validate_required_fields() {
@@ -112,7 +131,7 @@ validate_efforts() {
 validate_collisions() {
   local f key; declare -A seen=()
   for f in "${FILES[@]}"; do
-    key="${EFFORT[$f]}/${NUMBER[$f]}"
+    wf_ref "${EFFORT[$f]}" "${NUMBER[$f]}"; key=$WF_REF
     if [ -n "${seen[$key]:-}" ]; then issue ERROR "$f" 1 "task-number collision: $key also occurs in ${seen[$key]#"$ROOT/"}" 'Renumber one task and update its blocker references.'
     else seen["$key"]=$f; fi
   done
@@ -122,7 +141,7 @@ validate_blockers() {
   for f in "${FILES[@]}"; do
     blocked=${FIELD["$f|blocked by"]:-}
     [ -n "$blocked" ] || continue
-    key="${EFFORT[$f]}/${NUMBER[$f]}"
+    wf_ref "${EFFORT[$f]}" "${NUMBER[$f]}"; key=$WF_REF
     rc=0
     wf_parse_blockers "$blocked" 0 || rc=$?
     if [ "$rc" -ne 0 ]; then
@@ -135,8 +154,9 @@ validate_blockers() {
     for ((i = 0; i < WF_REFS_COUNT; i++)); do
       ref="${WF_REFS[$i]}"; raw="${WF_RAW_REFS[$i]}"
       local target
-      if [[ "$ref" == */* ]]; then target="$ref"
-      else target="${EFFORT[$f]}/$ref"; fi
+      if [[ "$ref" == */* ]]; then wf_ref "${ref%%/*}" "${ref##*/}"
+      else wf_ref "${EFFORT[$f]}" "$ref"; fi
+      target=$WF_REF
       if [ -z "${INDEX[$target]:-}" ]; then
         issue "$(sev_for "$f")" "$f" "${LINE["$f|blocked by"]:-1}" "orphaned blocker '$raw'" "Create task $target or correct the Blocked by reference."
       elif [ -n "${ACTIVE[$key]:-}" ] && [ -n "${ACTIVE[$target]:-}" ]; then EDGES["$key"]="${EDGES[$key]:-} $target"; fi
@@ -232,10 +252,10 @@ apply_fixes() {
 }
 run_validation() {
   ERRORS=0; WARNINGS=0; ISSUES=(); FILES=(); FIX_FILES=()
-  NUMBER=(); EFFORT=(); FIELD=(); LINE=(); INDEX=(); ACTIVE=(); DONE_FILE=(); EDGES=(); STATE=()
+  NUMBER=(); EFFORT=(); FIELD=(); LINE=(); INDEX=(); ACTIVE=(); DONE_FILE=(); EDGES=(); STATE=(); DIR_EFFORT=(); TITLE_NUMBER=()
   if [ ! -d "$WF" ]; then issue ERROR "$WF" 1 'missing .workflow directory' 'Run: workflow init'; return; fi
   if [ ! -d "$WF/tasks" ]; then issue WARNING "$WF/tasks" 1 'tasks directory is missing' 'Run: workflow init'; fi
-  collect_tasks; validate_required_fields; validate_task_types; validate_efforts; validate_collisions
+  collect_tasks; validate_required_fields; validate_task_types; validate_efforts; validate_layout; validate_collisions
   validate_blockers; validate_bases; validate_cycles; validate_decisions; validate_line_endings
 }
 while [ $# -gt 0 ]; do

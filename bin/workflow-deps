@@ -78,7 +78,8 @@ ISSUES=0
 collect_tasks() {
   local directory=$1 completed=$2 file filename num title effort blockers key issue
   [ -d "$directory" ] || return 0
-  while IFS= read -r -d '' file; do
+  wf_task_files "$directory"
+  for file in "${WF_FILES[@]}"; do
     filename=${file##*/}
     # README and other non-task Markdown files are intentionally ignored.
     [[ "$filename" =~ ^([0-9]+)-.+\.md$ ]] || continue
@@ -95,7 +96,7 @@ collect_tasks() {
       issue="invalid effort in $filename: $effort"
       effort=none
     fi
-    key="$effort/$num"
+    wf_ref "$effort" "$num"; key=$WF_REF
     if [ -n "${TITLES[$key]+present}" ]; then
       # Active files win over archived copies; duplicated active keys are errors.
       if [ "$completed" = no ] || [ -n "${COMPLETED[$key]:-}" ]; then
@@ -106,7 +107,7 @@ collect_tasks() {
     TITLES[$key]=$title; EFFORTS[$key]=$effort; BLOCKED[$key]=$blockers
     [ -z "$issue" ] || FILE_ISSUES[$key]=$issue
     if [ "$completed" = yes ]; then COMPLETED[$key]=1; fi
-  done < <(find "$directory" -type f -name '*.md' -print0 | LC_ALL=C sort -z)
+  done
 }
 
 collect_tasks "$TASKS_DIR" no
@@ -128,7 +129,8 @@ parse_dependencies() {
   fi
   for ((i = 0; i < WF_REFS_COUNT; i++)); do
     ref=${WF_REFS[$i]}
-    [[ "$ref" == */* ]] || ref="${EFFORTS[$key]}/$ref"
+    if [[ "$ref" == */* ]]; then wf_ref "${ref%%/*}" "${ref##*/}"; else wf_ref "${EFFORTS[$key]}" "$ref"; fi
+    ref=$WF_REF
     if [ -z "${seen[$ref]:-}" ]; then DEPS[$key]+=" $ref"; seen[$ref]=1; fi
   done
 }

@@ -61,11 +61,11 @@ project="$TMP/priorities"
 next_priority_fixture "$project"
 capture "$project" --no-color
 status 0 'priority fixture succeeds outside git'
-expected=$'99\n2\n10\n1\n20'
-actual="$(printf '%s\n' "$OUTPUT" | sed -n 's/^[1-5]) \[\([0-9]*\)\].*/\1/p')"
+expected=$'99\n02\n10\n01\n20'
+actual="$(printf '%s\n' "$OUTPUT" | sed -n 's/^[1-5]) [a-z0-9-]*\/\([0-9]*\) .*/\1/p')"
 if [ "$actual" = "$expected" ]; then pass 'effort priorities then numeric task numbers determine order'; else fail "priority ordering ($actual)"; fi
 contains '6 total; showing up to 5' 'ready count and top-five limit are displayed'
-excludes '[3] [low]' 'sixth ready task is not displayed'
+excludes 'low/03' 'sixth ready task is not displayed'
 excludes 'Not ready.' 'blocked tasks are not offered'
 contains 'Goal: Ship high priority work.' 'effort goal is shown'
 contains 'Check: Check task two.' 'bold Markdown Check field is shown'
@@ -112,15 +112,15 @@ next_task "$blocked" 03-third.md core 'core/7' 'Check third.'
 capture "$blocked"
 status 0 'no ready tasks is not an error'
 contains 'No ready tasks. 3 task(s) blocked.' 'no-ready state reports blocked task count'
-contains 'core/7: 3 task(s) (tasks: 1, 2, 3)' 'blocking counts normalize and deduplicate dependency numbers'
-contains 'cross/8: 1 task(s)' 'cross-effort blockers are included'
+contains 'core/07: 3 task(s) (tasks: core/01, core/02, core/03)' 'blocking counts normalize and deduplicate dependency numbers'
+contains 'cross/08: 1 task(s)' 'cross-effort blockers are included'
 first="$(printf '%s\n' "$OUTPUT" | sed -n '3p')"
-if [[ "$first" == *'core/7: 3 task(s)'* ]]; then pass 'most consequential blocker is first'; else fail 'blocker ordering'; fi
+if [[ "$first" == *'core/07: 3 task(s)'* ]]; then pass 'most consequential blocker is first'; else fail 'blocker ordering'; fi
 capture "$blocked" --interactive < /dev/null
 status 0 'no-ready interactive mode does not prompt'
 capture "$blocked" --format json
 status 0 'blocked workflow supports JSON'
-json_check 'assert data["ready_tasks"] == []; assert data["blockers"][0] == {"dependency":"core/7", "count":3, "tasks":[1,2,3]}' 'JSON blocker ranking preserves deduplicated task identifiers'
+json_check 'assert data["ready_tasks"] == []; assert data["blockers"][0] == {"dependency":"core/07", "count":3, "tasks":[1,2,3]}' 'JSON blocker ranking preserves deduplicated task identifiers'
 
 circular="$TMP/circular"
 next_project "$circular"
@@ -128,8 +128,8 @@ next_task "$circular" 01-cycle.md core '02' 'First.'
 next_task "$circular" 02-cycle.md core '01' 'Second.'
 capture "$circular"
 status 0 'circular blockers do not crash or recurse'
-contains 'core/1: 1 task(s)' 'circular first blocker is shown'
-contains 'core/2: 1 task(s)' 'circular second blocker is shown'
+contains 'core/01: 1 task(s)' 'circular first blocker is shown'
+contains 'core/02: 1 task(s)' 'circular second blocker is shown'
 
 # Missing and malformed fields are kept out of the ready list rather than guessed.
 malformed="$TMP/malformed"
@@ -208,7 +208,7 @@ contains 'Start: flow-implement web/01' 'web start reference disambiguates repea
 excludes 'API follow-up check.' 'unqualified blocker keeps same-effort follow-up blocked'
 stderr_contains 'using normal priority' 'missing effort definition retains normal priority'
 capture "$scoped" --format json
-json_check 'assert {t["start_command"] for t in data["ready_tasks"]} == {"flow-implement api/01", "flow-implement web/01"}; assert data["blocked_count"] == 1 and data["blockers"][0]["dependency"] == "api/1"' 'JSON ready list and blockers are effort-scoped'
+json_check 'assert {t["start_command"] for t in data["ready_tasks"]} == {"flow-implement api/01", "flow-implement web/01"}; assert data["blocked_count"] == 1 and data["blockers"][0]["dependency"] == "api/01"' 'JSON ready list and blockers are effort-scoped'
 
 cat > "$check_field_boundary/.workflow/tasks/01-check.md" <<'EOF'
 # 01: Adjacent fields
@@ -256,7 +256,7 @@ contains 'flow-implement core/02' 'task blocked only by an archived task is read
 excludes 'flow-implement core/03' 'task with an unarchived blocker stays blocked'
 capture "$archived" --format json
 json_check 'assert sorted(t["number"] for t in data["ready_tasks"]) == [2]; assert data["task_count"] == 2; assert data["blocked_count"] == 1' 'archived blockers drop out of counts and blocker list'
-json_check 'assert [b["dependency"] for b in data["blockers"]] == ["core/7"]' 'only the unarchived blocker is reported'
+json_check 'assert [b["dependency"] for b in data["blockers"]] == ["core/07"]' 'only the unarchived blocker is reported'
 
 # A blocker in another effort is resolved by that effort's archive directory.
 cross_archived="$TMP/cross-archived"

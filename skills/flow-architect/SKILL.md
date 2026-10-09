@@ -98,7 +98,7 @@ Nothing changed. User picks what to act on. Each finding they want becomes own e
 **Track unaddressed findings** in `.workflow/technical-debt.md`, one per finding, with flags so no prompt opens:
 
 ```sh
-workflow debt add --title '<concrete symptom>' --location '<files>' \
+.workflow/bin/workflow debt add --title '<concrete symptom>' --location '<files>' \
   --priority fix-now|worth-doing|only-if-grows \
   --problem '<what is wrong>' --impact '<what it buys>' \
   --solution '<what to do>' --cost '<cost>'
@@ -106,4 +106,4 @@ workflow debt add --title '<concrete symptom>' --location '<files>' \
 
 Labels map to priorities: Fix now → `fix-now`, Worth doing → `worth-doing`, Only if it grows → `only-if-grows`. This stops future reviews re-discovering the same issues and keeps the reason something wasn't fixed.
 
-Findings the user rejects: `workflow debt accept <id> --reason '<why>'`, so next review doesn't re-propose them.
+Findings the user rejects: `.workflow/bin/workflow debt accept <id> --reason '<why>'`, so next review doesn't re-propose them.

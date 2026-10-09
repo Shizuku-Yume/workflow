@@ -37,6 +37,7 @@ test_draft_placeholder_accepted() {
   cat > "$repo/.workflow/tasks/01-draft.md" <<'EOF'
 # 01: Draft Task
 **Effort:** core-work
+**Check:** `true` passes
 **Base commit:** <commit-sha>
 **Blocked by:** None, can start now
 EOF
@@ -56,6 +57,7 @@ test_invalid_concrete_sha_rejected() {
   cat > "$repo/.workflow/tasks/01-draft.md" <<'EOF'
 # 01: Draft Task
 **Effort:** core-work
+**Check:** `true` passes
 **Base commit:** 0000000000000000000000000000000000000000
 **Blocked by:** None, can start now
 EOF
@@ -69,6 +71,7 @@ EOF
   cat > "$repo/.workflow/tasks/01-draft.md" <<'EOF'
 # 01: Draft Task
 **Effort:** core-work
+**Check:** `true` passes
 **Base commit:** not-a-sha
 **Blocked by:** None, can start now
 EOF
@@ -78,16 +81,17 @@ EOF
     pass "malformed concrete SHA rejected"
   fi
 
-  # Missing Base commit
+  # Missing Base commit: optional (CONVENTIONS §2), and doctor now agrees with validate
   cat > "$repo/.workflow/tasks/01-draft.md" <<'EOF'
 # 01: Draft Task
 **Effort:** core-work
+**Check:** `true` passes
 **Blocked by:** None, can start now
 EOF
-  if (cd "$repo" && "$WORKFLOW" doctor >/dev/null 2>&1); then
-    fail "missing Base commit should be rejected"
+  if (cd "$repo" && "$WORKFLOW" doctor >/dev/null 2>&1) && (cd "$repo" && "$WORKFLOW" validate >/dev/null 2>&1 || [ $? -eq 1 ]); then
+    pass "missing Base commit accepted by doctor and validate alike"
   else
-    pass "missing Base commit rejected"
+    fail "missing Base commit is optional and should be accepted"
   fi
 }
 
@@ -99,6 +103,7 @@ test_invalid_dependencies_rejected() {
   cat > "$repo/.workflow/tasks/01-draft.md" <<'EOF'
 # 01: Draft Task
 **Effort:** core-work
+**Check:** `true` passes
 **Base commit:** <commit-sha>
 **Blocked by:** 01
 EOF
@@ -112,6 +117,7 @@ EOF
   cat > "$repo/.workflow/tasks/01-draft.md" <<'EOF'
 # 01: Draft Task
 **Effort:** core-work
+**Check:** `true` passes
 **Base commit:** <commit-sha>
 **Blocked by:** 99
 EOF
@@ -125,6 +131,7 @@ EOF
   cat > "$repo/.workflow/tasks/01-draft.md" <<'EOF'
 # 01: Draft Task
 **Effort:** core-work
+**Check:** `true` passes
 **Base commit:** <commit-sha>
 **Blocked by:** waiting for review
 EOF
@@ -138,12 +145,14 @@ EOF
   cat > "$repo/.workflow/tasks/01-draft.md" <<'EOF'
 # 01: Draft Task
 **Effort:** effort-a
+**Check:** `true` passes
 **Base commit:** <commit-sha>
 **Blocked by:** None, can start now
 EOF
   cat > "$repo/.workflow/tasks/02-other.md" <<'EOF'
 # 02: Other Task
 **Effort:** effort-b
+**Check:** `true` passes
 **Base commit:** <commit-sha>
 **Blocked by:** 01
 EOF
@@ -163,6 +172,7 @@ test_explicit_archived_cross_effort() {
   cat > "$repo/.workflow/done/archived-effort/01-done.md" <<'EOF'
 # 01: Done Task
 **Effort:** archived-effort
+**Check:** `true` passes
 **Base commit:** <commit-sha>
 **Blocked by:** None, can start now
 EOF
@@ -170,6 +180,7 @@ EOF
   cat > "$repo/.workflow/tasks/01-draft.md" <<'EOF'
 # 01: Draft Task
 **Effort:** active-effort
+**Check:** `true` passes
 **Base commit:** <commit-sha>
 **Blocked by:** archived-effort/01
 EOF
@@ -189,6 +200,7 @@ test_blocked_by_strict_grammar() {
   cat > "$repo/.workflow/tasks/01-prereq.md" <<'EOF'
 # 01: Prereq Task
 **Effort:** core-work
+**Check:** `true` passes
 **Base commit:** <commit-sha>
 **Blocked by:** None
 EOF
@@ -196,20 +208,36 @@ EOF
   local blocker out
   for blocker in '01 Task' '01 Task, with commas in title' '01 Foo, bar, 02 Baz, qux' \
       'core-work/01 Task' 'None.' 'None can start now' 'None, can start now.' \
-      'none' 'NONE, can start now' ',01' '01,' '01,,01' '01, None' '01 02' \
+      ',01' '01,' '01,,01' '01, None' '01 02' \
       'bad_effort/01' './01' '-01' '01.md'; do
     cat > "$repo/.workflow/tasks/02-child.md" <<EOF
 # 02: Child Task
 **Effort:** core-work
+**Check:** `true` passes
 **Base commit:** <commit-sha>
 **Blocked by:** $blocker
 EOF
     if out="$(cd "$repo" && "$WORKFLOW" doctor 2>&1)"; then
       fail "strict Blocked by grammar should reject '$blocker'"
-    elif [[ "$out" == *"invalid Blocked by"* ]]; then
+    elif [[ "$out" == *"malformed blocker"* ]]; then
       pass "strict Blocked by grammar rejects '$blocker'"
     else
       fail "invalid blocker should produce a Blocked by diagnostic: $out"
+    fi
+  done
+
+  # Every command reads None case-insensitively (one parser); doctor follows.
+  for blocker in 'none' 'NONE, can start now'; do
+    cat > "$repo/.workflow/tasks/02-child.md" <<EOF
+# 02: Child Task
+**Effort:** core-work
+**Check:** \`true\` passes
+**Blocked by:** $blocker
+EOF
+    if (cd "$repo" && "$WORKFLOW" doctor >/dev/null 2>&1); then
+      pass "Blocked by accepts '$blocker' as no blockers"
+    else
+      fail "Blocked by should accept '$blocker' like the other commands"
     fi
   done
 }
@@ -221,18 +249,21 @@ test_blocked_by_multiple_references() {
   cat > "$repo/.workflow/tasks/01-foo.md" <<'EOF'
 # 01: Foo Task
 **Effort:** core-work
+**Check:** `true` passes
 **Base commit:** <commit-sha>
 **Blocked by:** None
 EOF
   cat > "$repo/.workflow/tasks/01-baz.md" <<'EOF'
 # 01: Baz Task
 **Effort:** other-work
+**Check:** `true` passes
 **Base commit:** <commit-sha>
 **Blocked by:** None, can start now
 EOF
   cat > "$repo/.workflow/tasks/02-dep.md" <<'EOF'
 # 02: Dependent Task
 **Effort:** core-work
+**Check:** `true` passes
 **Base commit:** <commit-sha>
 **Blocked by:** 01, other-work/01
 EOF
@@ -246,7 +277,7 @@ EOF
   local out
   if out="$(cd "$repo" && "$WORKFLOW" doctor 2>&1)"; then
     fail "qualified blocker should not resolve to the same number in another effort"
-  elif [[ "$out" == *"non-existent task other-work/01"* ]]; then
+  elif [[ "$out" == *"orphaned blocker 'other-work/01'"* ]]; then
     pass "qualified blocker requires its own effort target"
   else
     fail "missing qualified blocker should report its own effort target: $out"
@@ -261,6 +292,7 @@ test_blocked_by_continuation_boundaries() {
   cat > "$repo/.workflow/tasks/01-root.md" <<'EOF'
 # 01: Root Task
 **Effort:** core-work
+**Check:** `true` passes
 **Base commit:** <commit-sha>
 **Blocked by:** None, can start now
 EOF
@@ -271,17 +303,23 @@ EOF
       'Files' 'Read first' 'Check' 'Question' 'Time box'; do
     case "$field" in
       'Base commit') suffix="<commit-sha>" ;;
+      'Task type') suffix="feature" ;;
       *) suffix="99" ;;
     esac
     suffixes+=("**$field:** $suffix" "  - **$field:** $suffix" "  $field: $suffix")
   done
   for suffix in "${suffixes[@]}"; do
+    # No Base commit line here: several suffixes add one, and a second copy
+    # is a duplicate-field error. Check comes last as a section for the same reason.
     cat > "$repo/.workflow/tasks/02-child.md" <<EOF
 # 02: Child Task
 **Effort:** core-work
-**Base commit:** <commit-sha>
 **Blocked by:** 01
 $suffix
+
+## Check
+
+\`true\` passes
 EOF
     if (cd "$repo" && "$WORKFLOW" doctor >/dev/null 2>&1); then
       pass "Blocked by continuation stops before '$suffix'"
@@ -316,6 +354,7 @@ test_decision_entries_validation() {
   cat > "$repo/.workflow/tasks/01-draft.md" <<'EOF'
 # 01: Draft Task
 **Effort:** core-work
+**Check:** `true` passes
 **Base commit:** <commit-sha>
 **Blocked by:** None, can start now
 EOF
@@ -461,6 +500,7 @@ test_duplicate_task_number_same_effort() {
   cat > "$repo/.workflow/tasks/01-a.md" <<'EOF'
 # 01: Task A
 **Effort:** e
+**Check:** `true` passes
 **Base commit:** <commit-sha>
 **Blocked by:** None, can start now
 EOF
@@ -468,6 +508,7 @@ EOF
   cat > "$repo/.workflow/tasks/01-dup.md" <<'EOF'
 # 01: Task Dup
 **Effort:** e
+**Check:** `true` passes
 **Base commit:** <commit-sha>
 **Blocked by:** None, can start now
 EOF
@@ -491,6 +532,7 @@ test_different_efforts_same_number_ok() {
   cat > "$repo/.workflow/tasks/01-a.md" <<'EOF'
 # 01: Task A
 **Effort:** e1
+**Check:** `true` passes
 **Base commit:** <commit-sha>
 **Blocked by:** None, can start now
 EOF
@@ -498,6 +540,7 @@ EOF
   cat > "$repo/.workflow/tasks/01-b.md" <<'EOF'
 # 01: Task B
 **Effort:** e2
+**Check:** `true` passes
 **Base commit:** <commit-sha>
 **Blocked by:** None, can start now
 EOF
@@ -578,6 +621,7 @@ test_draft_statistics() {
   cat > "$repo/.workflow/tasks/01-draft.md" <<'EOF'
 # 01: Draft Task
 **Effort:** core-work
+**Check:** `true` passes
 **Base commit:** <commit-sha>
 **Blocked by:** None, can start now
 EOF
@@ -585,6 +629,7 @@ EOF
   cat > "$repo/.workflow/tasks/02-started.md" <<EOF
 # 02: Started Task
 **Effort:** core-work
+**Check:** `true` passes
 **Base commit:** $head_sha
 **Blocked by:** None, can start now
 EOF
@@ -606,6 +651,7 @@ test_task_heading_mismatch() {
   cat > "$repo/.workflow/tasks/01-foo.md" <<'EOF'
 # 03: Foo
 **Effort:** core-work
+**Check:** `true` passes
 **Base commit:** <commit-sha>
 **Blocked by:** None, can start now
 EOF
@@ -614,7 +660,7 @@ EOF
   out="$(cd "$repo" && "$WORKFLOW" doctor 2>&1 || true)"
   if (cd "$repo" && "$WORKFLOW" doctor >/dev/null 2>&1); then
     fail "task heading mismatch should cause doctor to fail"
-  elif [[ "$out" == *"heading declares 03 but filename declares 01"* ]]; then
+  elif [[ "$out" == *"heading number 3 does not match filename number 1"* ]]; then
     pass "task heading mismatch reported and doctor fails"
   else
     fail "doctor failed but expected mismatch message, got: $out"
@@ -629,6 +675,7 @@ test_task_heading_match_ok() {
   cat > "$repo/.workflow/tasks/01-bar.md" <<'EOF'
 # 01: Bar
 **Effort:** core-work
+**Check:** `true` passes
 **Base commit:** <commit-sha>
 **Blocked by:** None, can start now
 EOF
@@ -697,6 +744,7 @@ test_cycle_detection_simple() {
   cat > "$repo/.workflow/tasks/01-task.md" <<'EOF'
 # 01: Task One
 **Effort:** core-work
+**Check:** `true` passes
 **Base commit:** <commit-sha>
 **Blocked by:** 02
 EOF
@@ -704,13 +752,14 @@ EOF
   cat > "$repo/.workflow/tasks/02-task.md" <<'EOF'
 # 02: Task Two
 **Effort:** core-work
+**Check:** `true` passes
 **Base commit:** <commit-sha>
 **Blocked by:** 01
 EOF
 
   local out
   out="$(cd "$repo" && "$WORKFLOW" doctor 2>&1 || true)"
-  if [[ "$out" == *"dependency cycle detected: 01 -> 02 -> 01"* ]]; then
+  if [[ "$out" == *"circular dependency: core-work/01 -> core-work/02 -> core-work/01"* ]]; then
     pass "simple dependency cycle detected with cycle message"
   else
     fail "expected simple dependency cycle message (01 -> 02 -> 01), got: $out"
@@ -731,6 +780,7 @@ test_cycle_detection_three() {
   cat > "$repo/.workflow/tasks/01-task.md" <<'EOF'
 # 01: Task One
 **Effort:** core-work
+**Check:** `true` passes
 **Base commit:** <commit-sha>
 **Blocked by:** 02
 EOF
@@ -738,6 +788,7 @@ EOF
   cat > "$repo/.workflow/tasks/02-task.md" <<'EOF'
 # 02: Task Two
 **Effort:** core-work
+**Check:** `true` passes
 **Base commit:** <commit-sha>
 **Blocked by:** 03
 EOF
@@ -745,13 +796,14 @@ EOF
   cat > "$repo/.workflow/tasks/03-task.md" <<'EOF'
 # 03: Task Three
 **Effort:** core-work
+**Check:** `true` passes
 **Base commit:** <commit-sha>
 **Blocked by:** 01
 EOF
 
   local out
   out="$(cd "$repo" && "$WORKFLOW" doctor 2>&1 || true)"
-  if [[ "$out" == *"dependency cycle detected: 01 -> 02 -> 03 -> 01"* ]]; then
+  if [[ "$out" == *"circular dependency: core-work/01 -> core-work/02 -> core-work/03 -> core-work/01"* ]]; then
     pass "three-task dependency cycle reports full chain"
   else
     fail "expected three-task cycle chain (01 -> 02 -> 03 -> 01), got: $out"
@@ -772,6 +824,7 @@ test_no_false_positive() {
   cat > "$repo/.workflow/tasks/01-task.md" <<'EOF'
 # 01: Task One
 **Effort:** core-work
+**Check:** `true` passes
 **Base commit:** <commit-sha>
 **Blocked by:** 02
 EOF
@@ -779,6 +832,7 @@ EOF
   cat > "$repo/.workflow/tasks/02-task.md" <<'EOF'
 # 02: Task Two
 **Effort:** core-work
+**Check:** `true` passes
 **Base commit:** <commit-sha>
 **Blocked by:** 03
 EOF
@@ -786,13 +840,14 @@ EOF
   cat > "$repo/.workflow/tasks/03-task.md" <<'EOF'
 # 03: Task Three
 **Effort:** core-work
+**Check:** `true` passes
 **Base commit:** <commit-sha>
 **Blocked by:** None, can start now
 EOF
 
   local out
   out="$(cd "$repo" && "$WORKFLOW" doctor 2>&1 || true)"
-  if [[ "$out" == *"dependency cycle detected"* ]]; then
+  if [[ "$out" == *"circular dependency"* ]]; then
     fail "linear dependencies falsely reported as cycle: $out"
   else
     pass "no false positive on linear dependencies"
@@ -1816,6 +1871,148 @@ EOF
   rm -f "$repo/.workflow/maps/map_clear.md" "$repo/.workflow/maps/map_charting.md"
 }
 
+# --- 2.3: the CLI travels with the project in .workflow/bin ---
+test_vendored_cli() {
+  local repo="$TMPDIR/repo_vendored"
+  setup_repo "$repo"
+  local cli="$repo/.workflow/bin/workflow"
+  if [ -x "$cli" ] && [ -f "$repo/.workflow/bin/workflow-lib.bash" ] && [ -f "$repo/.workflow/bin/.workflow-managed" ]; then
+    pass "init copies the CLI into .workflow/bin"
+  else
+    fail "init should copy an executable CLI into .workflow/bin"
+  fi
+  mkdir -p "$repo/.workflow/tasks/core"
+  cat > "$repo/.workflow/tasks/core/01-first.md" <<'EOF'
+# 01: First
+**Effort:** core
+**Check:** `true` passes
+**Blocked by:** None
+EOF
+  local out
+  out="$(cd "$repo" && "$cli" next --no-color 2>/dev/null)"
+  if [[ "$out" == *"core/01 First"* ]]; then pass "committed CLI runs daily commands without the toolkit"; else fail "committed CLI next failed: $out"; fi
+  if (cd "$repo" && "$cli" doctor >/dev/null 2>&1); then pass "committed CLI runs doctor"; else fail "committed CLI doctor should pass: $(cd "$repo" && "$cli" doctor 2>&1 | tail -5)"; fi
+  out="$(cd "$repo" && "$cli" init 2>&1 || true)"
+  if [[ "$out" == *"committed copy"* ]]; then pass "committed CLI refuses init and names the toolkit"; else fail "committed CLI init should refuse: $out"; fi
+
+  printf '# local tweak\n' >> "$repo/.workflow/bin/workflow-next"
+  out="$(cd "$repo" && "$WORKFLOW" update 2>&1)"
+  if [[ "$out" == *"skipped .workflow/bin/workflow-next"* ]] && tail -n 1 "$repo/.workflow/bin/workflow-next" | grep -q 'local tweak'; then
+    pass "update keeps an edited CLI file"
+  else
+    fail "update should keep an edited CLI file: $out"
+  fi
+  out="$(cd "$repo" && "$WORKFLOW" doctor 2>&1 || true)"
+  if [[ "$out" == *".workflow/bin/workflow-next edited"* ]]; then pass "doctor reports an edited CLI file"; else fail "doctor should report the edited CLI file: $out"; fi
+  (cd "$repo" && "$WORKFLOW" update --force >/dev/null 2>&1)
+  if cmp -s "$repo/.workflow/bin/workflow-next" "$KIT/bin/workflow-next"; then pass "update --force restores the CLI file"; else fail "update --force should restore the CLI file"; fi
+
+  (cd "$repo" && "$WORKFLOW" uninstall >/dev/null 2>&1)
+  if [ ! -e "$repo/.workflow/bin" ]; then pass "uninstall removes .workflow/bin"; else fail "uninstall should remove .workflow/bin"; fi
+}
+
+# --- 2.3: Claude Code adapter ---
+test_claude_adapter() {
+  local repo="$TMPDIR/repo_claude_off"
+  setup_repo "$repo"
+  if [ ! -e "$repo/.claude" ] && [ ! -e "$repo/CLAUDE.md" ]; then pass "no Claude files without CLAUDE.md, .claude/ or --claude"; else fail "Claude files written without being asked"; fi
+
+  repo="$TMPDIR/repo_claude_auto"
+  mkdir -p "$repo"
+  printf '# Notes for Claude\n\nKeep this line.\n' > "$repo/CLAUDE.md"
+  setup_repo "$repo"
+  if [ -f "$repo/.claude/skills/flow-start/SKILL.md" ] && grep -q '^tools: Read, Grep, Glob, Bash$' "$repo/.claude/agents/workflow-reviewer.md"; then
+    pass "existing CLAUDE.md turns on .claude skills and agents with Claude tool names"
+  else
+    fail "existing CLAUDE.md should install .claude skills and agents"
+  fi
+  if grep -qx '@AGENTS.md' "$repo/CLAUDE.md" && grep -q 'Keep this line.' "$repo/CLAUDE.md"; then
+    pass "CLAUDE.md gains an AGENTS.md import and keeps its own text"
+  else
+    fail "CLAUDE.md should import AGENTS.md and keep its text"
+  fi
+  if grep -qx 'claude: yes' "$repo/.workflow/.workflow-version"; then pass "manifest records the Claude choice"; else fail "manifest should record claude: yes"; fi
+  if (cd "$repo" && "$WORKFLOW" doctor >/dev/null 2>&1); then pass "doctor passes with Claude files"; else fail "doctor should pass with Claude files: $(cd "$repo" && "$WORKFLOW" doctor 2>&1 | grep '!')"; fi
+  (cd "$repo" && "$WORKFLOW" uninstall >/dev/null 2>&1)
+  if [ ! -e "$repo/.claude" ] && grep -q 'Keep this line.' "$repo/CLAUDE.md" && ! grep -q '@AGENTS.md' "$repo/CLAUDE.md"; then
+    pass "uninstall removes Claude files and the import, keeps the user's CLAUDE.md"
+  else
+    fail "uninstall should remove the Claude files and the import only"
+  fi
+
+  repo="$TMPDIR/repo_claude_flag"
+  mkdir -p "$repo"; git -C "$repo" init -q
+  (cd "$repo" && "$WORKFLOW" init --claude >/dev/null 2>&1)
+  if [ -f "$repo/.claude/skills/flow-implement/SKILL.md" ] && [ -f "$repo/CLAUDE.md" ]; then pass "init --claude installs the adapter"; else fail "init --claude should install the adapter"; fi
+}
+
+# --- 2.3: pre-commit hook ---
+test_pre_commit_hook() {
+  local repo="$TMPDIR/repo_hook"
+  setup_repo "$repo"
+  local cli="$repo/.workflow/bin/workflow"
+  (cd "$repo" && "$cli" hook install >/dev/null 2>&1)
+  if [ -x "$repo/.git/hooks/pre-commit" ] && grep -q 'workflow:pre-commit' "$repo/.git/hooks/pre-commit"; then pass "hook install writes the pre-commit hook"; else fail "hook install should write the hook"; fi
+  mkdir -p "$repo/.workflow/tasks/core"
+  cat > "$repo/.workflow/tasks/core/01-ok.md" <<'EOF'
+# 01: Fine
+**Effort:** core
+**Check:** `true` passes
+**Blocked by:** None
+EOF
+  git -C "$repo" add -A
+  if git -C "$repo" commit -q -m ok >/dev/null 2>&1; then pass "hook lets a commit with only warnings through"; else fail "hook should not block on warnings"; fi
+  cat > "$repo/.workflow/tasks/core/02-bad.md" <<'EOF'
+# 02: Broken
+**Effort:** core
+**Check:** `true` passes
+**Blocked by:** 99
+EOF
+  git -C "$repo" add -A
+  if git -C "$repo" commit -q -m bad >/dev/null 2>&1; then fail "hook should block a commit with validate errors"; else pass "hook blocks a commit with validate errors"; fi
+  rm -f "$repo/.workflow/tasks/core/02-bad.md"; git -C "$repo" add -A
+  (cd "$repo" && "$cli" hook uninstall >/dev/null 2>&1)
+  if [ ! -e "$repo/.git/hooks/pre-commit" ]; then pass "hook uninstall removes our hook"; else fail "hook uninstall should remove our hook"; fi
+  printf '#!/bin/sh\nexit 0\n' > "$repo/.git/hooks/pre-commit"
+  if (cd "$repo" && "$cli" hook install >/dev/null 2>&1); then fail "hook install should refuse a foreign hook"; else pass "hook install refuses to replace someone else's hook"; fi
+  if grep -q 'exit 0' "$repo/.git/hooks/pre-commit" && ! grep -q 'workflow:pre-commit' "$repo/.git/hooks/pre-commit"; then pass "foreign hook left untouched"; else fail "foreign hook was modified"; fi
+}
+
+# --- 2.3: tasks/<effort>/ layout is read the same way by every command ---
+test_effort_directory_layout() {
+  local repo="$TMPDIR/repo_layout"
+  setup_repo "$repo"
+  mkdir -p "$repo/.workflow/tasks/api" "$repo/.workflow/tasks/web"
+  cat > "$repo/.workflow/tasks/api/01-setup.md" <<'EOF'
+# 01: API setup
+**Effort:** api
+**Check:** `true` passes
+**Blocked by:** None
+EOF
+  cat > "$repo/.workflow/tasks/web/01-setup.md" <<'EOF'
+# 01: Web setup
+**Effort:** web
+**Check:** `true` passes
+**Blocked by:** api/01
+EOF
+  local tasks next deps
+  tasks="$(cd "$repo" && "$WORKFLOW" tasks --no-color 2>/dev/null)"
+  next="$(cd "$repo" && "$WORKFLOW" next --no-color 2>/dev/null)"
+  deps="$(cd "$repo" && "$WORKFLOW" deps --format text 2>/dev/null)"
+  if [[ "$tasks" == *"api/01 API setup"* && "$tasks" == *"web/01 Web setup"* && "$next" == *"api/01 API setup"* && "$deps" == *"Depends on: api/01"* ]]; then
+    pass "tasks, next and deps all read tasks/<effort>/ and name tasks <effort>/<NN>"
+  else
+    fail "commands disagree on nested tasks: tasks=$tasks next=$next deps=$deps"
+  fi
+  if [[ "$tasks" != *"Status: N/A"* ]]; then pass "tasks prints no Status line for tasks that are not interrupted"; else fail "tasks should not print Status: N/A"; fi
+  if (cd "$repo" && "$WORKFLOW" validate --no-color >/dev/null 2>&1 || [ $? -eq 1 ]); then pass "same file name in two effort directories is valid"; else fail "two efforts may both have 01-setup.md"; fi
+  sed -i 's/^\*\*Effort:\*\* web$/**Effort:** api/' "$repo/.workflow/tasks/web/01-setup.md"
+  local out; out="$(cd "$repo" && "$WORKFLOW" validate --no-color 2>&1 || true)"
+  if [[ "$out" == *"task is under web/ but its Effort is 'api'"* ]]; then pass "validate rejects an Effort that disagrees with its directory"; else fail "validate should reject a directory/Effort mismatch: $out"; fi
+  out="$(cd "$repo" && "$WORKFLOW" doctor 2>&1 || true)"
+  if [[ "$out" == *"task is under web/"* ]] && ! (cd "$repo" && "$WORKFLOW" doctor >/dev/null 2>&1); then pass "doctor reports validate's errors and fails"; else fail "doctor should surface validate errors: $out"; fi
+}
+
 test_draft_placeholder_accepted
 test_invalid_concrete_sha_rejected
 test_invalid_dependencies_rejected
@@ -1854,6 +2051,10 @@ test_nongit_lifecycle_preserves_user_docs
 test_symlink_boundaries_rejected
 test_doctor_agents_markers_validation
 test_map_staleness_edge_cases
+test_vendored_cli
+test_claude_adapter
+test_pre_commit_hook
+test_effort_directory_layout
 
 printf '\nResults: %d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" -eq 0 ]

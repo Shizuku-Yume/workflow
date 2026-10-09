@@ -64,6 +64,7 @@ AGENTS.md                        workflow block points here
 .agents/skills/<name>/SKILL.md   the steps
 .agents/agents/<name>.md         review agents
 .workflow/
+  bin/workflow                   the CLI, committed with the project
   CONVENTIONS.md                 this file
   STYLE.md                       writing rules
   standards.md                   project-specific: commands, layout
@@ -74,29 +75,30 @@ AGENTS.md                        workflow block points here
   spike-tasks.md                 exploratory work guidelines
   efforts/<slug>.md              effort definitions and goals
   specs/<slug>.md                what to build
-  tasks/<NN>-<slug>.md           one task each
+  tasks/<effort>/<NN>-<slug>.md  one task each, in its effort's directory
   maps/<slug>.md                 multi-session planning
   done/<effort>/                 archived tasks, plus retrospective.md when the effort closes
 ```
 
 **Rules:**
+- Run the CLI as `.workflow/bin/workflow <command>` from the project root. It is copied in by `workflow init`, committed, and needs nothing on PATH, so it works in every clone, in CI and in cloud agents.
 - `standards.md` is the entry point. Keep it under one screen.
 - One spec per effort, updated in place when code changes facts.
-- `decisions.md` is append-only. Five fields required: `Decided`, `Instead of`, `Because`, `Mine`, `Revisit when`. Optional `**Effort:** <slug>` tags an entry to one effort so `workflow decisions --effort <slug>` can find it. Reversals append new entries referencing old. Refer to an entry by its heading text: `decisions.md: <date> - <title>`.
-- `technical-debt.md` tracks architecture findings. Use `workflow debt` command to manage.
+- `decisions.md` is append-only. Five fields required: `Decided`, `Instead of`, `Because`, `Mine`, `Revisit when`. Optional `**Effort:** <slug>` tags an entry to one effort so `.workflow/bin/workflow decisions --effort <slug>` can find it. Reversals append new entries referencing old. Refer to an entry by its heading text: `decisions.md: <date> - <title>`.
+- `technical-debt.md` tracks architecture findings. Use `.workflow/bin/workflow debt` command to manage.
 - `merge-strategy.md` and `spike-tasks.md` are reference docs, rarely change.
-- Effort definitions in `efforts/<slug>.md` track goal, scope, success criteria and priority. Optional, but `flow-break` creates one (`workflow effort create <slug>`) so `workflow next` can rank the effort's tasks.
+- Effort definitions in `efforts/<slug>.md` track goal, scope, success criteria and priority. Optional, but `flow-break` creates one (`.workflow/bin/workflow effort create <slug>`) so `.workflow/bin/workflow next` can rank the effort's tasks.
 - Tasks follow strict format:
-  - Filename: `.workflow/tasks/<NN>-<slug>.md`; heading `# <NN>: <Title>` (NN matches filename).
-  - `NN` is unique within an effort, not across efforts. Unambiguous reference: `<effort>/<NN>`.
+  - Filename: `.workflow/tasks/<effort>/<NN>-<slug>.md`; heading `# <NN>: <Title>` (NN matches filename). The directory names the effort, so two efforts can both have `01-setup.md`. Files directly under `tasks/` (the layout before 2.3) are still read; move them with `git mv` when convenient.
+  - `NN` is unique within an effort, not across efforts. Unambiguous reference: `<effort>/<NN>`, written with at least two digits.
   - Fields are `Name: value` lines, plain or bold (`**Effort:** <slug>`). Every `workflow` command reads them through one shared parser, so the spelling rules below are the same everywhere.
-  - Required (`workflow validate` errors): `Effort` (lowercase slug `[a-z0-9]+(-[a-z0-9]+)*`); `Blocked by` (`None`, or comma-list of `NN` (same effort) or `<effort>/NN` (cross-effort), numbers only, no titles); `Check` (command and the result that means it works, or a `## Check` section).
+  - Required (`.workflow/bin/workflow validate` errors): `Effort` (lowercase slug `[a-z0-9]+(-[a-z0-9]+)*`, the same as the task's directory); `Blocked by` (`None`, or comma-list of `NN` (same effort) or `<effort>/NN` (cross-effort), numbers only, no titles); `Check` (command and the result that means it works, or a `## Check` section).
   - Expected from `flow-break`, not machine-checked: `Delivers`, `Files`, `Read first`, and the `Done when` checklist.
   - Optional: `Task type:` `feature | bugfix | refactor | spike` (default `feature`); `Base commit:` `<commit-sha>` when drafted, real SHA when started; `Started:`/`Finished:` ISO 8601 timestamps; `Status: active | paused | blocked` for interruption tracking.
   - The same problems inside `done/<effort>/` archives are warnings, not errors: history is not rewritten to satisfy today's checks.
 - Archive to `done/<effort>/` before committing. Task archive, code, and docs land together in one commit.
-- A blocker archived under `done/<effort>/` in HEAD is finished: `workflow next` stops counting it, so dependents become ready without rewriting their `Blocked by`.
-- After writing or editing tasks or decisions, run `workflow validate`. Errors block; fix the file, not the validator.
+- A blocker archived under `done/<effort>/` in HEAD is finished: `.workflow/bin/workflow next` stops counting it, so dependents become ready without rewriting their `Blocked by`.
+- After writing or editing tasks or decisions, run `.workflow/bin/workflow validate`. Errors block; fix the file, not the validator.
 
 ---
 
@@ -115,16 +117,28 @@ AGENTS.md                        workflow block points here
 - Fix is localized and well-understood
 - Risk of not fixing immediately exceeds risk of skipping process
 
+If any one fails (users are not affected now, the fix is unclear, it can wait
+hours), it is a small or complex task instead.
+
 Hotfix path: skip grill/spec/break/verify, fix immediately, verify where the
 failure was observed. If you can't reach production, say so and hand that check
 to the user.
-**Mandatory follow-up before the session ends:** write decision entry explaining
-temporary fix, long-term plan, and why shortcuts were justified. If explanation
-can't be written honestly, it wasn't a hotfix.
+**Mandatory follow-up before the session ends:** a decision entry in
+`.workflow/decisions.md`:
 
-Start that entry's `Decided` field with `Hotfix:`. The prefix is the marker
-`workflow hotfix-review` relies on; it also catches wording such as
-"temporary" or "workaround", but the prefix is the contract.
+- **Decided:** `Hotfix:` followed by the temporary fix applied
+- **Instead of:** the proper solution (or "unclear, needs investigation")
+- **Because:** why the immediate fix was necessary and the shortcuts justified
+- **Mine:** yes
+- **Revisit when:** when the proper fix or follow-up investigation happens
+
+If that entry can't be written honestly (the fix wasn't localized, the risk
+wasn't that high, it could have waited), it wasn't a hotfix: reclassify.
+
+The `Hotfix:` prefix is the marker `.workflow/bin/workflow hotfix-review` relies
+on; it also catches wording such as "temporary" or "workaround", but the prefix
+is the contract. When the proper fix lands, run
+`.workflow/bin/workflow hotfix-review --mark-resolved <id>` in the same commit.
 
 **Small task** — ALL of these:
 - Single behavior change or bug fix
@@ -132,6 +146,9 @@ Start that entry's `Decided` field with `Hotfix:`. The prefix is the marker
 - Requirements clear
 - No architectural decisions
 - Rollback cost: can revert in <5 minutes if wrong
+
+When unsure between small and complex, it is complex: under-planning genuinely
+unclear work costs more than over-planning it.
 
 Small tasks skip `flow-grill`, `flow-spec`, `flow-break`, `flow-verify`. Still require: reading code, running tests, proof, commit message.
 

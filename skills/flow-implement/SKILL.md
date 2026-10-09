@@ -69,7 +69,7 @@ If check can't pass, say what blocks it rather than loosening it.
 Before review:
 
 - **Update stale documents** — fact in spec, glossary, or `.workflow/standards.md` that no longer matches code gets fixed now, in this change. That's why those files are trustworthy.
-- **Record decisions made** — choice that affects scope, interfaces, compatibility, risk, future maintenance, or carries substantive alternative trade-offs goes into `.workflow/decisions.md` as complete five-field entry, tagged `**Effort:** <effort>` so `workflow decisions --effort` finds it. Routine implementation details (naming, formatting, helper reuse) don't need entry.
+- **Record decisions made** — choice that affects scope, interfaces, compatibility, risk, future maintenance, or carries substantive alternative trade-offs goes into `.workflow/decisions.md` as complete five-field entry, tagged `**Effort:** <effort>` so `.workflow/bin/workflow decisions --effort` finds it. Routine implementation details (naming, formatting, helper reuse) don't need entry.
 
 ## 5. Review it
 
@@ -79,7 +79,7 @@ Before review:
 
 Add a security pass (a security-review agent if the harness has one, otherwise a general subagent briefed for it) when the change touches authentication, authorisation, input reaching a query or shell, secrets, file paths, or anything crossing a trust boundary. Otherwise skip it and say you skipped it.
 
-**`thorough`:** `standard`, then `flow-architect` on the touched area. It reports cuts and reshapes but changes nothing; unaddressed findings go to `workflow debt add`.
+**`thorough`:** `standard`, then `flow-architect` on the touched area. It reports cuts and reshapes but changes nothing; unaddressed findings go to `.workflow/bin/workflow debt add`.
 
 Address review findings:
 - **Blocking** (correctness bugs, missing deliverables, broken invariants, violated standards) must be fixed and specifically rechecked, or explicitly accepted by user with recorded decision.
@@ -92,9 +92,9 @@ Don't re-run whole review after fixing; check specific thing that was wrong.
 
 1. **Capture what the task taught.** Anything worth keeping goes into spec, glossary, or decisions first. Archived task file is not a substitute for updating the spec.
 2. **Close the task file.** Tick finished `- [ ]` items. Add `**Finished:** <ISO 8601 timestamp>`. Remove `**Status:**` if present.
-3. **Move it:** `git mv .workflow/tasks/<NN>-<slug>.md .workflow/done/<effort>/` (create directory if needed).
-4. **Close the effort if this was its last task.** When no other task of `<effort>` remains under `.workflow/tasks/`, write `.workflow/done/<effort>/retrospective.md`: goal, what shipped, decisions that shaped it, debt left behind. `workflow effort complete <effort>` points readers there.
-5. **Validate:** `workflow validate`. Errors block the commit; warnings about archived files don't.
+3. **Move it:** `git mv .workflow/tasks/<effort>/<NN>-<slug>.md .workflow/done/<effort>/` (create directory if needed). A task still in the flat layout moves from `.workflow/tasks/<NN>-<slug>.md`.
+4. **Close the effort if this was its last task.** When no other task of `<effort>` remains under `.workflow/tasks/`, write `.workflow/done/<effort>/retrospective.md`: goal, what shipped, decisions that shaped it, debt left behind. `.workflow/bin/workflow effort complete <effort>` points readers there.
+5. **Validate:** `.workflow/bin/workflow validate`. Errors block the commit; warnings about archived files don't.
 6. **Commit once:** code, tests, docs, decision entries, and archive move in one commit. Message per STYLE.md: what changed and why. No "wip", no unrelated edits riding along.
 
 Spike tasks: findings go into the task file's `## Findings` section and into spec, decision, or glossary. Throwaway code doesn't reach main: drop it before committing, or keep it on a `spike/<effort>-<NN>` branch and name the branch in Findings. Then archive and commit the task file and recorded findings as above.

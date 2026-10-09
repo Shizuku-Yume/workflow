@@ -8,17 +8,25 @@ Installs into a project, not globally. Everything committed with the project.
 
 ```sh
 git clone https://github.com/Shizuku-Yume/workflow.git ~/tools/workflow
-~/tools/workflow/bin/workflow init
+cd your-project
+~/tools/workflow/bin/workflow init            # add --claude for Claude Code
 ```
 
-Fill in `AGENTS.md` and `.workflow/standards.md`. Commit.
+Fill in `.workflow/standards.md`. Commit what `init` lists.
+
+The CLI is copied into the project as `.workflow/bin/workflow` and committed with it. The skills call that path, so teammates, CI and cloud agents need no toolkit checkout and nothing on PATH. `init`, `update` and `uninstall` copy from the toolkit, so run those from the checkout; everything else works from either copy. For typing it yourself, `alias workflow=.workflow/bin/workflow` or put the checkout's `bin/` on PATH.
+
+**Claude Code** reads `.claude/skills/` and `CLAUDE.md`, not `.agents/` and `AGENTS.md`. `--claude` also installs the skills and review agents there and adds a `CLAUDE.md` block that imports `AGENTS.md`. It turns on by itself when the project already has `CLAUDE.md` or `.claude/`; `--no-claude` turns it off. Codex reads `.agents/skills/` and `AGENTS.md` directly.
+
+**Pre-commit hook:** `.workflow/bin/workflow hook install` writes a git hook that runs `validate` and blocks the commit on errors; warnings pass. It refuses to overwrite a hook it didn't write.
 
 | Command | Does |
 | --- | --- |
-| `workflow init` | install into current project |
-| `workflow update` | re-copy skills and rules after toolkit changes |
-| `workflow doctor` | report what's installed and missing |
+| `workflow init [--claude]` | install into current project |
+| `workflow update` | re-copy skills, rules and CLI after toolkit changes |
+| `workflow doctor` | report what's installed and missing; runs `validate` for task and decision checks |
 | `workflow uninstall` | remove installed files, keep your documents |
+| `workflow hook install` | run `validate` before each commit |
 | `workflow tasks` | list and filter active tasks |
 | `workflow deps` | visualize task dependencies (mermaid/dot/text) |
 | `workflow decisions` | search and manage decision log; filter by text, field, date, or `--effort` tag |
@@ -34,7 +42,9 @@ Fill in `AGENTS.md` and `.workflow/standards.md`. Commit.
 AGENTS.md                     workflow block with pointer to rules
 .agents/skills/flow-*/        eight workflow steps
 .agents/agents/workflow-*.md  review agents
+CLAUDE.md, .claude/           with --claude: import of AGENTS.md, skills, agents
 .workflow/
+  bin/workflow                the CLI, committed with the project
   CONVENTIONS.md              the rulebook
   STYLE.md                    writing guide
   thinking.md                 first principles framework
@@ -46,7 +56,8 @@ AGENTS.md                     workflow block with pointer to rules
   glossary.md                 vocabulary
   decisions.md                decisions log
   efforts/<slug>.md           effort definitions
-  specs/  tasks/  maps/  done/<effort>/
+  tasks/<effort>/<NN>-<slug>.md
+  specs/  maps/  done/<effort>/
 ```
 
 Skills and agents are copied, not linked. `workflow update` pulls newer versions. Managed files carry markers; edited files are skipped with warning (`--force` overrides).
@@ -58,17 +69,17 @@ Skills and agents are copied, not linked. `workflow update` pulls newer versions
 | `flow-start` | Load context, classify request, route | routing decision |
 | `flow-grill` | Align on what to build, batch questions | `decisions.md`, `glossary.md` |
 | `flow-spec` | Write the design down | `specs/<slug>.md` |
-| `flow-break` | Cut into session-sized tasks | `tasks/<NN>-<slug>.md` |
+| `flow-break` | Cut into session-sized tasks | `tasks/<effort>/<NN>-<slug>.md` |
 | `flow-implement` | Build, prove, review, archive, commit | code, docs, `done/<effort>/` |
 | `flow-verify` | Three-axis review (what/quality/process) | report |
 | `flow-architect` | Find expensive-to-change code | report |
 | `flow-map` | Plan foggy work one question at a time | `maps/<slug>.md` |
 
-**Small task fast path:** single behavior change, affects <3 modules' behavior, clear requirements, no architectural decision → skip grill/spec/break/verify, still run tests and prove it works. Impact radius counts, not file count (CONVENTIONS §4).
+**Small task fast path:** small tasks skip grill, spec, break and verify, but still run the tests and prove the change works. What counts as small (and as a hotfix) is defined once, in CONVENTIONS §4.
 
 **Intensity levels** (`flow-implement <effort>/<NN> [level]`): `quick` (skip review), `standard` (default), `thorough` (add architect check).
 
-**Task references:** task numbers are unique within an effort, not across efforts. Refer to a task as `<effort>/<NN>`; `workflow next` prints start hints in that form.
+**Task references:** task numbers are unique within an effort, not across efforts, and each effort's tasks live in `tasks/<effort>/`. Refer to a task as `<effort>/<NN>`; every command prints tasks in that form. Projects from before 2.3 keep working with tasks directly under `tasks/`; `doctor` counts them and `git mv` moves them.
 
 ## Troubleshooting and known limitations
 
@@ -115,9 +126,13 @@ Completions cover the wrapper and standalone commands, flags, subcommands, forma
 
 Run `tests/cli-tests.sh` from the checkout. It invokes all eight command suites, wrapper regressions, shared integration contracts, a cross-command parser-consistency check, completion checks, timed 120-task/120-decision tests, and `tests/skills-lint.sh`, which checks that CONVENTIONS references in skills and templates resolve, skill steps are numbered without gaps or empty sections, and the task and decision examples in the skills pass `workflow validate`. Bash 4+, Git, and Python 3 are required; native Zsh completion tests run when Zsh is available. Set `WORKFLOW_PERF_MAX_SECONDS` to override the default 30-second per-command performance ceiling on slower machines.
 
+GitHub Actions runs the same suite on every push and pull request, on Ubuntu and on macOS (`.github/workflows/test.yml`).
+
 ### Runtime limitations
 
-The commands use Bash 4.3 or newer (not a POSIX `sh`) with awk, Git, and the usual coreutils; no Python runtime is needed. Task and effort metadata is read by one shared parser, `bin/workflow-lib.bash`, so every command accepts the same field spellings and continuation rules. Effort progress is based on task counts, not velocity estimates. Linux is exercised by the test suite; macOS behavior, especially date and text-editing utilities, is not certified by these checks.
+The commands use Bash 4.3 or newer (not a POSIX `sh`) with awk, Git, and the usual coreutils; no Python runtime is needed. Task and effort metadata is read by one shared parser, `bin/workflow-lib.bash`, so every command accepts the same field spellings and continuation rules. Effort progress is based on task counts, not velocity estimates.
+
+On macOS the system Bash is 3.2 and BSD `realpath` lacks `-m`, so install `brew install bash coreutils` and put coreutils' `gnubin` directory on PATH. The macOS CI job runs with exactly that setup (plus GNU sed, which only the tests use); stock BSD tools without coreutils are not covered.
 
 
 ## Where this came from

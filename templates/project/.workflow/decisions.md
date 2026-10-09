@@ -26,7 +26,7 @@ boundary is a level-2 heading: `## <date> - <title>`. Subsections (`###`) are no
 entry boundaries. Fenced code blocks and comments are not entries and are ignored.
 Other documents cite an entry by its heading text: `decisions.md: <date> - <title>`.
 
-One mechanical exception to append-only: `workflow hotfix-review --mark-resolved`
+One mechanical exception to append-only: `.workflow/bin/workflow hotfix-review --mark-resolved`
 rewrites a hotfix entry's `Revisit when` to `resolved`, keeping the old condition.
 
 Every entry must include all five nonempty fields:
@@ -39,7 +39,7 @@ Every entry must include all five nonempty fields:
 
 An entry may also carry one optional tag:
 
-- **Effort:** the effort slug this decision belongs to. `workflow decisions
+- **Effort:** the effort slug this decision belongs to. `.workflow/bin/workflow decisions
   --effort <slug>` filters by it and `--field Effort` searches it. Omit the tag
   when the decision is not tied to one effort.
 

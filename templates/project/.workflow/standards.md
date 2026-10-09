@@ -49,6 +49,7 @@ Local files below are the workflow task and spec source unless a supported track
 
 - Decisions: `.workflow/decisions.md`
 - Specs: `.workflow/specs/`
-- Tasks: `.workflow/tasks/`
+- Tasks: `.workflow/tasks/<effort>/`
 - Finished tasks: `.workflow/done/<effort>/`
 - Vocabulary: `.workflow/glossary.md`
+- CLI: `.workflow/bin/workflow` (committed; run from the project root)

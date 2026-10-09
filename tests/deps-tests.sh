@@ -36,32 +36,32 @@ for name in cross circular missing malformed sparse duplicate; do fixture "$name
 for format in mermaid dot text; do
   run "$TMP/cross" 0 --format "$format"
   [ ! -s "$ERR" ] || fail "valid cross-effort graph produced warnings"
-  has "$OUT" 'core/1'
-  has "$OUT" 'payments/2'
-  has "$OUT" 'payments/3'
-  has "$OUT" 'archive/7'
-  lacks "$OUT" 'archive/8'
+  has "$OUT" 'core/01'
+  has "$OUT" 'payments/02'
+  has "$OUT" 'payments/03'
+  has "$OUT" 'archive/07'
+  lacks "$OUT" 'archive/08'
   run "$TMP/cross" 0 --format "$format" --all
-  has "$OUT" 'archive/8'
+  has "$OUT" 'archive/08'
   run "$TMP/cross" 0 --format "$format" --effort payments
-  has "$OUT" 'core/1'
-  has "$OUT" 'archive/7'
+  has "$OUT" 'core/01'
+  has "$OUT" 'archive/07'
   run "$TMP/cross" 0 --format "$format" --effort core
-  lacks "$OUT" 'payments/2'
+  lacks "$OUT" 'payments/02'
   run "$TMP/circular" 0 --format "$format"
-  has "$ERR" 'circular dependency: alpha/1 -> beta/2 -> alpha/1'
-  has "$ERR" 'circular dependency: alpha/3 -> alpha/3'
-  has "$OUT" 'alpha/1'
-  has "$OUT" 'beta/2'
+  has "$ERR" 'circular dependency: alpha/01 -> beta/02 -> alpha/01'
+  has "$ERR" 'circular dependency: alpha/03 -> alpha/03'
+  has "$OUT" 'alpha/01'
+  has "$OUT" 'beta/02'
   run "$TMP/missing" 0 --format "$format"
-  has "$ERR" 'core/1 references missing blocker task: core/99'
-  has "$ERR" 'core/1 references missing blocker task: absent/1'
+  has "$ERR" 'core/01 references missing blocker task: core/99'
+  has "$ERR" 'core/01 references missing blocker task: absent/01'
   has "$OUT" 'core/99'
-  has "$OUT" 'absent/1'
+  has "$OUT" 'absent/01'
   run "$TMP/malformed" 0 --format "$format"
   has "$ERR" 'malformed Blocked by'
   run "$TMP/sparse" 0 --format "$format"
-  has "$OUT" 'none/1'
+  has "$OUT" 'none/01'
   has "$OUT" 'Untitled'
 done
 
@@ -69,7 +69,7 @@ run "$TMP/cross" 0 --format mermaid
 has "$OUT" 'subgraph effort_'
 has "$OUT" 'Effort: payments'
 has "$OUT" 'subgraph legend["Legend"]'
-has "$OUT" 'core/1: Build #quot;API#quot; &lt;gateway&gt; #91;draft#93;'
+has "$OUT" 'core/01: Build #quot;API#quot; &lt;gateway&gt; #91;draft#93;'
 run "$TMP/missing" 0 --format mermaid
 has "$OUT" ':::missing'
 has "$OUT" 'classDef missing fill:#ffcccc,stroke:#cc0000'
@@ -95,7 +95,7 @@ has "$ERR" 'circular dependency'
 run "$TMP/missing" 1 --check
 run "$TMP/malformed" 1 --check
 run "$TMP/duplicate" 1 --check
-has "$ERR" 'duplicate task reference: core/1'
+has "$ERR" 'duplicate task reference: core/01'
 run "$TMP/cross" 0 --no-color --format text
 if LC_ALL=C grep -q $'\033' "$OUT"; then fail '--no-color emitted ANSI escapes'; fi
 run "$TMP/cross" 2 --format invalid
@@ -117,22 +117,22 @@ git -C "$TMP/scoped" init -q
 run "$TMP/scoped" 0 --check
 has "$OUT" '3 tasks checked'
 run "$TMP/scoped" 0 --format text --effort api
-has "$OUT" 'Depends on: api/1'
-lacks "$OUT" '[web/1]'
+has "$OUT" 'Depends on: api/01'
+lacks "$OUT" '[web/01]'
 rm "$TMP/scoped/.workflow/tasks/01-api.md"
 run "$TMP/scoped" 1 --check
-has "$ERR" 'api/2 references missing blocker task: api/1'
+has "$ERR" 'api/02 references missing blocker task: api/01'
 printf '# 02: API two\nEffort: api\nBlocked by: web/01\n' > "$TMP/scoped/.workflow/tasks/02-api.md"
 run "$TMP/scoped" 0 --check
 run "$TMP/scoped" 0 --format text --effort api
-has "$OUT" 'Depends on: web/1'
-has "$OUT" '[web/1]'
+has "$OUT" 'Depends on: web/01'
+has "$OUT" '[web/01]'
 mkdir -p "$TMP/metadata/.workflow/tasks"
 for separator in '' '- [ ] Checklist' '## Goal' 'Files: source.py' $'```text\nexample\n```'; do
   printf 'Task: Boundary task\n- **Effort:** core\n- **Blocked by:** None\n%s\n  01\n' "$separator" > "$TMP/metadata/.workflow/tasks/01-boundary.md"
   run "$TMP/metadata" 0 --check
   run "$TMP/metadata" 0 --format text
-  has "$OUT" '[core/1] Boundary task'
+  has "$OUT" '[core/01] Boundary task'
   lacks "$OUT" 'Depends on:'
 done
 mkdir -p "$TMP/absent" "$TMP/empty/.workflow/tasks" "$TMP/no-tasks/.workflow"

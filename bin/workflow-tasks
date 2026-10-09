@@ -26,8 +26,10 @@ Examples:
   workflow tasks --format json
   workflow tasks --status --effort api-v2 --format json
 
-Missing fields display as N/A. Malformed dependencies produce file-specific
-warnings on stderr and are treated as blocked, not ready.
+Tasks are read from .workflow/tasks/ at any depth; the convention is
+.workflow/tasks/<effort>/<NN>-<slug>.md. Text output names each task
+<effort>/<NN>. Missing fields display as N/A in JSON. Malformed dependencies
+produce file-specific warnings on stderr and are treated as blocked, not ready.
 EOF
 }
 for arg in "$@"; do
@@ -72,7 +74,8 @@ declare -a T_NUMBER=() T_TITLE=() T_EFFORT=() T_BLOCKED_BY=() T_STATUS=() T_BASE
 declare -A ACTIVE=() DONE=()
 COUNT=0
 if [ -d "$DIRECTORY" ]; then
-  while IFS= read -r -d '' file; do
+  wf_task_files "$DIRECTORY"
+  for file in "${WF_FILES[@]}"; do
     [ -f "$file" ] || continue
     name=${file##*/}
     if command -v iconv >/dev/null 2>&1 && ! iconv -f UTF-8 -t UTF-8 "$file" >/dev/null 2>&1; then
@@ -98,18 +101,17 @@ if [ -d "$DIRECTORY" ]; then
     T_STATUS+=("$status"); T_BASE+=("$base"); T_STARTED+=("$started"); T_FILE+=("$file"); T_BLOCKED+=(0)
     [ -z "$number" ] || ACTIVE["$effort|$number"]=1
     COUNT=$((COUNT + 1))
-  done < <(find "$DIRECTORY" -mindepth 1 -maxdepth 1 \( -type f -o -type l \) -name '*.md' -print0)
+  done
 fi
 if [ -d "$ARCHIVE" ]; then
-  for effort_dir in "$ARCHIVE"/*/; do
-    [ -d "$effort_dir" ] || continue
-    archived_effort=${effort_dir%/}; archived_effort=${archived_effort##*/}
-    for archived in "$effort_dir"*.md; do
-      [ -f "$archived" ] || continue
-      archived_name=${archived##*/}
-      [[ "$archived_name" =~ ^([0-9]+)- ]] || continue
-      wf_normalize_number "${BASH_REMATCH[1]}"; DONE["$archived_effort|$WF_NUMBER"]=1
-    done
+  wf_task_files "$ARCHIVE"
+  for archived in "${WF_FILES[@]}"; do
+    [ -f "$archived" ] || continue
+    wf_dir_effort "$ARCHIVE" "$archived"; archived_effort=$WF_DIR_EFFORT
+    [ -n "$archived_effort" ] || continue
+    archived_name=${archived##*/}
+    [[ "$archived_name" =~ ^([0-9]+)- ]] || continue
+    wf_normalize_number "${BASH_REMATCH[1]}"; DONE["$archived_effort|$WF_NUMBER"]=1
   done
 fi
 
@@ -140,7 +142,8 @@ dependencies() {
       T_BLOCKED[$i]=1
     elif [ -z "${DONE["$ref_effort|$ref_number"]:-}" ]; then
       T_BLOCKED[$i]=1
-      warning "$file" "Blocked by references missing task $ref_effort/$ref_number"
+      wf_ref "$ref_effort" "$ref_number"
+      warning "$file" "Blocked by references missing task $WF_REF"
     fi
   done
 }
@@ -199,7 +202,7 @@ if [ "${#SELECTED[@]}" -eq 0 ]; then
   if [ ! -d "$DIRECTORY" ]; then
     printf 'No tasks directory: %s. Create .workflow/tasks/ to add tasks.\n' "$DIRECTORY"
   elif [ "$COUNT" -eq 0 ]; then
-    printf 'No tasks found. Add a numbered .md file to .workflow/tasks/.\n'
+    printf 'No tasks found. Add a numbered .md file to .workflow/tasks/<effort>/.\n'
   else
     printf 'No matching tasks.\n'
   fi
@@ -217,7 +220,12 @@ for i in "${SELECTED[@]}"; do
   else color=$green; fi
   marker='●'
   if [ "$status_lower" = paused ] && [ "${T_BLOCKED[$i]}" -eq 0 ]; then marker='◐'; fi
-  printf '%s%s%s %s%s%s [%s] %s\n' "$color" "$marker" "$off" "$bold" "${T_NUMBER[$i]:-N/A}" "$off" "${T_EFFORT[$i]}" "${T_TITLE[$i]}"
+  # Name the task the way every other command does: <effort>/<NN>.
+  if [ -z "${T_NUMBER[$i]}" ]; then label="N/A [${T_EFFORT[$i]}]"
+  elif [ "${T_EFFORT[$i]}" = 'N/A' ]; then printf -v label '%02d [no effort]' "$((10#${T_NUMBER[$i]}))"
+  else wf_ref "${T_EFFORT[$i]}" "${T_NUMBER[$i]}"; label=$WF_REF; fi
+  printf '%s%s%s %s%s%s %s\n' "$color" "$marker" "$off" "$bold" "$label" "$off" "${T_TITLE[$i]}"
   if [ "${T_BLOCKED[$i]}" -eq 1 ]; then printf '  %sBlocked by: %s%s\n' "$red" "${T_BLOCKED_BY[$i]}" "$off"; fi
-  if [ "$status_lower" != active ]; then printf '  Status: %s\n' "${T_STATUS[$i]}"; fi
+  # No Status line means the task is not interrupted; only say something when it is.
+  case "$status_lower" in active|n/a) ;; *) printf '  Status: %s\n' "${T_STATUS[$i]}" ;; esac
 done

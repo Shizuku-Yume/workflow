@@ -14,40 +14,23 @@ Initialize workflow session and route request to appropriate step. Runs once per
 Read these files silently:
 1. `.workflow/standards.md` — commands, layout, project conventions
 2. `.workflow/glossary.md` — vocabulary and avoided terms
-3. `.workflow/decisions.md` — choices made with option they beat. It is append-only and grows without bound: read the recent entries (`workflow decisions recent 10 --no-color`) plus whatever matches the area you expect to touch (`workflow decisions search <term>`, `workflow decisions --effort <slug>`), not the whole file, unless it is short.
+3. `.workflow/decisions.md` — choices made with option they beat. It is append-only and grows without bound: read the recent entries (`.workflow/bin/workflow decisions recent 10 --no-color`) plus whatever matches the area you expect to touch (`.workflow/bin/workflow decisions search <term>`, `.workflow/bin/workflow decisions --effort <slug>`), not the whole file, unless it is short.
 
 If any missing, note for report but continue. Project without decisions or glossary is new, not broken.
 
 Check workflow state:
 ```bash
-workflow next --no-color     # ready tasks, ranked by effort priority
-workflow tasks --no-color    # every active task, with blockers and Status
+.workflow/bin/workflow next --no-color     # ready tasks, ranked by effort priority
+.workflow/bin/workflow tasks --no-color    # every active task, with blockers and Status
 ```
 
-If the `workflow` command isn't on PATH, list `.workflow/tasks/*.md` and read their `Effort`, `Blocked by` and `Status` fields yourself. A task with `Status: paused` is interrupted work: offer to resume it before starting anything new. A task with `Task type: spike` delivers an answer, not code.
+If `.workflow/bin/workflow` is missing (a project installed before 2.3 that hasn't run `workflow update`), list `.workflow/tasks/**/*.md` and read their `Effort`, `Blocked by` and `Status` fields yourself. A task with `Status: paused` is interrupted work: offer to resume it before starting anything new. A task with `Task type: spike` delivers an answer, not code.
 
 If this session will cross several phases, or the context is already heavy, `.workflow/phase-boundaries.md` decides at each boundary whether to continue, clear, compact, switch sessions, or hand a piece to a subagent.
 
 ## 2. Classify request
 
-Sort user's message into exactly one category:
-
-**Trivial** — question with factual answer, clarification about workflow itself, or greeting. No code changes, no decisions.
-
-**Hotfix** — production outage or critical bug. Must meet ALL criteria:
-- System is degraded or down affecting users now
-- Fix is localized and well-understood
-- Risk of delay exceeds risk of skipping process
-
-If any criterion fails (not affecting users, fix unclear, can wait hours), classify as small or complex instead.
-
-**Small task** — well-scoped work fitting these bounds:
-- Single behavior change or bug fix
-- Impact radius: affects <3 modules' behavior (not file count)
-- Requirements clear from message
-- No architectural decisions
-- Rollback cost: can revert in <5 minutes if wrong
-When uncertain between small and complex, treat as complex.
+Sort the user's message into exactly one class from CONVENTIONS §4: trivial, hotfix, small, or complex. The criteria live there and only there; read them rather than working from memory. Every hotfix criterion must hold, or it isn't one. When uncertain between small and complex, it's complex.
 
 ## 3. Route
 
@@ -59,19 +42,9 @@ State what you understood as the outage/critical bug. Fix immediately without
 grilling or spec. Verify where the failure was observed; if you can't reach
 production, say so and hand that check to the user.
 
-**Mandatory before the session ends:** write decision entry to `.workflow/decisions.md`:
-- **Decided:** `Hotfix:` followed by the temporary fix applied
-- **Instead of:** proper solution (or "unclear, needs investigation")
-- **Because:** why immediate fix was necessary and why shortcuts were justified
-- **Mine:** yes
-- **Revisit when:** timeline for proper fix or follow-up investigation
-
-`workflow hotfix-review` lists entries whose `Decided` says hotfix, temporary or
-workaround. When the proper fix lands, run
-`workflow hotfix-review --mark-resolved <id>` in the same commit.
-
-If you cannot honestly write this entry (fix wasn't localized, risk wasn't that
-high, could have waited), it wasn't a hotfix. Stop and reclassify.
+Before the session ends, write the hotfix decision entry CONVENTIONS §4 specifies
+(`Decided` starts with `Hotfix:`). If you cannot honestly write it, it wasn't a
+hotfix: stop and reclassify.
 
 ### Small task → fast path
 Small tasks skip grilling and spec writing. Route depends on whether needs decisions:
@@ -105,7 +78,7 @@ Route to earliest incomplete step:
 | Finished work needs review | `flow-verify` |
 | Code is expensive to change | `flow-architect` |
 
-Use `workflow next` output and existing artifacts (`.workflow/specs/`, `.workflow/maps/`, `.workflow/tasks/`) to determine starting point. Name tasks as `<effort>/<NN>`.
+Use `.workflow/bin/workflow next` output and existing artifacts (`.workflow/specs/`, `.workflow/maps/`, `.workflow/tasks/`) to determine starting point. Name tasks as `<effort>/<NN>`.
 
 ## 4. Report and proceed
 

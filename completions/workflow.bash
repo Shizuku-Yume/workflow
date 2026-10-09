@@ -31,7 +31,7 @@ _workflow_complete() {
   command=${COMP_WORDS[0]##*/}
   if [[ $command == workflow ]]; then
     if (( COMP_CWORD == 1 )); then
-      _workflow_completion_words 'init update doctor uninstall version tasks deps decisions effort debt hotfix-review validate next help --help -h --version -v'
+      _workflow_completion_words 'init update doctor uninstall hook version tasks deps decisions effort debt hotfix-review validate next help --help -h --version -v'
       return 0
     fi
     command=${COMP_WORDS[1]:-}
@@ -54,7 +54,7 @@ _workflow_complete() {
   sub=${positionals[0]:-}
   case $command in
     deps) formats='mermaid dot text' ;;
-    effort|init|update|doctor|uninstall|version|help) formats= ;;
+    effort|init|update|doctor|uninstall|hook|version|help) formats= ;;
   esac
   if [[ $prev == --format ]]; then
     case $command:$sub in
@@ -124,7 +124,11 @@ _workflow_complete() {
     hotfix-review) options+=' --all --mark-resolved --format' ;;
     validate) options+=' --fix --strict --format' ;;
     next) options+=' --interactive --format' ;;
-    init|update) options='--force --help -h' ;;
+    init|update) options='--force --claude --no-claude --help -h' ;;
+    hook)
+      options='--help -h'
+      if [[ -z $sub ]]; then options+=' install uninstall status'; elif [[ $sub == install ]]; then options+=' --force'; fi
+      ;;
     doctor|uninstall|version|help) options='--help -h' ;;
     *) return 0 ;;
   esac

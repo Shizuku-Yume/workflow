@@ -7,7 +7,7 @@ description: >-
 
 # Flow: Break
 
-Read `.workflow/CONVENTIONS.md` §2 first. Input: spec or settled conversation. Output: task files in `.workflow/tasks/`, archived to `.workflow/done/<effort>/` when finished.
+Read `.workflow/CONVENTIONS.md` §2 first. Input: spec or settled conversation. Output: task files in `.workflow/tasks/<effort>/`, archived to `.workflow/done/<effort>/` when finished.
 
 ## Why tasks exist
 
@@ -48,7 +48,7 @@ For each:
 - **Task type** — `feature`, `bugfix`, `refactor`, `spike` (optional, defaults to `feature`)
 - **Base commit** — `<commit-sha>` placeholder when drafting. `flow-implement` captures real SHA when starting.
 - **Delivers** — behavior person can observe once done (for spike: "Answer to: <question>")
-- **Blocked by** — required: `None`, or comma-list of `NN` (same effort) or `<effort>/NN` (cross-effort). Numbers only; titles break `workflow validate`.
+- **Blocked by** — required: `None`, or comma-list of `NN` (same effort) or `<effort>/NN` (cross-effort). Numbers only; titles break `.workflow/bin/workflow validate`.
 - **Files** — expected starting locations. Not closed whitelist; necessary tests/callers/docs may be added during implementation.
 - **Read first** — specific spec sections, glossary entries, files needed to start. Short list; long list means task too big.
 - **Check** — command to run and result that means it works (for spike: how answer will be validated)
@@ -75,7 +75,7 @@ Iterate until approved. One round, not negotiation per task.
 
 ### 4. Write files
 
-`.workflow/tasks/<NN>-<slug>.md`. Number within the effort, `01`, `02` in dependency order (blockers first). Another effort may reuse the same numbers, so refer to tasks elsewhere as `<effort>/<NN>`, and pick slugs that don't collide with another effort's file in the shared `tasks/` directory.
+`.workflow/tasks/<effort>/<NN>-<slug>.md`. Number within the effort, `01`, `02` in dependency order (blockers first). Another effort may reuse the same numbers and slugs in its own directory, so refer to tasks elsewhere as `<effort>/<NN>`.
 
 ```markdown
 # <NN>: <Title>
@@ -97,9 +97,9 @@ Iterate until approved. One round, not negotiation per task.
 - [ ] <acceptance point>
 ```
 
-If `.workflow/efforts/<effort>.md` doesn't exist, run `workflow effort create <effort>` and fill in goal, scope, success criteria and priority from the spec.
+If `.workflow/efforts/<effort>.md` doesn't exist, run `.workflow/bin/workflow effort create <effort>` and fill in goal, scope, success criteria and priority from the spec.
 
-Then run `workflow validate`. Fix every error in the task files before handing off.
+Then run `.workflow/bin/workflow validate`. Fix every error in the task files before handing off.
 
 ### 5. Hand off
 
@@ -112,7 +112,7 @@ Each task built in fresh session by reading its own file plus spec sections it
 names; nobody should need conversation that produced it. If task would need that
 conversation, it's missing something; fix task file now.
 
-Build with `flow-implement`, one per session. Independent tasks run in parallel only in separate worktrees/directories; branch in same working tree is not isolation. Task can't start until all blockers are finished: their files sit under `.workflow/done/<effort>/` in committed HEAD or in the branch the dependent task uses. An uncommitted done file doesn't count. `workflow next` applies the same rule, so an archived blocker stops blocking without editing the dependent task's `Blocked by`.
+Build with `flow-implement`, one per session. Independent tasks run in parallel only in separate worktrees/directories; branch in same working tree is not isolation. Task can't start until all blockers are finished: their files sit under `.workflow/done/<effort>/` in committed HEAD or in the branch the dependent task uses. An uncommitted done file doesn't count. `.workflow/bin/workflow next` applies the same rule, so an archived blocker stops blocking without editing the dependent task's `Blocked by`.
 
 When task finishes, `flow-implement` archives to `.workflow/done/<effort>/` and commits code, docs, and archive move together.
 

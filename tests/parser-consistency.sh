@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Cross-command consistency: every task-reading command must agree on the
-# shared grammar. Policy differences are asserted explicitly: doctor is the
-# strict linter (exact `None` spellings), deps only judges the graph, and
-# effort counts blocked tasks tolerantly.
+# shared grammar. Policy differences are asserted explicitly: doctor reports
+# exactly what validate reports (it runs validate), deps only judges the graph,
+# and effort counts blocked tasks tolerantly.
 set -euo pipefail
 KIT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WF="$KIT/bin/workflow"
@@ -97,13 +97,14 @@ json 'validate required message' 'assert any("required Blocked by" in i["message
 json 'validate orphan message' 'assert any("orphaned blocker" in i["message"] for i in d["issues"])'
 
 check 'deps check fails for the missing target' 1 run "$WF" deps --check
-contains 'deps reports the missing target' 'core/6 references missing blocker task: core/99' "$TMP/err"
+contains 'deps reports the missing target' 'core/06 references missing blocker task: core/99' "$TMP/err"
 check 'deps renders with warnings' 0 run "$WF" deps --format text
 not_contains 'deps accepts lowercase none' 'malformed Blocked by' "$TMP/err"
 
 check 'doctor fails' 1 run "$WF" doctor
-contains 'doctor rejects lowercase none' 'invalid Blocked by' "$TMP/err"
-contains 'doctor reports the missing target' 'non-existent task 99' "$TMP/err"
+not_contains 'doctor accepts lowercase none like validate' 'malformed blocker' "$TMP/err"
+contains 'doctor reports the missing target' "orphaned blocker '99'" "$TMP/err"
+contains 'doctor reports the missing Blocked by' 'required Blocked by' "$TMP/err"
 
 check 'effort status succeeds' 0 run "$WF" effort status core --no-color
 contains 'effort blocked count agrees' 'Blocked: 4' "$TMP/out"

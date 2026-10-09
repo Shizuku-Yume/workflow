@@ -145,10 +145,15 @@ error_run "$TMP/main" 1 complete alpha
 has "$ERR" '4 active tasks'
 same "$FIXTURES/.workflow/efforts/alpha.md" "$TMP/main/.workflow/efforts/alpha.md"
 error_run "$TMP/main" 1 create alpha
-has "$ERR" 'already exists'
-error_run "$TMP/main" 1 create gamma
-error_run "$TMP/main" 1 create legacy
+has "$ERR" 'already has a definition'
 error_run "$TMP/main" 1 create fresh-effort
+# Tasks naming an effort with no definition yet must not block creating one:
+# flow-break writes the tasks first, and validate suggests exactly this command.
+cp -R "$TMP/main" "$TMP/create-copy"
+run "$TMP/create-copy" 0 create gamma
+present "$TMP/create-copy/.workflow/efforts/gamma.md"
+run "$TMP/create-copy" 0 create legacy
+present "$TMP/create-copy/.workflow/efforts/legacy.md"
 error_run "$TMP/main" 1 complete nonexistent
 has "$ERR" 'not found'
 error_run "$TMP/main" 1 status nonexistent
@@ -177,13 +182,15 @@ has "$TMP/main/.workflow/tasks/02-alpha-local.md" '**Blocked by:** #001'
 has "$TMP/main/.workflow/tasks/04-alpha-ready.md" '**Effort**: omega'
 has "$TMP/main/.workflow/tasks/04-alpha-ready.md" '#omega/008 Published contract'
 has "$TMP/main/.workflow/done/omega/08-contract.md" '**Effort:** omega'
-has "$TMP/main/.workflow/tasks/alpha/nested/03-alpha-cross.md" 'Blocked by: `beta/001`, [omega/002]'
+has "$TMP/main/.workflow/tasks/omega/nested/03-alpha-cross.md" 'Blocked by: `beta/001`, [omega/002]'
+absent "$TMP/main/.workflow/tasks/alpha"
 has "$TMP/main/.workflow/tasks/02-beta-missing.md" 'Blocked by: 099, omega/001'
 has "$TMP/main/.workflow/done/beta/03-review.md" 'Blocked by: [omega/001], `omega/002`, gamma/001'
 body_same "$FIXTURES/.workflow/efforts/alpha.md" "$TMP/main/.workflow/efforts/omega.md"
-for task in 01-alpha-ready.md 02-alpha-local.md 04-alpha-ready.md alpha/nested/03-alpha-cross.md 02-beta-missing.md; do
+for task in 01-alpha-ready.md 02-alpha-local.md 04-alpha-ready.md 02-beta-missing.md; do
   body_same "$FIXTURES/.workflow/tasks/$task" "$TMP/main/.workflow/tasks/$task"
 done
+body_same "$FIXTURES/.workflow/tasks/alpha/nested/03-alpha-cross.md" "$TMP/main/.workflow/tasks/omega/nested/03-alpha-cross.md"
 body_same "$FIXTURES/.workflow/done/alpha/08-contract.md" "$TMP/main/.workflow/done/omega/08-contract.md"
 body_same "$FIXTURES/.workflow/done/beta/03-review.md" "$TMP/main/.workflow/done/beta/03-review.md"
 same "$FIXTURES/.workflow/done/alpha/nested/09-design.md" "$TMP/main/.workflow/done/omega/nested/09-design.md"

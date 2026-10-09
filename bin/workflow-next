@@ -91,7 +91,7 @@ if [ ! -d "$TASKS_DIR" ]; then
 fi
 
 # Sort only numeric keys and record indexes; task text never enters the sorter.
-declare -A META=() GOALS=() PRIORITIES=() RANKS=() BLOCK_COUNTS=() BLOCK_TASKS=()
+declare -A META=() GOALS=() PRIORITIES=() RANKS=() BLOCK_COUNTS=() BLOCK_TASKS=() BLOCK_NUMBERS=()
 declare -A ARCHIVED=()
 declare -a REFERENCES=() TITLES=() EFFORTS=() CHECKS=() SORT_KEYS=()
 READY_COUNT=0
@@ -102,25 +102,31 @@ shopt -s nullglob
 # Blockers archived under .workflow/done/<effort>/ are finished, so they never
 # block: collect their <effort>/<NN> keys before evaluating active tasks.
 if [ -d "$DONE_DIR" ]; then
-  for file in "$DONE_DIR"/*/*.md; do
+  wf_task_files "$DONE_DIR"
+  for file in "${WF_FILES[@]}"; do
     [ -f "$file" ] || continue
     basename="${file##*/}"
     [[ "$basename" =~ ^([0-9]+)-.+\.md$ ]] || continue
-    number "${BASH_REMATCH[1]}"
-    archived_key_number="$REPLY"
-    effort="${file%/*}"; effort="${effort##*/}"
+    wf_dir_effort "$DONE_DIR" "$file"; effort="$WF_DIR_EFFORT"
+    [ -n "$effort" ] || continue
+    archived_key_number="${BASH_REMATCH[1]}"
     read_metadata "$file"
     [ -n "${META[effort]:-}" ] && effort="${META[effort]}"
-    ARCHIVED["$effort/$archived_key_number"]=1
+    wf_ref "$effort" "$archived_key_number"
+    ARCHIVED["$WF_REF"]=1
   done
 fi
+# BLOCK_TASKS holds <effort>/<NN> names for text; BLOCK_NUMBERS keeps bare
+# numbers for the JSON contract.
 record_blocker() {
-  local blocker="$1" task="$2"
+  local blocker="$1" task="$2" task_number="$3"
   BLOCK_COUNTS["$blocker"]=$(( ${BLOCK_COUNTS[$blocker]:-0} + 1 ))
   BLOCK_TASKS["$blocker"]="${BLOCK_TASKS[$blocker]:+${BLOCK_TASKS[$blocker]}, }$task"
+  BLOCK_NUMBERS["$blocker"]="${BLOCK_NUMBERS[$blocker]:+${BLOCK_NUMBERS[$blocker]},}$task_number"
 }
 
-for file in "$TASKS_DIR"/*.md; do
+wf_task_files "$TASKS_DIR"
+for file in "${WF_FILES[@]}"; do
   [ -f "$file" ] || continue
   [ -r "$file" ] || { error "cannot read task: $file"; exit 1; }
   basename="${file##*/}"
@@ -138,31 +144,33 @@ for file in "$TASKS_DIR"/*.md; do
     effort="none"
   fi
   TASK_COUNT=$((TASK_COUNT + 1))
+  wf_ref "$effort" "$num"; ref="$WF_REF"
   # A task with no active blockers is ready, whatever its Blocked by line says:
   # numbers already archived under done/ count as finished.
   blocked="${META[blocked by]:-}"
   task_blocked=0
   if [ -z "$blocked" ]; then
     task_blocked=1
-    record_blocker '(missing Blocked by field)' "$num"
+    record_blocker '(missing Blocked by field)' "$ref" "$num"
   else
     rc=0
     wf_parse_blockers "$blocked" 0 || rc=$?
     if [ "$rc" -ne 0 ]; then
       task_blocked=1
       warn "$basename has malformed Blocked by: $blocked"
-      record_blocker '(malformed Blocked by field)' "$num"
+      record_blocker '(malformed Blocked by field)' "$ref" "$num"
     elif [ "$WF_REFS_COUNT" -gt 0 ]; then
       declare -A seen=()
       for ((i = 0; i < WF_REFS_COUNT; i++)); do
         token="${WF_REFS[$i]}"
-        [[ "$token" == */* ]] || token="$effort/$token"
+        if [[ "$token" == */* ]]; then wf_ref "${token%%/*}" "${token##*/}"; else wf_ref "$effort" "$token"; fi
+        token="$WF_REF"
         # Finished blockers under done/<effort>/ no longer gate this task.
         [ -n "${ARCHIVED[$token]:-}" ] || seen["$token"]=1
       done
       if [ "${#seen[@]}" -gt 0 ]; then
         task_blocked=1
-        for token in "${!seen[@]}"; do record_blocker "$token" "$num"; done
+        for token in "${!seen[@]}"; do record_blocker "$token" "$ref" "$num"; done
       fi
     fi
   fi
@@ -192,7 +200,7 @@ for file in "$TASKS_DIR"/*.md; do
     esac
     PRIORITIES["$effort"]="$priority"; RANKS["$effort"]="$rank"; GOALS["$effort"]="$goal"
   fi
-  REFERENCES+=("$effort/$filename_number"); TITLES+=("$title"); EFFORTS+=("$effort"); CHECKS+=("$check")
+  REFERENCES+=("$ref"); TITLES+=("$title"); EFFORTS+=("$effort"); CHECKS+=("$check")
   SORT_KEYS+=("${RANKS[$effort]}"$'\t'"$num"$'\t'"$READY_COUNT")
   READY_COUNT=$((READY_COUNT + 1))
 done
@@ -223,7 +231,7 @@ if [ "$FORMAT" = "json" ]; then
       [ "$shown" -eq 0 ] || printf ','
       printf '{"dependency":'; json_string "$blocker"
       printf ',"count":%s,"tasks":[' "$count"
-      IFS=', ' read -r -a waiting <<< "${BLOCK_TASKS[$blocker]}"
+      IFS=',' read -r -a waiting <<< "${BLOCK_NUMBERS[$blocker]}"
       separator=""
       for num in "${waiting[@]}"; do printf '%s%s' "$separator" "$num"; separator=','; done
       printf ']}'
@@ -257,7 +265,7 @@ SELECTIONS=()
 while IFS=$'\t' read -r rank num index; do
   effort="${EFFORTS[$index]}"
   SELECTIONS+=("$index")
-  printf '%s) %s[%s]%s [%s] %s (priority: %s)\n' "${#SELECTIONS[@]}" "$C_BOLD" "$num" "$C_OFF" "$effort" "${TITLES[$index]}" "${PRIORITIES[$effort]}"
+  printf '%s) %s%s%s %s (priority: %s)\n' "${#SELECTIONS[@]}" "$C_BOLD" "${REFERENCES[$index]}" "$C_OFF" "${TITLES[$index]}" "${PRIORITIES[$effort]}"
   printf '   %sGoal:%s %s\n' "$C_DIM" "$C_OFF" "${GOALS[$effort]}"
   printf '   %sCheck:%s %s\n' "$C_DIM" "$C_OFF" "${CHECKS[$index]}"
   printf '   Start: flow-implement %s\n' "${REFERENCES[$index]}"
