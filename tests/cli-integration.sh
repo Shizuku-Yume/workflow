@@ -145,7 +145,9 @@ COMP_WORDS=(workflow deps --format m); COMP_CWORD=3; _workflow_complete
             self.skipTest('zsh is not installed; native completion check unavailable')
         script = '''
 autoload -Uz compinit
-compinit -D
+# -u: CI runners have group-writable completion dirs, and compaudit would
+# otherwise stop to ask about them with no terminal to ask on.
+compinit -u -D
 source "$1/completions/_workflow"
 (( $+functions[_workflow] )) || exit 1
 [[ ${_comps[workflow]} == _workflow ]] || exit 1

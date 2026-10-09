@@ -60,7 +60,13 @@ left directly under `tasks/` keep working.
   in the README, CONVENTIONS §4 and flow-start, and the README copy had already
   lost the rollback criterion. They live in CONVENTIONS §4 now, together with
   the hotfix decision entry fields; the others point there.
-- CI on Ubuntu and macOS. `ENHANCEMENTS.md` became this file.
+- **Fixes found by running on macOS for the first time.** `workflow update` always
+  failed there with "could not prepare the AGENTS.md workflow block": BSD awk
+  rejects a multi-line `-v` value, so the block now goes through the
+  environment. `workflow debt add` and `debt list --format json` failed with an
+  awk syntax error from an unparenthesised `?:` inside `printf`.
+- CI on Ubuntu and macOS (macOS with the system awk, so BSD awk is covered).
+  `ENHANCEMENTS.md` became this file.
 
 ## 2.2.0
 

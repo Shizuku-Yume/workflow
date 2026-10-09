@@ -861,7 +861,10 @@ install_marked_block() {
   fi
 
   tmp="$(mktemp)"
-  if ! awk -v s="$MARKER_START" -v e="$MARKER_END" -v repl="$block" '
+  # The block goes in through the environment: BSD awk (macOS) rejects a -v
+  # value that contains newlines.
+  if ! WF_BLOCK="$block" awk -v s="$MARKER_START" -v e="$MARKER_END" '
+    BEGIN { repl = ENVIRON["WF_BLOCK"] }
     $0 == s { print repl; skipping = 1; next }
     $0 == e { skipping = 0; next }
     !skipping { print }

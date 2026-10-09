@@ -4,7 +4,8 @@ set -euo pipefail
 BASE=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 EFFORT="$BASE/bin/workflow-effort"
 FIXTURES="$BASE/tests/fixtures/effort"
-TMP=$(mktemp -d)
+# Physical path: on macOS mktemp gives /var/..., git reports /private/var/....
+TMP=$(cd "$(mktemp -d)" && pwd -P)
 trap 'rm -rf "$TMP"' EXIT
 OUT="$TMP/out"
 ERR="$TMP/err"

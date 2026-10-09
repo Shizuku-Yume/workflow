@@ -100,7 +100,7 @@ function json_item(i, days) {
     printf ",\"problem\":%s,\"impact\":%s,\"solution\":%s,\"cost\":%s,\"resolution\":%s,\"commit\":%s,\"pr\":%s", json_string(fields[i, "Problem"]), json_string(fields[i, "Impact"]), json_string(fields[i, "Solution"]), json_string(fields[i, "Cost"]), json_string(fields[i, "Resolution"]), json_string(fields[i, "Commit"]), json_string(fields[i, "PR"])
     if (age) {
         days = int((now - timestamp(fields[i, "Added"])) / 86400)
-        printf ",\"age_days\":%d", days < 0 ? 0 : days
+        printf ",\"age_days\":%d", (days < 0 ? 0 : days)
     }
     printf "}"
 }
