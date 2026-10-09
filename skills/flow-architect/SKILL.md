@@ -1,62 +1,82 @@
 ---
 name: flow-architect
 description: >-
-  Find code that makes next change expensive: duplication, dead weight, leaky
-  modules, hand-rolled basics. Use when user says "audit codebase", "find duplication".
+  Find code that makes the next change expensive: duplication, dead weight, leaky
+  modules, hand-rolled basics. Use when the user says "audit the codebase" or "find duplication".
 ---
 
 # Flow: Architect
 
 Read `.workflow/STYLE.md`: everything you report must read like a person wrote it.
+Per CONVENTIONS §0, check the codebase before asking.
 
-Per CONVENTIONS §0: check codebase before asking. This skill is read-only investigation.
-
-Find code that makes next change expensive, say what to do. Report only; change nothing.
-
-Two failures to avoid: long report nobody acts on, and clever redesign where real answer was deleting three files.
+Find the code that makes the next change expensive and say what to do. This skill
+only reports; it changes nothing. Aim for a short report someone acts on, and look
+for the fix that deletes three files before any clever redesign.
 
 ## Look at code that changes
 
-Maintenance budget follows change, not size. Sprawling module nobody touches isn't problem worth fixing today.
+The maintenance budget follows change, not size. A sprawling module nobody touches
+isn't worth fixing today.
 
-If user named area, use it. Otherwise read recent history, find files that keep coming up:
+Use the area the user named. Otherwise find the files recent history keeps hitting:
 
 ```sh
 git log --oneline -60
 git log --format= --name-only -60 | sort | uniq -c | sort -rn | head -30
 ```
 
-Those are hot spots. Start there. If history scattered with no pattern, say so and widen scan.
+Start with those hot spots. If the history is scattered, say so and widen the scan.
 
-Read `.workflow/glossary.md` and specs for area first: project already has names for things, some of what looks wrong may be recorded decision.
+Read `.workflow/glossary.md` and the area's specs first. The project already names
+things, and some of what looks wrong may be a recorded decision.
 
 ## What to hunt
 
-**Duplication** — same logic written twice. Second copy is where bug will hide. Report shared shape and where it should live. Watch for same *rule* expressed differently, matters more than identical lines.
+**Duplication**: the same logic written twice; the second copy is where the bug
+hides. Report the shared shape and where it should live. The same *rule* expressed
+differently matters more than identical lines.
 
-**Dead weight** — unused exports, flags nobody sets, config for value that never changes, interface with one implementation, factory for one product, wrapper that only delegates, compatibility path for caller no longer exists. Grep for callers before reporting; dead code that's actually live is bad report.
+**Dead weight**: unused exports, flags nobody sets, config for a value that never
+changes, an interface with one implementation, a factory for one product, a wrapper
+that only delegates, a compatibility path for a caller that no longer exists. Grep
+for callers before reporting; "dead" code that is live makes a bad report.
 
-**Hand-rolled basics** — something language's standard library ships (say which function), or platform already does (`<input type="date">` instead of date-picker dependency, CSS rule instead of JS, database constraint instead of application checks). Name replacement.
+**Hand-rolled basics**: something the standard library ships (say which function)
+or the platform already does (`<input type="date">` instead of a date-picker
+dependency, a CSS rule instead of JS, a database constraint instead of application
+checks). Name the replacement.
 
-**Unneeded dependencies** — package pulled in for one format call, one parse, one small utility. Name standard-library or native replacement.
+**Unneeded dependencies**: a package pulled in for one format call, one parse or
+one small utility. Name the standard-library or native replacement.
 
-**Modules that leak** — data structures passed around in raw form so every caller knows internals; function whose arguments expose what it does internally; two modules reaching into each other. Say what boundary should be instead.
+**Modules that leak**: raw data structures passed around so every caller knows the
+internals, arguments that expose how a function works, two modules reaching into
+each other. Say what the boundary should be.
 
-**Modules that are just plumbing** — layer that only forwards calls, module whose interface is as complicated as its body. Ask: if I deleted it, would complexity concentrate somewhere better, or just move? "Just move" means leave alone.
+**Modules that are just plumbing**: a layer that only forwards calls, or an
+interface as complicated as its body. Ask: if I deleted it, would the complexity
+concentrate somewhere better, or just move? If it would just move, leave it.
 
-**Logic that can't be tested where it sits** — real behavior inside functions needing database, network, or UI to run at all. Say what would let it be checked.
+**Logic that can't be tested where it sits**: real behaviour inside functions that
+need a database, network or UI to run at all. Say what would let it be checked.
 
-For each candidate, sentence one is concrete symptom: file, name, what it does wrong. Not "module not cohesive".
+Open each candidate with the concrete symptom: the file, the name, what it does
+wrong. "Module not cohesive" is not a symptom.
 
 ## Rank by what it costs to leave alone
 
-Biggest pain first, where pain = how often touched, how many changes it forces, how hard to understand first time. Ugly file nobody edits ranks below tidy file every feature must modify.
+Put the biggest pain first. Pain is how often the code is touched, how many changes
+it forces, and how hard it is to understand the first time. An ugly file nobody
+edits ranks below a tidy file every feature must modify.
 
-Three labels: **Fix now**, **Worth doing**, **Only if it grows**.
+Use three labels: **Fix now**, **Worth doing**, **Only if it grows**.
 
 ## Report format
 
-Markdown, in conversation or written to file if long. No HTML, no diagrams for own sake; short before/after sketch fine where structure is point.
+Write Markdown, in the conversation or in a file if long. Keep to text: no HTML and
+no diagrams for their own sake, though a short before/after sketch is fine where
+structure is the point.
 
 ```markdown
 # Architecture review: <area> (<date>)
@@ -69,32 +89,48 @@ Markdown, in conversation or written to file if long. No HTML, no diagrams for o
 ### 1. <Concrete symptom> [Fix now]
 
 **Where:** <files>
-**What is wrong:** <specific problem with evidence: rule in three places; flag set nowhere; two modules import each other>
-**What to do:** <the change, plain terms>
-**What it buys:** <what gets easier: fewer places to edit, test that can exist, dependency that goes away>
-**Cost:** <what change itself risks, how big it is>
+**What is wrong:** <specific problem with evidence: a rule in three places; a flag set nowhere; two modules import each other>
+**What to do:** <the change, in plain terms>
+**What it buys:** <what gets easier: fewer places to edit, a test that can exist, a dependency that goes away>
+**Cost:** <what the change risks, and how big it is>
 
 ### 2. ...
 
 ## What I would not touch
-<candidates that look bad but not worth it, one line each with reason. This
-matters: stops next audit re-proposing them.>
+<candidates that look bad but aren't worth it, one line each with the reason.
+This stops the next audit re-proposing them.>
 ```
 
-End with two lines: count of findings and one you'd do first.
+End with two lines: the number of findings and the one you would do first.
 
 ## Rules
 
-- **Count deletion** — for anything you propose removing, state change in size: `-N lines, -M dependencies`. Proposal that doesn't shrink code or make specific change easier is preference, not finding.
-- **Never propose rewrite** — proposals must be doable in few tasks, or broken into ones that are.
-- **Respect recorded decisions** — finding contradicting spec or logged decision gets raised only when code has since made that decision actively painful, say so explicitly: "contradicts decision in <spec>, but costs us X every time we touch this".
-- **Correctness bugs found along way** go in one line under separate heading then dropped. This skill about structure; don't turn into bug hunt.
-- **Stop when money on table** — five sharp findings beat twenty padded ones. If only two, report two and say area in good shape.
+- **Count deletion**: for anything you propose removing, state the size change:
+  `-N lines, -M dependencies`. A proposal that neither shrinks code nor makes a
+  specific change easier is a preference, not a finding.
+- **Never propose a rewrite**: each proposal must fit in a few tasks, or break into
+  tasks that do.
+- **Respect recorded decisions**: raise a finding that contradicts a spec or logged
+  decision only when the code has since made that decision actively painful, and
+  say so: "contradicts decision in <spec>, but costs us X every time we touch this".
+- **Correctness bugs found along the way** get one line under a separate heading,
+  then drop them. This skill is about structure, not a bug hunt.
+- **Stop when the money is on the table**: five sharp findings beat twenty padded
+  ones. If there are only two, report two and say the area is in good shape.
 
-## After report
+## After the report
 
-Nothing changed. User picks what to act on. Each finding they want becomes own effort: `flow-grill` to settle approach, then `flow-spec` and `flow-break`. Findings that pass as small tasks (CONVENTIONS §4) can just be fixed.
+Nothing has changed. The user picks what to act on. Each finding they want becomes
+its own effort: `flow-grill` to settle the approach, then `flow-spec` and
+`flow-break`. Findings that pass as small tasks (CONVENTIONS §4) can just be fixed.
 
-**Track unaddressed findings**: append one entry per finding to `## Entries` in `.workflow/technical-debt.md`, in the format that file shows. The heading is the concrete symptom; `Priority` maps from the label: Fix now → `fix-now`, Worth doing → `worth-doing`, Only if it grows → `only-if-grows`. This stops future reviews re-discovering the same issues and keeps the reason something wasn't fixed.
+**Track unaddressed findings**: append one entry per finding to `## Entries` in
+`.workflow/technical-debt.md`, in the format that file shows. The heading is the
+concrete symptom; `Priority` maps from the label: Fix now → `fix-now`, Worth doing →
+`worth-doing`, Only if it grows → `only-if-grows`. This stops future reviews
+re-discovering the same issues and keeps the reason something wasn't fixed.
 
-**Findings the user declines**: delete the finding's entry from `technical-debt.md` if it has one, and append a decision entry to `.workflow/decisions.md` (Decided: not fixing <symptom>; Instead of: fixing it; Because; Mine: no; Revisit when), so the next review doesn't re-propose it.
+**Findings the user declines**: delete the finding's entry from `technical-debt.md`
+if it has one, and append a decision entry to `.workflow/decisions.md` (Decided: not
+fixing <symptom>; Instead of: fixing it; Because; Mine: no; Revisit when), so the
+next review doesn't re-propose it.
