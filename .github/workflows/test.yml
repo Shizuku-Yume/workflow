@@ -14,9 +14,58 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # macOS ships Bash 3.2 and BSD realpath without -m; the CLI needs Bash 4.3+
-      # and GNU realpath, and the tests use GNU sed -i. README documents the same setup.
-      - name: Install GNU tools (macOS)
+      - name: Configure git
+        run: |
+          git config --global user.email ci@example.com
+          git config --global user.name CI
+          git config --global init.defaultBranch main
+
+      # The CLI must run on stock macOS: Bash 3.2 and BSD tools. Run it before
+      # Homebrew puts newer bash or GNU tools on PATH.
+      - name: Stock macOS smoke test
+        if: runner.os == 'macOS'
+        shell: /bin/bash -e -o pipefail {0}
+        run: |
+          /bin/bash --version | head -n 1
+          kit="$GITHUB_WORKSPACE"
+          log="$RUNNER_TEMP/smoke.log"
+          : > "$log"
+          step() { echo "+ $*"; "$@" 2>&1 | tee -a "$log"; }
+          project="$(mktemp -d)"
+          cd "$project"
+          git init -q
+          echo 'smoke' > README.md
+          git add README.md
+          git commit -qm 'Initial commit'
+          step /bin/bash "$kit/bin/workflow" init
+          # validate: 0 valid, 1 warnings (acceptable), 2 errors.
+          status=0
+          step /bin/bash .workflow/bin/workflow validate || status=$?
+          if [ "$status" -gt 1 ]; then echo "validate exited $status"; exit 1; fi
+          step /bin/bash .workflow/bin/workflow next
+          # A fresh install still has standards.md placeholders; any other problem fails.
+          status=0
+          step /bin/bash .workflow/bin/workflow doctor > "$RUNNER_TEMP/doctor.out" || status=$?
+          cat "$RUNNER_TEMP/doctor.out"
+          if [ "$status" -gt 1 ]; then echo "doctor exited $status"; exit 1; fi
+          if [ "$status" -eq 1 ] && grep -E '^(!|✗)' "$RUNNER_TEMP/doctor.out" | grep -v placeholder | grep -q .; then
+            echo "doctor reported problems beyond standards.md placeholders"; exit 1
+          fi
+          step /bin/bash .workflow/bin/workflow hook install
+          step /bin/bash .workflow/bin/workflow hook status
+          git add -A
+          git commit -qm 'Install workflow'
+          echo 'change' >> README.md
+          git commit -qam 'Trigger the workflow hook' 2>&1 | tee -a "$log"
+          step /bin/bash "$kit/bin/workflow" update
+          step /bin/bash "$kit/bin/workflow" uninstall
+          # Bash 3.2 incompatibilities print "<script>: line N: ..." and may not fail the command.
+          if grep -E 'workflow(-core\.py)?: line [0-9]+: ' "$log"; then
+            echo "bash reported errors under /bin/bash"; exit 1
+          fi
+
+      # The test scripts themselves may use newer Bash and GNU tools.
+      - name: Install test tools (macOS)
         if: runner.os == 'macOS'
         run: |
           brew install bash coreutils gnu-sed
@@ -24,17 +73,8 @@ jobs:
           echo "$(brew --prefix coreutils)/libexec/gnubin" >> "$GITHUB_PATH"
           echo "$(brew --prefix gnu-sed)/libexec/gnubin" >> "$GITHUB_PATH"
 
-      - name: Install zsh (Ubuntu)
-        if: runner.os == 'Linux'
-        run: sudo apt-get install -y zsh
-
-      - name: Configure git
-        run: |
-          git config --global user.email ci@example.com
-          git config --global user.name CI
-          git config --global init.defaultBranch main
-
       - name: Run tests
         run: |
           bash --version | head -n 1
+          python3 --version
           bash tests/cli-tests.sh

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Run the complete workflow CLI integration suite.
-set -euo pipefail
+# Run every workflow test suite; exit 1 if any failed.
+set -uo pipefail
 KIT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-cd "$KIT"
+cd "$KIT" || exit 1
 failed=0
 
 suite() {
@@ -16,20 +16,12 @@ suite() {
   fi
 }
 
-suite "workflow wrapper regression" bash "$KIT/tests/cli-regression.sh"
-suite "workflow tasks" bash "$KIT/tests/tasks-tests.sh"
-suite "workflow dependencies" bash "$KIT/tests/deps-tests.sh"
-suite "workflow decisions" bash "$KIT/tests/decisions-tests.sh"
-suite "workflow hotfix review" bash "$KIT/tests/hotfix-review-tests.sh"
-suite "workflow validator" bash "$KIT/tests/validate-tests.sh"
-suite "workflow next" bash "$KIT/tests/cli-next.sh"
-suite "workflow effort" bash "$KIT/tests/effort-tests.sh"
-suite "workflow debt" bash "$KIT/tests/debt-tests.sh"
-suite "cross-command integration" bash "$KIT/tests/cli-integration.sh"
-suite "parser consistency" bash "$KIT/tests/parser-consistency.sh"
-suite "skills and template lint" bash "$KIT/tests/skills-lint.sh"
-if (( failed )); then
-  printf '\n%d CLI suite(s) failed.\n' "$failed" >&2
+suite "workflow CLI regression" bash "$KIT/tests/cli-regression.sh"
+suite "validate and next core" python3 "$KIT/tests/test_core.py"
+suite "skills and template lint" python3 "$KIT/tests/skills_lint.py"
+
+if [ "$failed" -gt 0 ]; then
+  printf '\n%d suite(s) failed.\n' "$failed" >&2
   exit 1
 fi
-printf '\nAll CLI suites passed.\n'
+printf '\nAll suites passed.\n'
