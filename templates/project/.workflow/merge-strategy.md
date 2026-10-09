@@ -1,6 +1,6 @@
 # Merge and Branch Strategy
 
-How a finished task reaches the main branch, how a task is claimed, and when a
+How finished work reaches the main branch, how a task is claimed, and when a
 dependent task may start. `.workflow/standards.md` picks the landing mode with
 `Landing:`; where the two disagree, standards.md wins.
 
@@ -21,17 +21,21 @@ once, fast-forward the main branch, delete the task branch. Nothing is pushed.
 The task is landed when its PR is merged. Push and open the PR as the last step of
 `flow-implement`.
 
-Hotfixes use `hotfix/<description>` under `local-merge` and `pr`, land the same
-way, and leave a follow-up `bugfix` task (CONVENTIONS §4).
+## Work without a task file
+
+Small tasks and hotfixes (CONVENTIONS §4) land by the same mode. Under `direct`,
+commit on the current branch. Under `local-merge` and `pr`, branch from the main
+branch as `small/<slug>` (a hotfix: `hotfix/<slug>`) and land it like a task
+branch. There is nothing to archive. A hotfix still leaves its follow-up `bugfix`
+task (CONVENTIONS §4).
 
 ## Claiming a task
 
 Under `local-merge` and `pr`, the task branch is the claim. Before starting,
 `git branch -a --list '*<effort>/<NN>-*'`: if a branch exists and this session
 isn't resuming it, someone else has the task. `Status: active` in the task file
-is not a claim; other worktrees can't see it until it lands.
-
-Under `direct` there is one working tree, so there is nothing to claim.
+is not a claim; other worktrees can't see it until it lands. Under `direct` there
+is one working tree, so there is nothing to claim.
 
 ## Dependent tasks
 
@@ -43,48 +47,38 @@ branch and record `**Base branch:** <blocker branch>` in the task file. When the
 blocker merges, rebase the dependent onto the main branch and drop the
 `Base branch` line. Under `local-merge`, landing takes minutes, so wait.
 
-## Task Base Commit
+## Base commit
 
-1. `flow-implement` records `Base commit: <sha>` before the first edit.
-2. It is the comparison point for `flow-verify`.
-3. It never changes during implementation, and stays in the task file as history.
+`flow-implement` records `Base commit: <sha>` before the first edit. It is the
+comparison point for `flow-verify`, never changes during implementation, and stays
+in the task file as history. If the main branch moves ahead, don't rebase until
+landing.
 
-**During implementation:** if the main branch moves ahead, don't rebase until
-landing. `flow-verify` compares against your Base commit, not the current main
-branch.
+After a rebase the Base commit is still an ancestor, but `git diff <Base commit>`
+now also contains everything that landed in between. A review rerun after a rebase
+compares against `git merge-base <main branch> HEAD` instead.
 
-**After a rebase** the Base commit is still an ancestor, but `git diff <Base
-commit>` now also contains everything that landed in between. A review rerun after
-a rebase compares against `git merge-base <main branch> HEAD` instead.
+## Merge style
 
-## Merge Strategy
+Rebase and fast-forward (or rebase-merge on the hosting side): linear history, each
+task one commit, easy to bisect. Squash-merge is the fallback. Task work gets no
+merge commits.
 
-**Preferred:** rebase and fast-forward (or rebase-merge on the hosting side).
-Linear history, each task one commit, easy to bisect.
+## Rebase and conflicts
 
-**Alternative:** squash and merge. One commit per task, intermediate commits lost.
-
-**Never:** merge commits for task work.
-
-## Conflict Resolution
-
-When rebasing onto the main branch:
 1. `git fetch origin` (under `pr`)
 2. `git rebase <main branch>` (or `origin/<main branch>`)
 3. Resolve conflicts, `git rebase --continue`
 4. Rerun the test suite, the task's Check, and the real path once
 5. Under `pr`: `git push --force-with-lease`
 
-Don't rerun the whole `flow-verify` after a rebase: the change itself hasn't
-moved. Do rerun the Check and the real path. A rebase can break behaviour without
-a single textual conflict, when something the change relies on moved underneath
-it. If conflict resolution changed the task's own lines, that resolution is a fix:
-CONVENTIONS §7 decides whether it goes back to the reviewer.
+The whole `flow-verify` doesn't rerun after a rebase: the change itself hasn't
+moved. The Check and the real path do, because a rebase can break behaviour
+without a textual conflict. If conflict resolution changed the task's own lines,
+that resolution is a fix: CONVENTIONS §7 decides whether it goes back to the
+reviewer.
 
-## Protection Rules
+## Protection rules
 
-Recommended for the main branch under `pr`:
-- Require PR review
-- Require status checks (tests, lint)
-- No force push
-- No deletion
+Recommended for the main branch under `pr`: require PR review and status checks
+(tests, lint); no force push, no deletion.

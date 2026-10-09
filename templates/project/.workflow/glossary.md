@@ -6,7 +6,8 @@ One entry per concept. If two people would use the word differently, that is a
 bug in the project, not in the conversation: fix it here.
 
 Add a term the moment it is agreed, not later. A name that exists only in a
-conversation is a name that will drift.
+conversation is a name that will drift. Git merges this file with the union driver
+(`.gitattributes`), so parallel branches can each add terms.
 
 ## Format
 
@@ -19,7 +20,6 @@ conversation is a name that will drift.
 The `Avoid` line does real work when it exists. "Order" and "Purchase" being two
 names for one thing is a common source of confusion. But if a concept has no
 competing names, omit the line rather than inventing fake synonyms.
-
 
 ## Terms
 

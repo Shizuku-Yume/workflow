@@ -1,52 +1,33 @@
 # Technical Debt
 
-Track code issues that make changes expensive. Items come from `flow-architect` findings or discovered during work.
+Code that makes the next change expensive, one entry per finding, so reviews don't
+rediscover it and the reason it wasn't fixed yet is kept. `flow-architect` adds
+entries; any skill that finds debt may add one.
 
-## Status: Active
+## Format
 
-Items that need addressing, ranked by impact.
-
-### Fix Now
-
-High-priority items blocking current work or causing frequent pain.
-
-### Worth Doing
-
-Medium-priority improvements that would help but aren't blocking.
-
-### Only If It Grows
-
-Low-priority items to fix only if the affected area expands.
-
-## Status: Resolved
-
-Moved here when fixed, with link to commit/PR.
-
-## Status: Accepted
-
-Decided not to fix, with reason. Prevents re-proposing.
-
----
-
-## Entry Template
-
-When adding debt, use this format:
+Each entry is a level-2 heading naming the concrete symptom, under `## Entries`.
+Refer to an entry by its heading.
 
 ```markdown
-## [ID] Brief symptom
+## Order total computed in three places
 
-**Where:** file/module paths
-**Added:** YYYY-MM-DD
-**Priority:** fix-now | worth-doing | only-if-grows
-**Status:** active | resolved | accepted
-
-**Problem:** Specific issue with evidence (e.g., "same validation logic in 3 files", "untested database code")
-
-**Impact:** What gets harder: more places to edit, can't test X, requires Y every time
-
-**Solution:** Concrete change in plain terms
-
-**Cost:** What the fix itself risks, how big the change is
-
-**Resolution:** (filled when resolved/accepted) What was done or why accepted
+- **Where:** <files or modules>
+- **Added:** <YYYY-MM-DD>
+- **Priority:** fix-now | worth-doing | only-if-grows
+- **Problem:** <what is wrong, with evidence>
+- **Impact:** <what gets harder while it stays>
+- **Solution:** <the change, in plain terms>
+- **Cost:** <what the fix risks, how big it is>
 ```
+
+An entry leaves this file in one of two ways:
+
+- Fixed: the task that fixes it deletes the entry in its own commit.
+- Declined by the user: delete the entry and append a decision entry to
+  `decisions.md` (Decided: not fixing <symptom>; Instead of: fixing it; Because;
+  Mine: no; Revisit when), so reviews don't re-propose it.
+
+## Entries
+
+<!-- Add yours below. Delete this comment. -->

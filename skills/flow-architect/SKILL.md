@@ -7,7 +7,7 @@ description: >-
 
 # Flow: Architect
 
-Read `.workflow/CONVENTIONS.md` §3 and `.workflow/STYLE.md`: everything you report must read like person wrote it.
+Read `.workflow/STYLE.md`: everything you report must read like a person wrote it.
 
 Per CONVENTIONS §0: check codebase before asking. This skill is read-only investigation.
 
@@ -95,15 +95,6 @@ End with two lines: count of findings and one you'd do first.
 
 Nothing changed. User picks what to act on. Each finding they want becomes own effort: `flow-grill` to settle approach, then `flow-spec` and `flow-break`. Findings that pass as small tasks (CONVENTIONS §4) can just be fixed.
 
-**Track unaddressed findings** in `.workflow/technical-debt.md`, one per finding, with flags so no prompt opens:
+**Track unaddressed findings**: append one entry per finding to `## Entries` in `.workflow/technical-debt.md`, in the format that file shows. The heading is the concrete symptom; `Priority` maps from the label: Fix now → `fix-now`, Worth doing → `worth-doing`, Only if it grows → `only-if-grows`. This stops future reviews re-discovering the same issues and keeps the reason something wasn't fixed.
 
-```sh
-.workflow/bin/workflow debt add --title '<concrete symptom>' --location '<files>' \
-  --priority fix-now|worth-doing|only-if-grows \
-  --problem '<what is wrong>' --impact '<what it buys>' \
-  --solution '<what to do>' --cost '<cost>'
-```
-
-Labels map to priorities: Fix now → `fix-now`, Worth doing → `worth-doing`, Only if it grows → `only-if-grows`. This stops future reviews re-discovering the same issues and keeps the reason something wasn't fixed.
-
-Findings the user rejects: `.workflow/bin/workflow debt accept <id> --reason '<why>'`, so next review doesn't re-propose them.
+**Findings the user declines**: delete the finding's entry from `technical-debt.md` if it has one, and append a decision entry to `.workflow/decisions.md` (Decided: not fixing <symptom>; Instead of: fixing it; Because; Mine: no; Revisit when), so the next review doesn't re-propose it.

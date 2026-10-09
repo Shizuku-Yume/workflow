@@ -20,10 +20,10 @@ A spike is a task where:
 - "What causes this bug?" when it reproduces but nobody can say why
   (CONVENTIONS §8); the fix task is `Blocked by` the spike
 
-**Bad reasons:**
+**Not a spike:**
 - Feature is hard → build it properly
 - Requirements unclear → use `flow-grill`
-- Too lazy to plan → not a spike
+- Skipping the plan → plan it
 
 ## Spike Task Format
 
@@ -50,7 +50,7 @@ Write findings into the task file's `## Findings` section, then record them wher
 - Glossary (if spike clarifies concept)
 - New task (if spike shows what to build)
 
-**Spike code disposal** (`flow-implement` step 6):
+**Spike code disposal** (when `flow-implement` finishes the spike):
 - If keeping: clean it up, add tests, make it real; that's a follow-up task, not the spike
 - If discarding: drop it before committing, or leave it on a `spike/<effort>-<NN>` branch named in Findings
 - Never leave spike code in main

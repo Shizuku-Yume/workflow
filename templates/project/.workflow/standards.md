@@ -4,7 +4,8 @@ Fill this in once, at the start of the project. Keep it under one screen: it is
 read at the start of every session, so every extra line costs attention that the
 real work needs.
 
-Delete the lines that do not apply. Replace every `<...>`.
+Delete the lines that do not apply. Replace every `<...>`. Where this file
+disagrees with CONVENTIONS.md or STYLE.md, this file wins.
 
 ## What this project is
 
@@ -28,6 +29,8 @@ Run the test command before claiming anything works.
 <Where the parts live, one line each. Keep it short: `src/api` - HTTP handlers.
 Not a file tree.>
 
+Workflow files live where CONVENTIONS §2 says.
+
 ## How code is written here
 
 <The rules that a reviewer would enforce and that are not obvious from reading
@@ -47,20 +50,7 @@ that stops the same argument from being had again.>
 
 Landing: <direct | local-merge | pr>
 
-How a finished task reaches the main branch; `.workflow/merge-strategy.md`
-describes each mode. `direct`: commit straight onto the current branch.
-`local-merge`: a branch per task, rebased and fast-forwarded into the main branch
-locally. `pr`: a branch per task, pushed, merged through a pull request. Unset
-means `local-merge`. Name the main branch here if it is neither `main` nor
-`master`.
-
-## Where things go
-
-Local files below are the workflow task and spec source unless a supported tracker integration exists.
-
-- Decisions: `.workflow/decisions.md`
-- Specs: `.workflow/specs/`
-- Tasks: `.workflow/tasks/<effort>/`
-- Finished tasks: `.workflow/done/<effort>/`
-- Vocabulary: `.workflow/glossary.md`
-- CLI: `.workflow/bin/workflow` (committed; run from the project root)
+How finished work reaches the main branch: `direct` commits on the current branch,
+`local-merge` (the default) lands a branch locally, `pr` through a pull request.
+`.workflow/merge-strategy.md` describes each. Name the main branch here if it is
+neither `main` nor `master`.
