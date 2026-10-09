@@ -149,7 +149,8 @@ AGENTS.md                        workflow block points here
 
 ## 3. Writing
 
-`.workflow/STYLE.md` governs everything you write. Read it.
+`.workflow/STYLE.md` covers everything a person reads: chat, documents, commits, comments,
+UI text. The repository's own conventions win over it (Precedence, above).
 
 ---
 

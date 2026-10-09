@@ -37,6 +37,25 @@ TOOLKIT_URL="https://github.com/Shizuku-Yume/workflow"
 HOOK_MARKER="# workflow:pre-commit"
 MARKER_START="<!-- workflow:start -->"
 MARKER_END="<!-- workflow:end -->"
+
+# Regexes live in variables: Bash 3.2 can't parse ( | ) in a literal =~ pattern.
+RE_TERMS_HEADING='^[[:space:]]*##[[:space:]]+Terms'
+RE_FENCE='^[[:space:]]*```'
+RE_HTML_COMMENT='<!--.*-->'
+RE_BLANK='^[[:space:]]*$'
+RE_H1_H2='^[[:space:]]*#{1,2}[[:space:]]'
+RE_HEADING='^[[:space:]]*#'
+RE_AVOID_ITEM='^[[:space:]]*[-*][[:space:]]+(_Avoid_|\*Avoid\*)(.*)$'
+RE_AVOID_REST='^[[:space:]]*[:-][[:space:]]*(.*)$'
+RE_TERM_BOLD='^[[:space:]]*[-*][[:space:]]+\*\*([^*]+)\*\*[[:space:]]*[:-][[:space:]]*(.*)$'
+RE_TERM_COLON='^[[:space:]]*[-*][[:space:]]+([^:]+):[[:space:]]*(.*)$'
+RE_TERM_DASH='^[[:space:]]*[-*][[:space:]]+([^-]+)[[:space:]]+-[[:space:]]+(.*)$'
+RE_LIST_ITEM='^[[:space:]]*[-*][[:space:]]+'
+RE_INDENTED='^[[:space:]]+'
+RE_DIGITS='^[0-9]+$'
+RE_VALIDATE_SUMMARY='^([0-9]+) error\(s\), ([0-9]+) warning\(s\)\.$'
+RE_TASK_FILE='^[0-9]+-.+\.md$'
+
 GA_START="# workflow:start"
 GA_END="# workflow:end"
 
@@ -507,14 +526,14 @@ check_glossary() {
   while IFS= read -r line || [ -n "$line" ]; do
     line="${line%$'\r'}"
     if [ "$has_terms_section" -eq 1 ] && [ "$in_terms" -eq 0 ]; then
-      if [[ "$line" =~ ^[[:space:]]*##[[:space:]]+Terms ]]; then
+      if [[ "$line" =~ $RE_TERMS_HEADING ]]; then
         in_terms=1
       fi
       continue
     fi
 
     # Ignore fenced code blocks
-    if [[ "$line" =~ ^[[:space:]]*\`\`\` ]]; then
+    if [[ "$line" =~ $RE_FENCE ]]; then
       check_pending_def
       last_item="none"
       in_fence=$(( 1 - in_fence ))
@@ -525,18 +544,18 @@ check_glossary() {
     fi
 
     # Strip inline HTML comments
-    [[ "$line" =~ \<!--.*--\> ]] && line="${line%%<!--*}${line#*-->}"
+    [[ "$line" =~ $RE_HTML_COMMENT ]] && line="${line%%<!--*}${line#*-->}"
 
     # Skip blanks, comments, headings
-    if [[ "$line" =~ ^[[:space:]]*$ ]]; then
+    if [[ "$line" =~ $RE_BLANK ]]; then
       check_pending_def
       last_item="none"
       continue
     fi
-    if [[ "$line" =~ ^[[:space:]]*# ]]; then
+    if [[ "$line" =~ $RE_HEADING ]]; then
       check_pending_def
       cur_term=""
-      if [ "$has_terms_section" -eq 1 ] && [[ "$line" =~ ^[[:space:]]*#{1,2}[[:space:]] ]]; then
+      if [ "$has_terms_section" -eq 1 ] && [[ "$line" =~ $RE_H1_H2 ]]; then
         last_item="none"
         break
       fi
@@ -545,13 +564,13 @@ check_glossary() {
     fi
 
     # List items
-    if [[ "$line" =~ ^[[:space:]]*[-*][[:space:]]+ ]]; then
+    if [[ "$line" =~ $RE_LIST_ITEM ]]; then
       check_pending_def
 
       # Check if this list item is an Avoid line
-      if [[ "$line" =~ ^[[:space:]]*[-*][[:space:]]+(_Avoid_|\*Avoid\*)(.*)$ ]]; then
+      if [[ "$line" =~ $RE_AVOID_ITEM ]]; then
         local avoid_rest="${BASH_REMATCH[2]}"
-        if [[ "$avoid_rest" =~ ^[[:space:]]*[:-][[:space:]]*(.*)$ ]]; then
+        if [[ "$avoid_rest" =~ $RE_AVOID_REST ]]; then
           if [ -z "$cur_term" ]; then
             warn "glossary.md: orphan Avoid entry: $line"
             bump "$p_var"
@@ -580,17 +599,17 @@ check_glossary() {
       # Term parsing
       local term="" term_def=""
       # 1. Bold term anchored to list start: - **term**: def or - **term** - def
-      if [[ "$line" =~ ^[[:space:]]*[-*][[:space:]]+\*\*([^*]+)\*\*[[:space:]]*[:-][[:space:]]*(.*)$ ]]; then
+      if [[ "$line" =~ $RE_TERM_BOLD ]]; then
         term="${BASH_REMATCH[1]}"
         term_def="${BASH_REMATCH[2]}"
       # 2. Plain term with colon: - term: def
-      elif [[ "$line" =~ ^[[:space:]]*[-*][[:space:]]+([^:]+):[[:space:]]*(.*)$ ]]; then
+      elif [[ "$line" =~ $RE_TERM_COLON ]]; then
         term="${BASH_REMATCH[1]}"
         term_def="${BASH_REMATCH[2]}"
         term="${term#"${term%%[![:space:]]*}"}"
         term="${term%"${term##*[![:space:]]}"}"
       # 3. Plain term with dash separator: - term - def
-      elif [[ "$line" =~ ^[[:space:]]*[-*][[:space:]]+([^-]+)[[:space:]]+-[[:space:]]+(.*)$ ]]; then
+      elif [[ "$line" =~ $RE_TERM_DASH ]]; then
         term="${BASH_REMATCH[1]}"
         term_def="${BASH_REMATCH[2]}"
         term="${term#"${term%%[![:space:]]*}"}"
@@ -624,7 +643,7 @@ check_glossary() {
     fi
 
     # Indented plain continuation lines wrapping definitions
-    if [[ "$line" =~ ^[[:space:]]+ ]]; then
+    if [[ "$line" =~ $RE_INDENTED ]]; then
       if [ "$last_item" = "term" ]; then
         term_has_def=1
       elif [ "$last_item" = "avoid" ]; then
@@ -722,7 +741,7 @@ check_managed_file() {
     recorded="$(cat "$marker" 2>/dev/null || true)"
   fi
 
-  if [ ! -s "$target" ] || ( [ -f "$marker" ] && [ -n "$recorded" ] && ! [[ "$recorded" =~ ^[0-9]+$ ]] ); then
+  if [ ! -s "$target" ] || ( [ -f "$marker" ] && [ -n "$recorded" ] && ! [[ "$recorded" =~ $RE_DIGITS ]] ); then
     warn "$label corrupt"
     return 1
   fi
@@ -1230,7 +1249,7 @@ run_validate_for_doctor() {
   have_python || { skip "workflow validate: skipped, python3 not found"; return 0; }
   out="$(cd "$root" && python3 "$BIN_DIR/workflow-core.py" validate --no-color 2>&1)" || status=$?
   summary="$(printf '%s\n' "$out" | tail -n 1)"
-  if [[ "$summary" =~ ^([0-9]+)\ error\(s\),\ ([0-9]+)\ warning\(s\)\.$ ]]; then
+  if [[ "$summary" =~ $RE_VALIDATE_SUMMARY ]]; then
     errors="${BASH_REMATCH[1]}"; warnings="${BASH_REMATCH[2]}"
   fi
   if [ "$status" -eq 0 ]; then
@@ -1416,7 +1435,7 @@ cmd_doctor() {
   if [ -d "$root/.workflow/tasks" ]; then
     local tf rel active=0 drafts=0 flat=0
     while IFS= read -r tf; do
-      [[ "${tf##*/}" =~ ^[0-9]+-.+\.md$ ]] || continue
+      [[ "${tf##*/}" =~ $RE_TASK_FILE ]] || continue
       active=$((active + 1))
       rel="${tf#"$root/.workflow/tasks/"}"
       case "$rel" in */*) ;; *) flat=$((flat + 1)) ;; esac

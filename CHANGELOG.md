@@ -3,6 +3,84 @@
 What changed in each version and what an existing project has to do about it.
 Usage lives in the README and in `--help`.
 
+## 2.5.0
+
+Lighter: fewer files, fewer commands, fewer stops, no Bash 4. Plus the gaps a
+review against Trellis and mattpocock/skills turned up.
+
+### Upgrade
+
+From the toolkit checkout, in each project:
+
+```sh
+~/tools/workflow/bin/workflow update
+git add .workflow .agents AGENTS.md .gitattributes && git commit    # plus .claude CLAUDE.md with the Claude adapter
+```
+
+- **Runtime:** Bash 3.2 or newer (stock macOS now works without Homebrew), git
+  and python3. `validate` and `next`, and therefore the pre-commit hook, run on
+  python3.
+- **Efforts:** effort definitions are gone. For each `.workflow/efforts/<slug>.md`,
+  copy its `Priority:` into the header of `.workflow/specs/<slug>.md` (rename the
+  spec to the effort's slug if it differs), then `git rm -r .workflow/efforts`.
+  Goal, scope and success criteria already live in the spec.
+- **Hotfixes:** each open hotfix entry should have a `Task type: bugfix` follow-up
+  task whose `Read first` names it; draft the missing ones. Entries already marked
+  `resolved` stay as history.
+- **technical-debt.md** is yours, so `update` leaves it alone. When convenient,
+  move to the flat format in the new template: drop the status sections and IDs,
+  delete resolved items, and turn accepted ones into decision entries.
+- **standards.md** is yours too. The template no longer has "Where things go"
+  or the tracker sentence; delete them from yours if you like.
+- `update` deletes the old CLI files in `.workflow/bin/` and `.workflow/thinking.md`
+  when you haven't edited them.
+
+### Changes
+
+- **Six commands removed:** `tasks`, `deps`, `decisions`, `effort`, `debt` and
+  `hotfix-review`, with the shell completions. Agents read the Markdown directly:
+  the end of `decisions.md` plus `grep`, `technical-debt.md`, and `next` for tasks.
+  The CLI is `init`, `update`, `uninstall`, `doctor`, `hook`, `validate`, `next`.
+  `validate --fix` and `next --interactive` are gone.
+- **No Bash 4.** `bin/workflow` runs on Bash 3.2; `validate` and `next` moved to
+  `bin/workflow-core.py` (stdlib only). The CLI went from eleven Bash files (about
+  4,700 lines) to two files (about 2,700 lines).
+- **Effort merged into spec.** The spec (`specs/<effort>.md`) carries `Status` and
+  `Priority` and is an effort's only state machine. Two parallel lifecycles moved
+  by the same skills at the same moments became one.
+- **`flow-close` only for efforts with a spec.** A lone bugfix or `maintenance`
+  task no longer triggers a demo and a retrospective.
+- **Plans get committed.** Planning skills commit what they wrote before any task
+  branch is cut. Before, task files could ride into the first task's commit, and
+  archiving an untracked task file with `git mv` failed.
+- **Other people's changes stay out of your commits.** A task records the paths
+  already dirty when it started and stages its own paths by name; `git add -A` is
+  gone from the review rules.
+- **Refactor tasks** have a Check that passes before and after, instead of being
+  told to fail first.
+- **Small tasks have a landing rule:** `small/<slug>` under `local-merge` and `pr`.
+- **Precedence is written down:** the user's instruction, then `standards.md` and
+  the repository's own conventions (commit style from `git log`), then
+  CONVENTIONS, then STYLE. STYLE no longer bans `chore:` in repos that use it.
+- **Hotfixes are tracked by their follow-up task,** not by a command and a field
+  rewrite. `decisions.md` is now strictly append-only apart from `Superseded by`.
+- **Technical debt is a flat list.** An entry is deleted by the task that fixes
+  it, or by a decline recorded as a decision.
+- **One plan review.** When spec and breakdown happen in one session, the user
+  approves both at once instead of twice.
+- **Union merge** for `decisions.md` and `glossary.md` (`.gitattributes`), so
+  branches that each add an entry don't conflict.
+- **Brownfield start:** `flow-start` fills `standards.md` placeholders from the
+  repository and asks once.
+- **Retrospectives prefer checks to rules:** a mechanical pattern becomes a lint
+  rule, test or CI step; only a judgement call becomes a line in `standards.md`.
+- **Wide refactors** are planned expand → migrate in batches → contract.
+- **A failed fix is reverted,** not built on: back to the root cause.
+- **Smaller always-loaded text:** the AGENTS.md block is a short set of pointers
+  and invariants; `flow-implement` reads only the CONVENTIONS sections it uses;
+  `quick` is gone (trivial work is a small task); `thinking.md` was folded into
+  `flow-grill`; `phase-boundaries.md` and `STYLE.md` were cut down to rules.
+
 ## 2.4.0
 
 ### Upgrade
