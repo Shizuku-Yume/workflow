@@ -2,10 +2,9 @@
 # Project workflow
 
 Before non-trivial work, read `.workflow/standards.md` (this project's commands, layout
-and landing) and `.workflow/STYLE.md` (how to write). `.workflow/CONVENTIONS.md` is the
-rulebook: decision protocol (§1), file layout (§2), task sizing (§4), which skill to use
-(§5). The steps are skills in `.agents/skills/`; when the next step isn't obvious, start
-with `flow-start`.
+and landing) and `.workflow/STYLE.md` (how to write). Read only the `.workflow/CONVENTIONS.md`
+sections named by the skill you are using; do not preload the whole rulebook. The steps are
+skills in `.agents/skills/`; when the next step isn't obvious, start with `flow-start`.
 
 When rules disagree: the user's current instruction, then `.workflow/standards.md` and
 the repository's existing conventions (commit style in `git log`, lint and formatter

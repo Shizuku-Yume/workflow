@@ -13,9 +13,11 @@ standards.md names another.
 one person working in one tree; there is no parallel work to protect.
 
 **`local-merge`** (default when `Landing:` is unset) — one branch per task,
-`<effort>/<NN>-<slug>`, created from the main branch. After the task's commit:
+`<effort>/<NN>-<slug>`, created from the main branch. After the task's commit,
 rebase onto the main branch, rerun the tests, the task's Check and the real path
-once, fast-forward the main branch, delete the task branch. Nothing is pushed, so
+once. With one working tree, switch back to the main branch and fast-forward it.
+If main is checked out in another worktree, fast-forward it there instead. Remove
+any separate task worktree before deleting the task branch. Nothing is pushed, so
 it suits one person, with parallel tasks in separate worktrees.
 
 **`pr`** — one branch per task as above, pushed, merged through a pull request.
@@ -56,10 +58,9 @@ git worktree add ../<repo>-<effort>-<NN> -b <effort>/<NN>-<slug> <main branch>
 
 Name it after the task so a stray directory is traceable. `.workflow/` is a
 relative path, so the new tree gets the task directory and the CLI with it; nothing
-else needs copying. Land the task, then `git worktree remove <path>`; a tree left
-behind after its branch is deleted still holds the checkout, and `git worktree
-prune` clears the records of ones deleted by hand. Run `git worktree list` when you
-are unsure which tree is where.
+else needs copying. Land the task, then `git worktree remove <path>` before deleting
+its branch. `git worktree prune` clears the records of trees deleted by hand. Run
+`git worktree list` when you are unsure which tree is where.
 
 Git refuses a branch that another worktree has checked out. That is the claim
 (above) enforced by git rather than by convention: a second session cannot start a

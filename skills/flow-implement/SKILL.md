@@ -34,13 +34,16 @@ main branch and keep the main branch's copy of the task file.
 restore what it names (branch, worktree, stash), keep its Base commit and
 `Dirty at start`, set `Status: active`, continue from the next step it gives.
 
-The task file must be committed on the main branch, and every task in `Blocked by`
-archived under `.workflow/done/<effort>/` and landed (or this task stacked on its
-branch). Otherwise name what's missing and stop.
+For a new task, the task file must be committed on the main branch. When resuming,
+use the committed task file on the claimed task branch; do not stop merely because
+it has not reached main. In either case, every task in `Blocked by` must be archived
+under `.workflow/done/<effort>/` and landed (or this task stacked on its branch).
+Otherwise name what's missing and stop.
 
-Run `git status --porcelain` and record its paths in `## Progress` as
-`Dirty at start: <paths>` (or `none`). They belong to someone else and stay out of
-every commit; if the task needs one, ask.
+For a new task, run `git status --porcelain` and record its paths in `## Progress`
+as `Dirty at start: <paths>` (or `none`). They belong to someone else and stay out
+of every commit; if the task needs one, ask. On resume, keep the original record;
+the task's own work named in the handoff is not someone else's dirty work.
 
 Read `Landing:` in `.workflow/standards.md`. Under `local-merge` and `pr`, claim and
 create the branch `<effort>/<NN>-<slug>` as `.workflow/merge-strategy.md` describes;

@@ -24,6 +24,7 @@
     "CONVENTIONS.md",
     "STYLE.md",
     "README.md",
+    "README_EN.md",
     "CHANGELOG.md"
   ],
   "publishConfig": {

@@ -12,13 +12,10 @@ Load the project's context, classify the request, and route it. Runs once per se
 ## 1. Load project context
 
 Read silently:
-1. `.workflow/standards.md` — commands, layout, project conventions
-2. `.workflow/glossary.md` — vocabulary and avoided terms
-3. `.workflow/decisions.md` — append-only, so read the newest entries at the end, plus `grep -n -i '<term>' .workflow/decisions.md` for the area you expect to touch, or `grep -n 'Effort:\*\* <slug>' .workflow/decisions.md` for one effort. An entry carrying `Superseded by` is history: follow the pointer.
+1. `.workflow/standards.md` — commands, layout, project conventions.
+2. Check that `.workflow/glossary.md` and `.workflow/decisions.md` exist, but do not preload them. After classification or once the area to touch is known, grep relevant glossary and decision terms; read the newest decision entries and any linked supersession entries as needed.
 
-A missing file goes in the report; a project without decisions or glossary is new, not broken.
-
-**Brownfield.** If `standards.md` still contains `<...>` placeholders, fill what the repository answers: commands from package manifests, Makefile, CI and lint config; layout from the tree; `Landing:` from how the repo uses branches. Leave the rest marked. Show the user the filled file in one message, ask them to correct it, then continue with the request.
+A missing file goes in the report; a project without decisions or glossary is new, not broken. This keeps the session entry point small while preserving the evidence-before-questions rule.
 
 ## 2. Check workflow state
 

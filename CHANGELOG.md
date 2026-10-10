@@ -3,6 +3,14 @@
 What changed in each version and what an existing project has to do about it.
 Usage lives in the README and in `--help`.
 
+## Unreleased
+
+### Fixes
+
+- Let single-tree local tasks switch back to main for landing; with separate
+  worktrees, land from main's tree and remove the task tree before its branch.
+- Preserve the original dirty-file record on resume so a task's own unfinished changes are not mistaken for unrelated work.
+
 ## 2.6.2
 
 ### Upgrade
