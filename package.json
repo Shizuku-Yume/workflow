@@ -1,0 +1,32 @@
+{
+  "name": "@shizuku-yume/workflow",
+  "version": "2.6.1",
+  "description": "Project-local workflow skills and CLI for coding agents",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Shizuku-Yume/workflow.git"
+  },
+  "homepage": "https://github.com/Shizuku-Yume/workflow#readme",
+  "bugs": {
+    "url": "https://github.com/Shizuku-Yume/workflow/issues"
+  },
+  "engines": {
+    "node": ">=14"
+  },
+  "bin": {
+    "workflow": "npm/workflow-cli.js"
+  },
+  "files": [
+    "bin",
+    "skills",
+    "templates",
+    "npm",
+    "CONVENTIONS.md",
+    "STYLE.md",
+    "README.md",
+    "CHANGELOG.md"
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
+}

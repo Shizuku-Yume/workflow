@@ -6,21 +6,21 @@ Lightweight by design: reduce project-management overhead during agent-assisted
 development, with consistent rules only where they prevent real mistakes. Small
 changes stay small; the workflow is not a mandatory ceremony for every edit.
 
-Installs into a project, not globally. Everything is committed with the project.
+The workflow files install into a project, not globally. Everything is committed with the project.
 
 ## Install
 
 ```sh
-git clone https://github.com/Shizuku-Yume/workflow.git ~/tools/workflow
+npm install --global @shizuku-yume/workflow
 cd your-project
-~/tools/workflow/bin/workflow init            # add --claude for Claude Code
+workflow init            # add --claude for Claude Code
 ```
 
 Fill in `.workflow/standards.md` (or let `flow-start` fill it from the repository on first use). Commit what `init` lists.
 
-The CLI is copied into the project as `.workflow/bin/` and committed with it, so teammates, CI and cloud agents need no toolkit checkout. `init`, `update` and `uninstall` copy from the toolkit, so run those from the checkout; everything else works from either copy.
+The npm package installs the `workflow` command globally and includes the toolkit files needed by `init`, `update` and `uninstall`. The CLI is copied into the project as `.workflow/bin/` and committed with it, so teammates, CI and cloud agents need no global installation.
 
-Requirements: Bash 3.2 or newer (stock macOS is fine), git, Python 3.8+, and the usual awk/sed (BSD or GNU).
+Requirements: Node.js 14+ and npm for installing/running the global command; Bash 3.2 or newer (stock macOS is fine), git, Python 3.8+, and the usual awk/sed (BSD or GNU) for toolkit operations.
 
 **Claude Code** reads `.claude/skills/` and `CLAUDE.md`, not `.agents/` and `AGENTS.md`. `--claude` also installs the skills and review agents there and adds a `CLAUDE.md` block that imports `AGENTS.md`. It turns on by itself when the project already has `CLAUDE.md` or `.claude/`; `--no-claude` turns it off. Codex reads `.agents/skills/` and `AGENTS.md` directly.
 
@@ -83,6 +83,10 @@ Where each rule lives, and which wins when two disagree, is in `CONVENTIONS.md`:
 - **Landing:** `Landing:` in `standards.md` says how finished work reaches the main branch: `direct`, `local-merge` (default, one person) or `pr` (several people sharing a remote). Under the branch modes a started task's state lives on its branch, and `next` reads task branches, so claims, pauses and blocks show from the main branch (`merge-strategy.md`).
 - **Efforts** are the slug that groups tasks. An effort with a spec ends with `flow-close`; one without (a lone bugfix, `maintenance`) is done when its last task lands.
 - **Task references** are `<effort>/<NN>`: numbers are unique within an effort, not across efforts.
+
+## Release
+
+Create a GitHub Release for a `v<version>` tag, or run the `publish npm` workflow manually from GitHub Actions. The release workflow publishes `@shizuku-yume/workflow` automatically after checking that the tag, `package.json`, both CLI version constants and the top changelog heading match. Configure an `NPM_TOKEN` secret in GitHub repository settings (**Settings** → **Secrets and variables** → **Actions**). Prereleases publish under the npm `next` dist-tag, and stable releases under `latest`.
 
 ## Troubleshooting
 

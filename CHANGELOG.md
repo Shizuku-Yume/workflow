@@ -7,9 +7,10 @@ Usage lives in the README and in `--help`.
 
 ### Upgrade
 
-Run `workflow update` from the toolkit checkout. If the project uses the pre-commit
-hook, rerun `.workflow/bin/workflow hook install` to refresh it. No new files or
-task fields are required.
+Install the npm CLI with `npm install --global @shizuku-yume/workflow`, then run
+`workflow update` from the target project. If the project uses the pre-commit hook,
+rerun `.workflow/bin/workflow hook install` to refresh it. No new task fields are
+required.
 
 ### Fixes
 

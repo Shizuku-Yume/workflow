@@ -73,6 +73,22 @@ jobs:
           echo "$(brew --prefix coreutils)/libexec/gnubin" >> "$GITHUB_PATH"
           echo "$(brew --prefix gnu-sed)/libexec/gnubin" >> "$GITHUB_PATH"
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Test npm global installation
+        run: |
+          archive="$(npm pack --pack-destination "$RUNNER_TEMP" --silent)"
+          prefix="$RUNNER_TEMP/npm-prefix"
+          project="$RUNNER_TEMP/npm-project"
+          npm install --global --prefix "$prefix" "$RUNNER_TEMP/$archive"
+          mkdir -p "$project"
+          cd "$project"
+          PATH="$prefix/bin:$PATH" workflow init
+          test -x .workflow/bin/workflow
+          test -f .workflow/bin/workflow-core.py
+
       - name: Run tests
         run: |
           bash --version | head -n 1

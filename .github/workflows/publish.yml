@@ -1,0 +1,76 @@
+name: publish npm
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      dist_tag:
+        description: 'npm dist-tag (latest or next)'
+        required: false
+        default: 'latest'
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+
+      - name: Check release versions
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          RELEASE_TAG: ${{ github.event.release.tag_name || '' }}
+        run: |
+          node <<'NODE'
+          const fs = require('fs');
+          const pkg = require('./package.json');
+          const shell = fs.readFileSync('bin/workflow', 'utf8');
+          const python = fs.readFileSync('bin/workflow-core.py', 'utf8');
+          const changelog = fs.readFileSync('CHANGELOG.md', 'utf8');
+          const eventName = process.env.EVENT_NAME;
+          const releaseTag = process.env.RELEASE_TAG;
+          const errors = [];
+
+          if (eventName === 'release' && releaseTag && releaseTag !== `v${pkg.version}`) {
+            errors.push(`release tag ${releaseTag} does not match package version ${pkg.version}`);
+          }
+          if (!shell.includes(`VERSION="${pkg.version}"`)) {
+            errors.push(`bin/workflow version does not match ${pkg.version}`);
+          }
+          if (!python.includes(`VERSION = "${pkg.version}"`)) {
+            errors.push(`bin/workflow-core.py version does not match ${pkg.version}`);
+          }
+          if (!changelog.startsWith(`# Changelog\n\nWhat changed in each version and what an existing project has to do about it.\nUsage lives in the README and in --help.\n\n## ${pkg.version}\n`)) {
+            errors.push(`CHANGELOG.md must start with ## ${pkg.version}`);
+          }
+          if (errors.length) {
+            console.error(errors.join('\n'));
+            process.exit(1);
+          }
+          console.log(`Ready to publish ${pkg.name}@${pkg.version}`);
+          NODE
+
+      - name: Publish package
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_TAG: ${{ github.event.inputs.dist_tag || '' }}
+          IS_PRERELEASE: ${{ github.event.release.prerelease || false }}
+        run: |
+          tag=latest
+          if [ "$IS_PRERELEASE" = "true" ] || [ "$INPUT_TAG" = "next" ]; then
+            tag=next
+          elif [ -n "$INPUT_TAG" ]; then
+            tag="$INPUT_TAG"
+          fi
+          npm publish --provenance --access public --tag "$tag"
