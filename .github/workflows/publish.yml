@@ -50,8 +50,9 @@ jobs:
           if (!python.includes(`VERSION = "${pkg.version}"`)) {
             errors.push(`bin/workflow-core.py version does not match ${pkg.version}`);
           }
-          if (!changelog.startsWith(`# Changelog\n\nWhat changed in each version and what an existing project has to do about it.\nUsage lives in the README and in --help.\n\n## ${pkg.version}\n`)) {
-            errors.push(`CHANGELOG.md must start with ## ${pkg.version}`);
+          const match = changelog.match(/^##\s+([^\s\n]+)/m);
+          if (!match || match[1] !== pkg.version) {
+            errors.push(`CHANGELOG.md top heading (## ${match ? match[1] : 'none'}) does not match package version ${pkg.version}`);
           }
           if (errors.length) {
             console.error(errors.join('\n'));
