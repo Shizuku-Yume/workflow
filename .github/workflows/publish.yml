@@ -63,7 +63,6 @@ jobs:
 
       - name: Publish package
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           EVENT_NAME: ${{ github.event_name }}
           INPUT_TAG: ${{ github.event.inputs.dist_tag || '' }}
           IS_PRERELEASE: ${{ github.event.release.prerelease || false }}
