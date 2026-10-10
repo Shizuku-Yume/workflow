@@ -20,17 +20,19 @@ import re
 import subprocess
 import sys
 
-VERSION = "2.5.1"
+VERSION = "2.6.0"
 
 KNOWN_FIELDS = {
     "task", "effort", "task type", "base commit", "delivers", "blocked by",
-    "files", "read first", "check", "done when", "priority", "status",
+    "files", "read first", "check", "covers", "done when", "priority", "status",
     "started", "finished", "question", "time box", "goal", "scope", "spec",
     "dependencies", "notes",
 }
 FIELD_ALIASES = {"base": "base commit", "type": "task type"}
 TASK_TYPES = ("feature", "bugfix", "spike", "refactor")
 PRIORITY_RANK = {"critical": 0, "urgent": 0, "high": 1, "normal": 2, "low": 3}
+TASK_STATUSES = ("active", "paused", "blocked")
+FINISHED_STATUSES = ("done", "completed", "archived")
 DECISION_FIELDS = ("Decided", "Instead of", "Because", "Mine", "Revisit when")
 
 SLUG_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
@@ -45,6 +47,7 @@ PLAIN_FIELD_RE = re.compile(r"^([A-Za-z][A-Za-z0-9_. -]*):\s*(.*)$")
 NONE_RE = re.compile(r"^none(\s*,\s*can\s+start\s+now)?$")
 QUALIFIED_REF_RE = re.compile(r"^([a-z0-9]+(-[a-z0-9]+)*)/([0-9]+)$")
 BARE_REF_RE = re.compile(r"^([0-9]+)$")
+SPEC_CHECK_RE = re.compile(r"^[-*]\s+\*\*([A-Za-z][A-Za-z0-9_-]*[0-9])\.\*\*")
 
 
 # ---------------------------------------------------------------- helpers
@@ -314,9 +317,10 @@ VALIDATE_USAGE = """workflow validate - validate task files and the decision log
 Usage: workflow validate [--strict] [--format text|json] [--no-color]
 Checks required Task, Effort, Check and Blocked by fields; effort slugs;
 that a task in tasks/<effort>/ says the same Effort; that the heading number
-matches the filename; blockers; Base commit refs; task-number collisions within
-efforts; dependency cycles; and decision format. Checks active and completed
-task files; problems in completed files warn instead of failing.
+matches the filename; Status and Priority values; blockers; Base commit refs;
+task-number collisions within efforts; dependency cycles; Covers IDs no spec
+check defines; and decision format. Checks active and completed task files;
+problems in completed files warn instead of failing.
 
   --strict     Treat warnings as errors
   --format F   Output text (default) or JSON
@@ -375,6 +379,9 @@ class Validator(object):
         self.check_layout()
         self.check_collisions()
         edges = self.check_blockers()
+        self.check_status()
+        self.check_priorities()
+        self.check_covers()
         self.check_bases()
         self.check_cycles(edges)
         self.check_decisions()
@@ -480,6 +487,85 @@ class Validator(object):
                 elif key in self.active and target in self.active:
                     edges.setdefault(key, []).append(target)
         return edges
+
+    def check_covers(self):
+        """Covers must name check IDs the effort's spec defines.
+
+        Silent when the effort has no spec or the spec lists no IDs, so a project
+        that writes its checks differently is never nagged.
+        """
+        cache = {}
+        for path in self.files:
+            covers = self.meta[path].get("covers")
+            effort = self.effort[path]
+            if not covers or not effort:
+                continue
+            if effort not in cache:
+                cache[effort] = spec_check_ids(self.wf, effort)
+            known = cache[effort]
+            if not known:
+                continue
+            line = self.line_of(path, "covers")
+            for token in covers.split(","):
+                token = token.strip().strip(".")
+                if token and token not in known:
+                    self.issue(self.sev(path), path, line,
+                               "Covers names '%s', which specs/%s.md does not define"
+                               % (token, effort),
+                               "Use one of: %s, or add the check to the spec."
+                               % ", ".join(sorted(known)))
+
+
+    def check_status(self):
+        """A Status value decides whether `next` offers a task as ready.
+
+        An unrecognized one is worse than a missing field: the task is silently
+        treated as not started, so a half-finished task gets handed out again.
+        """
+        for path in self.files:
+            value = self.meta[path].get("status").lower()
+            if not value:
+                continue
+            line = self.line_of(path, "status")
+            if value in TASK_STATUSES:
+                continue
+            if value in FINISHED_STATUSES:
+                self.issue(self.sev(path), path, line,
+                           "Status '%s' on a task file; only flow-implement archives a task"
+                           % value,
+                           "Move it to done/<effort>/ and drop the Status field.")
+            else:
+                self.issue(self.sev(path), path, line,
+                           "invalid Status '%s'" % value,
+                           "Use one of: %s (or drop the field for a drafted task)."
+                           % ", ".join(TASK_STATUSES))
+
+    def check_priorities(self):
+        """The spec header's Priority is what `next` ranks by.
+
+        A typo there silently falls back to normal, so the effort loses its place
+        in the queue without a word. A task-level Priority does nothing at all.
+        """
+        specs = {}
+        for path in self.files:
+            value = self.meta[path].get("priority")
+            if value:
+                self.issue(self.sev(path), path, self.line_of(path, "priority"),
+                           "Priority on a task file, which nothing ranks by",
+                           "Set Priority in specs/%s.md instead."
+                           % (self.effort[path] or "<effort>"))
+            effort = self.effort[path]
+            if effort and effort not in specs:
+                specs[effort] = True
+        for effort in sorted(specs):
+            path = os.path.join(self.wf, "specs", effort + ".md")
+            if not os.path.isfile(path):
+                continue
+            value = read_fields(path).get("priority", "").lower()
+            if value and value not in PRIORITY_RANK:
+                self.issue("WARNING", path, 1, "invalid Priority '%s'" % value,
+                           "Use one of: %s. An unknown value ranks as normal."
+                           % ", ".join(sorted(PRIORITY_RANK)))
 
     def check_bases(self):
         values = {}
@@ -746,6 +832,39 @@ def spec_goal(lines):
         if inside and text:
             return text
     return ""
+
+
+def spec_check_ids(wf, effort):
+    """Check IDs ({'W1', ...}) the effort's spec defines, or an empty set.
+
+    IDs are the bolded labels of the bullets under `## How we will know it
+    works`: `- **W1.** <what command, what result>`. A spec without that section,
+    or one that lists no IDs, yields an empty set and disables the check.
+    """
+    path = os.path.join(wf, "specs", effort + ".md")
+    if effort == "none" or not os.path.isfile(path):
+        return set()
+    found = set()
+    in_fence = in_comment = inside = False
+    for line in read_lines(path):
+        line, in_comment = strip_comments(line, in_comment)
+        if FENCE_RE.match(line):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+        text = line.strip()
+        if text.startswith("#"):
+            m = H2_RE.match(text)
+            if m:
+                title = m.group(1).strip().rstrip(":").strip().lower()
+                inside = title == "how we will know it works"
+            continue
+        if inside:
+            m = SPEC_CHECK_RE.match(text)
+            if m:
+                found.add(m.group(1))
+    return found
 
 
 # A started task's file lives on its branch until it lands (merge-strategy.md), so

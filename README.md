@@ -37,7 +37,7 @@ Requirements: Bash 3.2 or newer (stock macOS is fine), git, python3, and the usu
 ```
 AGENTS.md                     workflow block pointing to the rules
 .agents/skills/flow-*/        nine workflow steps
-.agents/agents/workflow-*.md  review agents
+.agents/agents/workflow-*.md  review agent, one file, two briefs
 CLAUDE.md, .claude/           with --claude: import of AGENTS.md, skills, agents
 .gitattributes                union merge for decisions.md and glossary.md
 .workflow/
@@ -66,8 +66,7 @@ Skills and agents are copied, not linked. Managed files carry markers; `update` 
 | `flow-grill` | Align on what to build, questions in batches | `decisions.md`, `glossary.md` |
 | `flow-spec` | Write the design down | `specs/<effort>.md` |
 | `flow-break` | Cut into session-sized tasks, one review of spec and tasks, commit the plan | `tasks/<effort>/<NN>-<slug>.md` |
-| `flow-implement` | Build, prove, review, archive, commit, land | code, docs, `done/<effort>/` |
-| `flow-verify` | Three checks across two review agents, per task or per effort | report |
+| `flow-verify` | Two review briefs from one agent: built as asked, code quality. Per task, or the whole effort | report |
 | `flow-close` | Check a finished effort against its spec, demo, retrospective | `done/<effort>/retrospective.md` |
 | `flow-architect` | Find expensive-to-change code | report, `technical-debt.md` |
 | `flow-map` | Plan foggy work one question at a time | `maps/<slug>.md` |
@@ -85,9 +84,9 @@ Where each rule lives, and which wins when two disagree, is in `CONVENTIONS.md`:
 
 **`.workflow` is missing.** Commands find the project root with `git rev-parse --show-toplevel`, or use the current directory outside git.
 
-**Malformed files.** `validate` names the file, line and fix. `Blocked by` takes `None` or a comma-list of `NN` (same effort) and `<effort>/NN`; titles after the numbers are errors. Problems inside `done/` archives are warnings, so old history never blocks a commit. CRLF line endings are read like LF. Repair the Markdown and rerun `validate`.
+**Malformed files.** `validate` names the file, line and fix. `Blocked by` takes `None` or a comma-list of `NN` (same effort) and `<effort>/NN`; titles after the numbers are errors. `Covers` must name check IDs the effort's spec defines; an effort with no spec, or one whose checks carry no IDs, is left alone. Problems inside `done/` archives are warnings, so old history never blocks a commit. CRLF line endings are read like LF. Repair the Markdown and rerun `validate`.
 
-**Running the tests.** `bash tests/cli-tests.sh` from the checkout runs the installer regression suite, the Python tests for `validate` and `next`, and `tests/skills_lint.py`, which checks that CONVENTIONS references resolve, skill steps are numbered without gaps, the examples in skills pass `validate`, and no document mentions removed commands. CI runs it on Ubuntu and macOS, plus a smoke test with stock macOS `/bin/bash` 3.2.
+**Running the tests.** `bash tests/cli-tests.sh` from the checkout runs the installer regression suite, the Python tests for `validate` and `next`, and `tests/skills_lint.py`, which checks that CONVENTIONS references resolve, skill steps are numbered without gaps, the file tree in CONVENTIONS §2 matches what `init` installs, the examples in skills pass `validate`, and no document mentions removed commands. CI runs it on Ubuntu and macOS, plus a smoke test with stock macOS `/bin/bash` 3.2.
 
 ## Where this came from
 
@@ -96,4 +95,4 @@ Where each rule lives, and which wins when two disagree, is in `CONVENTIONS.md`:
 - [DietrichGebert/ponytail](https://github.com/DietrichGebert/ponytail): the ladder and counted deletions
 - [czm15053/write-notes-like-deepseek](https://github.com/czm15053/write-notes-like-deepseek): the rejected option, consequences with costs, checkable verification
 
-What changed: questions triaged so most never reach the user; one owner per status; plans fixed in the plan, not in code; architecture review in plain Markdown; three checks across two review agents; written for any harness, not one vendor.
+What changed: questions triaged so most never reach the user; one owner per status; plans fixed in the plan, not in code; architecture review in plain Markdown; two review briefs from one agent; written for any harness, not one vendor.

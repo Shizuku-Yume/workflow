@@ -52,8 +52,9 @@ and `**Status:** active` before touching code. Resume: keep the recorded SHA and
 confirm `git cat-file -e <sha>^{commit}`; if it fails, stop and report.
 `flow-verify` needs this exact commit.
 
-First task of the effort and `.workflow/specs/<effort>.md` says `proposed`: set it
-to `**Status:** in progress`.
+`.workflow/specs/<effort>.md` says `proposed`, or says `done` (a later task joined a
+closed effort, CONVENTIONS §6): set it to `**Status:** in progress`. Then note in
+`## Progress` that the effort was reopened, unless this is its first task.
 
 Fill in where the work goes or how to check it from spec and code if the task
 doesn't say, and say so. Read the code and tests it touches; build the way the
@@ -102,7 +103,7 @@ act on to `.workflow/technical-debt.md` under `## Entries`: `## <concrete sympto
 with `Where`, `Added`, `Priority`, `Problem`, `Impact`, `Solution`, `Cost`.
 
 Handle findings per CONVENTIONS §7. If a fix changes what the task delivers, update
-the task file and rerun the affected axis.
+the task file and rerun the affected brief.
 
 ## 6. Archive, commit, land
 

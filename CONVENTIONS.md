@@ -1,6 +1,7 @@
 # Workflow Conventions
 
-Shared rules for all `flow-*` skills. Read once per session.
+Shared rules for all `flow-*` skills. Each skill names the sections it needs;
+read those, not the whole file.
 
 **Precedence.** When rules disagree: the user's current instruction, then
 `.workflow/standards.md` and the repository's existing conventions (commit style in
@@ -28,9 +29,11 @@ Every open question goes into one bucket:
 **A - Look it up** — facts, conventions, prior decisions (§2 says how to read them),
 what APIs do.
 
-**B - Decide it, log if substantial** — you can name the clearly better option, or it
-has no real stakes. Write a decision entry when the choice affects scope, interfaces,
-compatibility, risk or future maintenance; routine naming and formatting need none.
+**B - Decide it, log if it qualifies** — you can name the clearly better option, or
+it has no real stakes. Write a decision entry when all three hold: the choice is
+hard to reverse, someone reading the code later would wonder why, and a real
+alternative lost. Missing any one, decide it silently and move on; routine naming
+and formatting never qualify.
 
 **C - Ask the user** — the answer changes what gets built and the trade-off is real.
 
@@ -64,6 +67,7 @@ AGENTS.md                        workflow block points here
 .agents/agents/<name>.md         review agents
 .workflow/
   bin/workflow                   the CLI, committed with the project
+  bin/workflow-core.py           validate and next (python3, stdlib only)
   CONVENTIONS.md                 this file
   STYLE.md                       writing rules
   standards.md                   project-specific: commands, layout, Landing
@@ -71,6 +75,7 @@ AGENTS.md                        workflow block points here
   decisions.md                   choices made, with runner-up
   technical-debt.md              architecture findings to address
   merge-strategy.md              branches, landing, claiming tasks
+  phase-boundaries.md            continue, clear, compact or delegate
   spike-tasks.md                 exploratory work guidelines
   specs/<effort>.md              what to build, for an effort that has a spec
   tasks/<effort>/<NN>-<slug>.md  one task each, in its effort's directory
@@ -84,8 +89,12 @@ AGENTS.md                        workflow block points here
 **Status:** proposed | in progress | done
 **Priority:** critical | high | normal | low
 ```
-`Priority` is optional (default `normal`); `next` ranks by it. A lone bugfix, spike or
-`maintenance` work needs no spec. Update a spec in place when code changes its facts.
+`Priority` is optional (default `normal`) and lives only in the spec header: `next`
+ranks an effort's ready tasks by it, and a `Priority` on a task file does nothing
+(`validate` says so). `urgent` is accepted as another name for `critical`. A typo
+ranks as `normal`, so `validate` warns about a value it does not know. A lone bugfix,
+spike or `maintenance` work needs no spec. Update a spec in place when code changes
+its facts.
 
 **Rules:**
 - Run the CLI as `.workflow/bin/workflow <command>` from the project root. It is
@@ -116,34 +125,41 @@ AGENTS.md                        workflow block points here
   already modified or untracked belong to someone else. Record them in `## Progress`
   as `Dirty at start: <paths>` (or `none`) and keep them out of every commit; stage
   the task's own paths by name (`git add -- <paths>`). If the task needs one, ask.
-- Tasks follow a strict format:
-  - Filename `tasks/<effort>/<NN>-<slug>.md`, heading `# <NN>: <Title>`. `NN` is unique
-    within an effort; cite a task as `<effort>/<NN>`, at least two digits. Files
-    directly under `tasks/` (pre-2.3 layout) still work; `git mv` them when convenient.
-  - Fields are `Name: value` lines, plain or bold (`**Effort:** <slug>`).
-  - Required (`validate` errors): `Effort` (slug `[a-z0-9]+(-[a-z0-9]+)*`, same as the
-    directory); `Blocked by` (`None`, or a comma list of `NN` or `<effort>/NN`,
-    numbers only); `Check` (command and the result that means it works, or a
-    `## Check` section).
-  - Expected from `flow-break`, not machine-checked: `Delivers`, `Files`, `Read
-    first`, and the `Done when` checklist.
-  - `Task type:` (default `feature`) sets what the Check proves. `feature`, `bugfix`:
-    it fails (or can't run yet) before the change and passes after. `refactor`:
-    behaviour stays the same; it passes before and after, and review confirms no
-    behaviour changed. `spike`: no Check-before; the deliverable is an answer
-    (`spike-tasks.md`).
-  - Optional: `Base commit:` (placeholder when drafted, real SHA when started);
-    `Started:`/`Finished:` (ISO 8601); `Status: active | paused | blocked` (§6);
-    `Covers:` spec check IDs (`W1, W3`); `Base branch:` the unlanded blocker branch it
-    was stacked on (`merge-strategy.md`).
-  - Sections: `## Progress` (dirty paths at start, Check result before the change,
-    root cause, review findings and outcomes, pause handoff), `## Blocked` (§5),
-    `## Findings` (spike answers).
-  - Inside `done/<effort>/` the same problems are only warnings.
+
+### 2.1 Task files
+
+`flow-break` drafts them, `flow-implement` builds and archives them. This is the
+grammar `validate` enforces; `flow-verify`, `flow-start` and the planning skills need
+the paths above, not this.
+
+- Filename `tasks/<effort>/<NN>-<slug>.md`, heading `# <NN>: <Title>`. `NN` is unique
+  within an effort; cite a task as `<effort>/<NN>`, at least two digits. Files
+  directly under `tasks/` (pre-2.3 layout) still work; `git mv` them when convenient.
+- Fields are `Name: value` lines, plain or bold (`**Effort:** <slug>`).
+- Required (`validate` errors): `Effort` (slug `[a-z0-9]+(-[a-z0-9]+)*`, same as the
+  directory); `Blocked by` (`None`, or a comma list of `NN` or `<effort>/NN`,
+  numbers only); `Check` (command and the result that means it works, or a
+  `## Check` section).
+- Expected from `flow-break`, not machine-checked: `Delivers`, `Files`, `Read
+  first`, and the `Done when` checklist.
+- `Task type:` (default `feature`) sets what the Check proves. `feature`, `bugfix`:
+  it fails (or can't run yet) before the change and passes after. `refactor`:
+  behaviour stays the same; it passes before and after, and review confirms no
+  behaviour changed. `spike`: no Check-before; the deliverable is an answer
+  (`spike-tasks.md`).
+- Optional: `Base commit:` (placeholder when drafted, real SHA when started);
+  `Started:`/`Finished:` (ISO 8601); `Status: active | paused | blocked` (§6);
+  `Covers:` spec check IDs (`W1, W3`); `Base branch:` the unlanded blocker branch it
+  was stacked on (`merge-strategy.md`).
+- Sections: `## Progress` (dirty paths at start, Check result before the change,
+  root cause, review findings and outcomes, pause handoff), `## Blocked` (§5),
+  `## Findings` (spike answers).
+- Inside `done/<effort>/` the same problems are only warnings.
 - Archive the task to `done/<effort>/` in the same commit as its code and docs. A
   blocker archived in HEAD is finished: its dependents become ready unchanged.
-- After editing tasks or decisions, run `.workflow/bin/workflow validate`. Errors
-  block; fix the file, not the validator.
+
+After editing tasks or decisions, run `.workflow/bin/workflow validate`. Errors
+block; fix the file, not the validator.
 
 ---
 
@@ -225,6 +241,12 @@ This is the only routing table; `flow-start` and the skills point here.
 When two apply, take the earliest incomplete. The user may skip ahead, but complex
 work is always built from a task file: it carries the Base commit, Check and archive.
 
+**Who starts a skill.** `flow-start`, `flow-grill`, `flow-map`, `flow-spec`,
+`flow-break`, `flow-implement` and `flow-verify` may be entered when the routing
+table sends you there. `flow-close`, `flow-architect` and `flow-break` amend change
+records other sessions read, so start them only when the user asks, or say in one
+line that you are starting one and why before you do.
+
 **Replan.** A plan that turns out wrong is fixed in the plan, not worked around in
 code. The task that hit it gets `Status: blocked` and a `## Blocked` section
 (`flow-implement` writes both). Then `flow-grill` if the fix needs a user decision,
@@ -241,7 +263,7 @@ justified it.
 | Object | States | Who moves it |
 |--------|--------|--------------|
 | Map `maps/<slug>.md` | `charting` → `working` → `clear` | `flow-map`: `working` once the first question is answered, `clear` when no question or fog is left |
-| Spec `specs/<effort>.md` (the effort's state) | `proposed` → `in progress` → `done` | `flow-spec` writes `proposed`; `flow-implement` sets `in progress` when the effort's first task starts; `flow-close` sets `done` |
+| Spec `specs/<effort>.md` (the effort's state) | `proposed` → `in progress` → `done` | `flow-spec` writes `proposed`; `flow-implement` sets `in progress` when the effort's first task starts, and sets it back from `done` when a later task joins a closed effort; `flow-close` sets `done` |
 | Task `tasks/<effort>/<NN>-<slug>.md` | drafted → `active` → (`paused` or `blocked`) → archived | `flow-break` drafts it (no `Status`); `flow-implement` sets `active` on start, `paused` when the session stops early (handoff below), `blocked` when the plan is wrong (§5); `flow-break` amend clears `blocked`; `flow-implement` archives it and drops `Status` |
 | Debt entry in `technical-debt.md` | listed → removed | `flow-architect` (or any skill that finds one) adds it; the fixing task deletes it in its commit; if the user declines, delete it and append a decision entry (`Decided: not fixing <symptom>`, `Mine: no`) so reviews don't re-propose it |
 
@@ -251,6 +273,14 @@ An effort without a spec has no status: it is done when its last task lands, wit
 task branches, so claimed, paused and blocked tasks show from the main branch
 (`merge-strategy.md`). `next` never offers a started task as ready; resume a `paused`
 one before starting anything new.
+
+**Reopening a closed effort.** An effort whose spec says `done` can still gain work:
+a follow-up, a bug the effort caused, a fix too big for the close. Adding a task to
+it sets the spec back to `in progress` in the same commit, so no task is ever open
+under a settled spec. The next `flow-close` runs the new tasks' checks and appends a
+`## Reopened <date>` section to the retrospective instead of rewriting it; the
+history of what the effort originally shipped stays readable. A large piece of
+follow-up work is a new effort instead, with its own spec.
 
 **Pause handoff.** The resuming session never saw this one. Before setting
 `Status: paused`, `## Progress` says: what is done, the next concrete step, open review
@@ -263,8 +293,7 @@ means the handoff is incomplete.
 ## 7. Review
 
 Shared by every review path (`flow-verify`, `flow-implement`, `flow-close`, the fast
-paths); skills point here. What to look for lives in the `workflow-reviewer` and
-`workflow-process` briefs.
+paths); skills point here. What to look for lives in the `workflow-reviewer` brief.
 
 **Security pass.** Runs whenever a change touches authentication, authorisation, input
 reaching a query or shell, secrets, file paths, or another trust boundary, on every
@@ -306,7 +335,14 @@ Every bug outside a hotfix, on the fast path or as a `bugfix` task:
 4. **Fix the cause, then look sideways.** Check every other caller and copy of the
    faulty rule; the sibling path is the usual second bug.
 5. **Watch the check go green,** then run the real path once. Still red? Revert that
-   fix and go back to step 3: a fix stacked on a wrong fix hides the cause.
+   fix and go back to step 3: a fix stacked on a wrong fix hides the cause. Two
+   failed attempts on the same bug mean the cause is still unknown: stop, and make
+   finding it a `spike` as below.
+
+**The second of a kind buys a check.** When the same class of bug is fixed twice in
+`maintenance` or on the fast path, add the check that would have caught it — a test,
+a lint rule, a CI step — in that same change, instead of waiting for `flow-close`
+(§5, which a small task never reaches).
 
 Cause still unknown after reproducing? Finding it is a `spike` task ("what causes
 <symptom>?", time box stated as what to stop after); the fix task is `Blocked by` it.

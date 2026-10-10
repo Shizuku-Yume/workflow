@@ -7,8 +7,7 @@ Exploratory work where the output is an answer and the code may be throwaway.
 A spike is a task where:
 - Goal is learning, not shipping
 - Solution approach is unknown
-- Code may be discarded after
-- Success = answered question, not working feature
+- The answer is the deliverable, and the code that produced it may be discarded
 
 ## When to Use Spikes
 
@@ -27,7 +26,7 @@ A spike is a task where:
 
 ## Spike Task Format
 
-Same file format as any task (CONVENTIONS §2), plus:
+Same file format as any task (CONVENTIONS §2.1), plus:
 
 ```markdown
 **Task type:** spike
@@ -35,12 +34,13 @@ Same file format as any task (CONVENTIONS §2), plus:
 **Time box:** <what to stop after: one prototype, one benchmark run, N approaches tried>
 ```
 
-**Differences from regular tasks:**
-- `Delivers` is "Answer to: <question>"
-- Time box is a scope limit, not wall-clock hours: an agent can't measure hours, but it can tell when it has built the one prototype it was allowed. Stop at the limit even if the answer is incomplete, and report what's still unknown.
-- No production code requirement
-- Check is "question answered with evidence", not "feature works"
-- Code can be thrown away
+**The three things that differ from a regular task:**
+- `Delivers` is "Answer to: <question>"; the Check is "question answered with
+  evidence", not "feature works".
+- Time box is a scope limit, not wall-clock hours: an agent can't measure hours, but
+  it can tell when it has built the one prototype it was allowed. Stop at the limit
+  even if the answer is incomplete, and report what's still unknown.
+- No production code is required, and code may be thrown away (see below).
 
 ## After a Spike
 

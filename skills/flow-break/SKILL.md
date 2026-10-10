@@ -7,7 +7,7 @@ description: >-
 
 # Flow: Break
 
-Read `.workflow/CONVENTIONS.md` §2 first. Input: a spec (`.workflow/specs/<effort>.md`) or settled conversation. Output: task files in `.workflow/tasks/<effort>/`, archived to `.workflow/done/<effort>/` when finished.
+Read `.workflow/CONVENTIONS.md` §2 and §2.1 first. Input: a spec (`.workflow/specs/<effort>.md`) or settled conversation. Output: task files in `.workflow/tasks/<effort>/`, archived to `.workflow/done/<effort>/` when finished.
 
 Run it even when the work fits one session: the task file holds the Base commit, the Check and the archive. A one-task breakdown is quick.
 
@@ -24,7 +24,7 @@ Long sessions degrade, so each task fits one fresh session with room to spare. T
 - **Checkable** by someone other than its author.
 - **Independent** of tasks declared after it.
 
-**Task types** (CONVENTIONS §2 owns what each Check proves):
+**Task types** (CONVENTIONS §2.1 owns what each Check proves):
 - `feature` (default) and `bugfix`: the Check fails before the change and passes after. A bugfix is built per CONVENTIONS §8: the Check reproduces the bug and `Delivers` says what works again. If nobody knows the cause yet, draft a spike first and block the fix on it.
 - `refactor`: behavior must not change; the Check passes before and after.
 - `spike`: the deliverable is an answer ("yes", "no", "yes but needs X"), possibly with throwaway code. Follow `.workflow/spike-tasks.md`. Time-box it as a scope limit (one prototype, one benchmark run), not hours.
@@ -61,7 +61,7 @@ Behavior and checks, not code: a snippet only when it carries a decision prose c
 
 If the user gave a priority, set `**Priority:**` in the spec header.
 
-**Coverage gate.** Every spec check ID appears in some task's `Covers`, or is named in the hand-off as checked only at `flow-close` because it needs all the pieces. Any other uncovered check is a hole in the plan.
+**Coverage gate.** Every spec check ID appears in some task's `Covers`, or is named in the hand-off as checked only at `flow-close` because it needs all the pieces. Any other uncovered check is a hole in the plan. `workflow validate` reports a `Covers` ID the spec does not define; it cannot see the reverse, so this gate is still yours to run.
 
 ### 3. Review round
 
@@ -118,9 +118,12 @@ Build with `flow-implement`, one task at a time per working tree; parallel tasks
 Runs when a task of the effort is `Status: blocked`, or the spec changed under tasks already written. The plan is fixed here, not worked around in code.
 
 1. Read what changed: the blocked task's `## Blocked` section, and the spec change or decision entry that answered it (`git diff` on the spec). Under `local-merge` and `pr` the blocked task file is on its branch: `next` names it, `git show <branch>:<path>` reads it.
+   If the spec says `done` — a task joined a closed effort — set it back to `**Status:** in progress` as part of this amend (CONVENTIONS §6).
 2. Go through every remaining task under `.workflow/tasks/<effort>/`, the blocked one first: does `Delivers` still match the spec? Do `Read first`, `Files`, `Check` and `Covers` point at the right things? Is `Blocked by` still the real gate?
 3. Rewrite what is stale. Delete a task with no reason left to exist: name it and why in the decision entry for the change, and fix every `Blocked by` that pointed at it. New tasks take numbers after the highest the effort has used, archived ones included; never renumber.
-4. Edit the blocked task from its branch copy, so `Base commit`, `Started` and `## Progress` reach the main branch with it, and remove `## Blocked`. If what it delivers is unchanged, set `Status: paused` and make sure `## Progress` says where the earlier work is, so `flow-implement` resumes on the same Base commit. If it changed, reset `Base commit` to the `<commit-sha>` placeholder, drop `Started` and `Status`, name reusable work in `## Progress`, and rename the old task branch to `attempt/<effort>-<NN>` so the task can be claimed afresh.
+4. Edit the blocked task from its branch copy, so `Base commit`, `Started` and `## Progress` reach the main branch with it, and remove `## Blocked`. Then take one of two branches:
+   - **What it delivers is unchanged.** Set `Status: paused`, and make sure `## Progress` says where the earlier work is, so `flow-implement` resumes on the same Base commit.
+   - **What it delivers changed.** Reset `Base commit` to the `<commit-sha>` placeholder, drop `Started` and `Status`, name reusable work in `## Progress`, and rename the old task branch to `attempt/<effort>-<NN>` so the task can be claimed afresh.
 5. Rerun the coverage gate.
 6. Present the changes as one round, as in step 3: what was rewritten, added, dropped, and why.
 7. Run `.workflow/bin/workflow validate`, then commit the spec, decision entries and task changes together on the main branch, as in step 4.

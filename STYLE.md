@@ -3,7 +3,7 @@
 How to write anything a person reads: chat replies, documents, commit messages,
 UI text, code comments, in every response, workflow task or not. It ranks last:
 the user's instruction, `.workflow/standards.md` and the repository's existing
-conventions win over it (see "Precedence" in `CONVENTIONS.md`).
+conventions win over it (see **Precedence** at the top of `CONVENTIONS.md`).
 
 ## Language
 

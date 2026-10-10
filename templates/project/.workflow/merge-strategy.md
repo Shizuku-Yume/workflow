@@ -42,6 +42,26 @@ exists for a task you are not resuming means someone else has it. To resume a
 paused or blocked task, check out its branch. Under `direct` there is one working
 tree and the task file's `Status` is the whole story.
 
+## Worktrees
+
+Only under `local-merge` and `pr`, and only when two tasks run at the same time:
+one working tree holds one branch, so parallel tasks need one worktree each.
+
+```sh
+git worktree add ../<repo>-<effort>-<NN> -b <effort>/<NN>-<slug> <main branch>
+```
+
+Name it after the task so a stray directory is traceable. `.workflow/` is a
+relative path, so the new tree gets the task directory and the CLI with it; nothing
+else needs copying. Land the task, then `git worktree remove <path>`; a tree left
+behind after its branch is deleted still holds the checkout, and `git worktree
+prune` clears the records of ones deleted by hand. Run `git worktree list` when you
+are unsure which tree is where.
+
+Git refuses a branch that another worktree has checked out. That is the claim
+(above) enforced by git rather than by convention: a second session cannot start a
+task someone else holds. Under `direct` there is one tree and none of this applies.
+
 ## Dependent tasks
 
 A task starts only when every blocker is archived under `.workflow/done/<effort>/`

@@ -3,6 +3,85 @@
 What changed in each version and what an existing project has to do about it.
 Usage lives in the README and in `--help`.
 
+## 2.6.0
+
+### Upgrade
+
+From the toolkit checkout, in each project:
+
+```sh
+~/tools/workflow/bin/workflow update
+git add .workflow .agents AGENTS.md && git commit
+```
+
+- **The review agent count changed.** `workflow-reviewer` now carries two briefs and
+  `workflow-process` is gone; `update` deletes the unedited agent file, and the
+  `.claude/agents/` copy with it.
+- **`validate` may report new errors.** Three field values it never checked are now
+  checked, and each is a real bug when wrong:
+  - a `Covers` ID the effort's spec does not define;
+  - a `Status` that is not `active`, `paused` or `blocked` on a task in `tasks/`,
+    including `done` (that task belongs in `done/`, with no `Status`);
+  - a task-level `Priority`, which nothing ranked by.
+
+  The first stays silent for an effort with no spec, or one whose checks carry no
+  IDs; the `Status` and `Priority` errors are warnings inside `done/`. An unknown
+  spec `Priority` is a warning, since it only ranks as `normal`. Run `validate` after
+  `update` and fix what it names.
+- Nothing else needs doing. `standards.md` and `technical-debt.md` are yours, and
+  `update` leaves them alone.
+
+### Changes
+
+- **One review agent, two briefs.** `flow-verify` ran three axes across two agents.
+  The process axis was a mechanical checklist — evidence recorded, documents still
+  true, decisions logged, no leftovers, scope respected — so it moved into the brief
+  that already reads the task file, and `workflow-process.md` is gone. Two
+  invocations of `workflow-reviewer` remain, so neither review sees the other's
+  conclusions. Effort mode runs one brief: each task was reviewed for quality when
+  it landed.
+- **`Covers` is checked.** `validate` reports a `Covers` ID the spec does not define.
+  The coverage gate in `flow-break` was prose only, so a typo or a stale ID passed in
+  silence. The gate still runs the other direction, which the CLI cannot see.
+- **A closed effort can be reopened.** Nothing set a spec back from `done`, so a task
+  added later left the spec settled while the task was open, and the next
+  `flow-close` overwrote the retrospective. Adding a task to a closed effort now sets
+  the spec back to `in progress` (CONVENTIONS §6), and the close appends a
+  `## Reopened <date>` section instead of rewriting.
+- **Three silent gaps closed.** `Status: banana` made a started task look ready
+  again — the exact failure 2.5.1 fixed for a missing `Status` — because `next`
+  treated an unknown value as "not started". A task-level `Priority` was accepted and
+  never read. A typo in a spec's `Priority` silently demoted the effort to `normal`.
+  `validate` now names all three.
+- **The fix loop is bounded.** CONVENTIONS §8 said to revert a failed fix and try
+  again, with no limit. Two failed attempts now mean the cause is still unknown: stop
+  and make finding it a `spike`.
+- **The second of a kind buys a check.** Recurring bugs on the fast path or in
+  `maintenance` never reached the retrospective that turns patterns into checks.
+  Fixing the same class of bug twice now adds the check in that same change.
+- **Who starts a skill is written down.** `flow-close`, `flow-architect` and
+  `flow-break` amend change records other sessions read; they start when the user
+  asks, or after one line saying why.
+- **Decision entries have a threshold.** The five-field entry was required for
+  anything affecting scope, interfaces, compatibility, risk or maintenance, which is
+  most choices. It now takes all three of: hard to reverse, surprising to a later
+  reader, and a real alternative lost.
+- **CONVENTIONS §2 lists what `init` installs.** `phase-boundaries.md` and
+  `bin/workflow-core.py` were missing from the tree, and `skills_lint.py` now
+  compares the tree against the templates, so the next drift fails the suite.
+- **Worktrees are documented.** Six places told you to run parallel tasks in separate
+  worktrees and none said how. `merge-strategy.md` now has the commands to add,
+  remove and prune one, why `.workflow/` needs no copying, and the claim that git
+  enforces for free: two worktrees cannot hold one branch.
+- **CONVENTIONS §2 is split.** The task-file grammar, 24 lines that only
+  `flow-break` and `flow-implement` act on, moved to §2.1. The skills that read §2
+  for paths — `flow-verify`, `flow-start`, the planning skills — no longer load it.
+- **`spike-tasks.md` says each thing once.** Its example task stays, because the lint
+  validates it against `validate`; the prose around it no longer restates the
+  definition three times.
+- `flow-break` amend splits the blocked task's two outcomes into separate steps.
+
+
 ## 2.5.1
 
 ### Upgrade

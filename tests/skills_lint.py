@@ -23,7 +23,7 @@ DECISION_PATH = ROOT / 'templates/project/.workflow/decisions.md'
 # Things removed in 2.5 that the shipped prose must not mention (CHANGELOG is exempt).
 REMOVED = ['workflow tasks', 'workflow deps', 'workflow decisions', 'workflow effort',
            'workflow debt', 'hotfix-review', 'mark-resolved', 'effort create',
-           'effort complete', '.workflow/efforts', 'thinking.md']
+           'effort complete', '.workflow/efforts', 'thinking.md', 'workflow-process']
 
 passed = failed = 0
 
@@ -176,6 +176,58 @@ def check_removed_mentions():
                     fail(path, number, f'mentions removed {pattern!r}')
     if failed == initial:
         ok('docs, skills and templates never mention removed commands or files')
+
+
+def tree_entries(body):
+    """Path tokens named in the CONVENTIONS §2 install tree, in order."""
+    entries = []
+    fence = False
+    for text in body.splitlines():
+        stripped = text.strip()
+        if stripped.startswith('```'):
+            fence = not fence
+            continue
+        if fence and stripped:
+            entries.append(stripped.split()[0].rstrip('/'))
+    return entries
+
+
+def shipped_files():
+    """Files `init` copies from the toolkit checkout."""
+    project = ROOT / 'templates' / 'project'
+    files = [path for path in sorted(project.rglob('*'))
+             if path.is_file()
+             and path.relative_to(project).parts[0] != '.agents'   # generic in the tree
+             and path.name != 'CLAUDE.md']                         # the --claude adapter
+    files += [path for path in sorted((ROOT / 'bin').glob('*')) if path.is_file()]
+    return files
+
+
+def check_file_tree():
+    """Every file init installs is named in the §2 tree, and nothing else is."""
+    body = section_text(CONVENTIONS, '2')
+    initial = failed
+    if body is None:
+        fail(CONVENTIONS, 1, 'missing section "## 2." (file structure)')
+        return
+    entries = tree_entries(body)
+    names = {entry.rsplit('/', 1)[-1] for entry in entries if '<' not in entry}
+    for path in shipped_files():
+        if path.parent.name != 'bin' and path.suffix not in ('.md', '.py'):
+            continue
+        if path.name not in names:
+            fail(CONVENTIONS, 1,
+                 f'CONVENTIONS section 2 tree does not list {path.name}, which init installs')
+    shipped = {path.name for path in shipped_files()}
+    shipped |= {'AGENTS.md', 'README.md', 'CHANGELOG.md', 'CONVENTIONS.md', 'STYLE.md'}
+    for entry in entries:
+        if '<' in entry or not entry.endswith(('.md', '.py')):
+            continue
+        if entry.rsplit('/', 1)[-1] not in shipped:
+            fail(CONVENTIONS, 1,
+                 f'CONVENTIONS section 2 tree lists {entry}, which the toolkit does not ship')
+    if failed == initial:
+        ok('CONVENTIONS section 2 file tree matches what init installs')
 
 
 def check_skill_listing():
@@ -385,7 +437,7 @@ def main():
     check_section_references()
     check_skill_structure()
     check_removed_mentions()
-    check_skill_listing()
+    check_file_tree()
     with tempfile.TemporaryDirectory() as tmp:
         roundtrips(Path(tmp).resolve())
     print(f'\n{passed} passed; {failed} failed')

@@ -19,6 +19,7 @@ Every task was checked on its own, against its own baseline. Nobody has yet chec
 - Find the spec: `.workflow/specs/<effort>.md`. If there is none, stop and say so in one line: an effort without a spec (a lone bugfix, a spike, `maintenance`) is done when its last task lands, with no close and no retrospective.
 - No task of `<effort>` is left under `.workflow/tasks/<effort>/`. If one is, name it and stop: it is unfinished, or it should be dropped through `flow-break` amend.
 - Every archived task has landed on the main branch (`merge-strategy.md`). Work from an up-to-date main branch.
+- If the spec already says `done` and `.workflow/done/<effort>/retrospective.md` exists, this is a reopen (CONVENTIONS §6): the tasks added since are what this run closes, and step 6 appends instead of rewriting.
 - Find the comparison point: the `Base commit` of the effort's earliest-started archived task. List the effort's commits once and reuse the list: every task commit moves a file into `done/<effort>/`, so `git log --format='%h %s' <point>..HEAD -- .workflow/done/<effort>/` finds them.
 
 ## 2. Run the spec's checks
@@ -41,13 +42,17 @@ List open hotfix follow-ups (`grep -rl 'Hotfix:' .workflow/tasks/`) that touch t
 
 ## 5. Show the user
 
-One message: each spec check by ID with its result, what the demo showed, review status per axis, triggered decisions. Ask whether the effort is accepted.
+One message: each spec check by ID with its result, what the demo showed, review status per brief, triggered decisions. Ask whether the effort is accepted.
 
 This is the only stop in this skill. Accepted: carry on. Something missing: it becomes tasks through `flow-break` amend, and closing waits.
 
 ## 6. Write the retrospective
 
 `.workflow/done/<effort>/retrospective.md`. The git history of `.workflow/tasks/<effort>/`, `.workflow/done/<effort>/` and the spec answers the plan-versus-actual questions (`git log --stat --follow -- <path>`); the `## Progress` sections of archived tasks hold the review findings.
+
+On a reopen, append a `## Reopened <date>` section with the same headings, covering
+the tasks added since the last close, instead of replacing the file: what the effort
+originally shipped stays readable.
 
 ```markdown
 # Retrospective: <effort>

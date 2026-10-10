@@ -304,6 +304,7 @@ EOF
     case "$field" in
       'Base commit') suffix="<commit-sha>" ;;
       'Task type') suffix="feature" ;;
+      'Status') suffix="active" ;;
       *) suffix="99" ;;
     esac
     suffixes+=("**$field:** $suffix" "  - **$field:** $suffix" "  $field: $suffix")
