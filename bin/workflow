@@ -24,7 +24,7 @@
 # need no checkout of this toolkit and nothing on PATH.
 set -euo pipefail
 
-VERSION="2.6.1"
+VERSION="2.6.2"
 BIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 KIT="$(cd "$BIN_DIR/.." && pwd)"
 

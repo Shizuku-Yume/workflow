@@ -3,6 +3,16 @@
 What changed in each version and what an existing project has to do about it.
 Usage lives in the README and in `--help`.
 
+## 2.6.2
+
+### Upgrade
+
+Run `npm install --global @shizuku-yume/workflow` to update the global CLI, or `workflow update` in existing projects.
+
+### Changes
+
+- Complete npm package distribution and Trusted Publishing release automation.
+
 ## 2.6.1
 
 ### Upgrade

@@ -20,7 +20,7 @@ import re
 import subprocess
 import sys
 
-VERSION = "2.6.1"
+VERSION = "2.6.2"
 
 KNOWN_FIELDS = {
     "task", "effort", "task type", "base commit", "delivers", "blocked by",
