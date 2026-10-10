@@ -102,10 +102,9 @@ Called from `flow-implement` or `flow-close`: return to it for its remaining ste
 
 - **One brief.** Each task was already reviewed for quality when it landed, so run
   brief A only. For a large effort the user may ask for brief B as well.
-- **Comparison point:** the `Base commit` of the effort's earliest-started archived
-  task. Other efforts may have landed since, so also pass the effort's own commit
-  list, `git log --format='%h %s' <point>..HEAD -- .workflow/done/<effort>/`, and
-  tell the agent to judge those commits, not everything in the range.
+- **Comparison point:** use the point and effort commit list from `flow-close`
+  step 1. Other efforts may have landed since: judge the listed commits, not
+  everything in the range.
 - **Brief A** is judged against the spec ("What it does", "What it must not do", the
   W-numbered checks), not one task. A behaviour the spec promises that no task
   delivered is the finding this mode exists for. The agent also checks that spec and

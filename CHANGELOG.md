@@ -3,6 +3,28 @@
 What changed in each version and what an existing project has to do about it.
 Usage lives in the README and in `--help`.
 
+## 2.6.1
+
+### Upgrade
+
+Run `workflow update` from the toolkit checkout. If the project uses the pre-commit
+hook, rerun `.workflow/bin/workflow hook install` to refresh it. No new files or
+task fields are required.
+
+### Fixes
+
+- Keep pre-commit validation fail-closed when Python, the validator core, or the
+  project's copied CLI is unavailable; normal validation warnings still pass.
+- Let `next` resolve blockers from the legacy flat archive layout when the task file
+  carries its `Effort`.
+- Keep pause and PR task claims visible through the committed branch state, and keep
+  reopened effort retrospectives append-only.
+- Use the shared decision-log threshold in planning, implementation and review;
+  routine choices and declined nonblocking suggestions no longer require bookkeeping.
+- Remove module/decision counts and the 30-line re-review threshold. Judge task size
+  by impact, and re-review fixes that change scope or introduce a new risk.
+- Do not reconfirm settled answers or force a new map session for each question.
+
 ## 2.6.0
 
 ### Upgrade

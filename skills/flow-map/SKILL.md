@@ -1,8 +1,9 @@
 ---
 name: flow-map
 description: >-
-  Plan work too big to see all the way through, as a map of open questions
-  answered one per session. Use when a project is large or foggy, or the user says "I don't know how to approach this".
+  Plan work too big to see all the way through, as a map of open questions across
+  sessions. Use when a project is large or foggy, or the user says "I don't know how
+  to approach this".
 ---
 
 # Flow: Map
@@ -16,8 +17,8 @@ questions: the work spans sessions, grilling keeps stalling on questions that ha
 on others, or the user knows the goal but not the first step. If you can already list the tasks, use `flow-spec` and `flow-break`; a map for
 clear work is ceremony.
 
-Answer the gating questions one per session until the way is clear. Expect fog;
-clear it with answers, not guesses.
+Answer the gating questions in dependency order until the way is clear. Keep each
+session focused, but answer independent questions together when their answers are clear.
 
 ## Map or spec
 
@@ -111,15 +112,15 @@ as a new effort, not a resumed one.
 
 ## Working the map
 
-Answer one question per session, so each answer gets a clean context.
+Answer the first open question, or the one the user named, and keep the session focused.
+Answer more than one when the answers are already clear and independent.
 
 1. Read the map header and Route so far, not every question section.
 2. Pick the first open question, or the one the user named.
 3. Answer it as its kind says, reading related question sections as needed.
-4. In the question's section, record the decision, the option it beat and what it
-   was based on. For a real decision, add one complete entry to
-   `.workflow/decisions.md`. The first answer moves the map from `Status: charting`
-   to `Status: working` (CONVENTIONS §6).
+4. In the question's section, record the answer and what it was based on. Add a
+   decision entry only when CONVENTIONS §1.2 calls for one. The first answer moves
+   the map from `Status: charting` to `Status: working` (CONVENTIONS §6).
 5. Add the answer to Route so far, answer any question it just unblocked, and turn
    fog that is now sharp into questions, removing it from "Not yet clear".
 6. Move anything the answer shows beyond the destination to "Ruled out" with a

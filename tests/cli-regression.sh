@@ -1961,6 +1961,11 @@ test_pre_commit_hook() {
 **Check:** `true` passes
 **Blocked by:** None
 EOF
+  mkdir -p "$repo/.workflow/done/core"
+  printf '# 02: Old\n\n**Effort:** core\n' > "$repo/.workflow/done/core/02-old.md"
+  local status=0
+  (cd "$repo" && "$cli" validate --no-color >/dev/null 2>&1) || status=$?
+  if [ "$status" -eq 1 ]; then pass "hook warning fixture returns validate exit 1"; else fail "hook warning fixture should return validate exit 1, got $status"; fi
   git -C "$repo" add -A
   if git -C "$repo" commit -q -m ok >/dev/null 2>&1; then pass "hook lets a commit with only warnings through"; else fail "hook should not block on warnings"; fi
   cat > "$repo/.workflow/tasks/core/02-bad.md" <<'EOF'
@@ -1972,11 +1977,32 @@ EOF
   git -C "$repo" add -A
   if git -C "$repo" commit -q -m bad >/dev/null 2>&1; then fail "hook should block a commit with validate errors"; else pass "hook blocks a commit with validate errors"; fi
   rm -f "$repo/.workflow/tasks/core/02-bad.md"; git -C "$repo" add -A
+  local no_python="$TMPDIR/hook_no_python" tool
+  mkdir -p "$no_python"
+  for tool in git bash dirname; do ln -s "$(command -v "$tool")" "$no_python/$tool"; done
+  status=0
+  (cd "$repo" && PATH="$no_python" bash "$cli" validate --no-color >/dev/null 2>&1) || status=$?
+  if [ "$status" -ge 2 ]; then pass "validate errors when Python is missing"; else fail "missing Python should return an error exit, got $status"; fi
+  if PATH="$no_python" git -C "$repo" commit --allow-empty -q -m missing-python >/dev/null 2>&1; then fail "hook should block when Python is missing"; else pass "hook blocks a real commit when Python is missing"; fi
+
+  mv "$repo/.workflow/bin/workflow-core.py" "$TMPDIR/hook-core.py"
+  status=0
+  (cd "$repo" && "$cli" validate --no-color >/dev/null 2>&1) || status=$?
+  if [ "$status" -ge 2 ]; then pass "validate errors when its core is missing"; else fail "missing core should return an error exit, got $status"; fi
+  if git -C "$repo" commit --allow-empty -q -m missing-core >/dev/null 2>&1; then fail "hook should block when the core is missing"; else pass "hook blocks a real commit when the core is missing"; fi
+  mv "$TMPDIR/hook-core.py" "$repo/.workflow/bin/workflow-core.py"
+
+  mv "$cli" "$TMPDIR/hook-cli"
+  if git -C "$repo" commit --allow-empty -q -m missing-cli >/dev/null 2>&1; then fail "hook should block when the project CLI is missing"; else pass "hook blocks a real commit when the project CLI is missing"; fi
+  mv "$TMPDIR/hook-cli" "$cli"
   (cd "$repo" && "$cli" hook uninstall >/dev/null 2>&1)
   if [ ! -e "$repo/.git/hooks/pre-commit" ]; then pass "hook uninstall removes our hook"; else fail "hook uninstall should remove our hook"; fi
   printf '#!/bin/sh\nexit 0\n' > "$repo/.git/hooks/pre-commit"
   if (cd "$repo" && "$cli" hook install >/dev/null 2>&1); then fail "hook install should refuse a foreign hook"; else pass "hook install refuses to replace someone else's hook"; fi
   if grep -q 'exit 0' "$repo/.git/hooks/pre-commit" && ! grep -q 'workflow:pre-commit' "$repo/.git/hooks/pre-commit"; then pass "foreign hook left untouched"; else fail "foreign hook was modified"; fi
+  (cd "$repo" && "$cli" hook install --force >/dev/null 2>&1)
+  (cd "$repo" && "$WORKFLOW" uninstall >/dev/null 2>&1)
+  if git -C "$repo" commit --allow-empty -q -m uninstalled >/dev/null 2>&1; then pass "full uninstall leaves no blocking workflow hook"; else fail "full uninstall should leave commits possible without the CLI"; fi
 }
 
 # --- 2.3: tasks/<effort>/ layout is read the same way by every command ---

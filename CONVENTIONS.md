@@ -51,8 +51,9 @@ Rank by what blocks the most work. A question needing more than a screen hides a
 smaller one.
 
 ### 1.4 Confirm before proceeding
-Restate decisions as a numbered list for the user to correct or confirm. Silence is
-not agreement.
+Confirm unresolved Bucket C choices. Answers the user already gave are settled;
+do not add a second approval just to recap them. Routine Bucket B choices need no
+approval.
 
 ### 1.5 Stop when unblocked
 Stop grilling when no open decision would change the next step.
@@ -195,10 +196,10 @@ security pass (§7) still runs. Before the session ends, write both:
    open task is the tracker: `grep -rl 'Hotfix:' .workflow/tasks/` finds every open one,
    and `flow-start` reports them until they land.
 
-**Small task** — all of these hold: a single behaviour change or bug fix; it affects
-fewer than 3 modules' behaviour; requirements clear; no architectural decisions;
-revertable in under 5 minutes. Impact radius matters more than file count: a core type
-in 1 file used by 20 modules is not small. When unsure, it is complex.
+**Small task** — all of these hold: one localized behaviour change or bug fix;
+requirements clear; no architectural decisions; revertable in under 5 minutes. Impact
+radius matters more than file count: a core type in 1 file used by 20 modules is not
+small. When unsure, it is complex.
 
 Small tasks skip `flow-grill`, `flow-spec`, `flow-break` and `flow-verify`, and still
 need reading the code, tests, proof and a commit message. Run the dirty-file check
@@ -206,14 +207,12 @@ need reading the code, tests, proof and a commit message. Run the dirty-file che
 file (small task or hotfix) lands as `merge-strategy.md` says.
 
 The first classification is a guess. Before building, read the callers of what you
-will change. While building, any one of these makes the task complex on the spot:
+will change. Upgrade to complex when the change breaks a public contract, persisted
+data or an architectural boundary, or when a new decision changes what gets built.
+Do not upgrade merely because the change touches another module or uses a routine
+dependency; impact and reversibility decide.
 
-- a public interface, data shape, schema or persisted data has to change
-- a new dependency is needed
-- the change reaches a third module
-- a third decision comes up, or one that changes what gets built
-
-Stop, name the tripwire, keep the work (uncommitted or a named stash) as input to the
+Stop, name the reason, keep the work (uncommitted or a named stash) as input to the
 plan, and route through §5.
 
 **Complex** — everything else: the full workflow from the earliest incomplete step.
@@ -285,8 +284,9 @@ follow-up work is a new effort instead, with its own spec.
 **Pause handoff.** The resuming session never saw this one. Before setting
 `Status: paused`, `## Progress` says: what is done, the next concrete step, open review
 findings, the branch or worktree, and where uncommitted work is (in the tree, or a
-stash named `<effort>/<NN> paused`). A next session that would need this conversation
-means the handoff is incomplete.
+stash named `<effort>/<NN> paused`). Under `local-merge` and `pr`, commit the task file
+alone on its branch so `next` can read it; under `pr`, push it. A next session that
+would need this conversation means the handoff is incomplete.
 
 ---
 
@@ -305,15 +305,13 @@ line.
 stands.
 
 **Only the user waives a blocking finding.** It is fixed, or the user accepts it in a
-decision entry with `Mine: no`. A nonblocking finding the agent rejects gets a
-`Mine: yes` entry, so the next review doesn't raise it again.
+decision entry with `Mine: no`. Declining a nonblocking finding needs a `Mine: yes`
+entry only when the choice qualifies under §1.2.
 
-**Fixes get rechecked, sized to the fix.** Before fixing, stage the reviewed state
-(`git add -- <the task's paths>`), so `git diff` plus the task's new files is exactly
-the fix. A fix that stays in the lines the finding named is
-rechecked by running the thing that was wrong; one that touches another file or
-changes more than about 30 lines goes back to the same reviewer role with only that
-delta.
+**Fixes get rechecked.** Keep the reviewed change set identifiable, fix the finding,
+and rerun the affected check. If the fix changes scope or introduces a new risk,
+return to the same reviewer role with that delta. Do not create a separate review
+round for routine changes solely because of line count.
 
 **Findings are kept.** Each blocking finding and its outcome (fixed, or accepted with
 the decision heading) goes into the task's `## Progress`, so `flow-close` can see

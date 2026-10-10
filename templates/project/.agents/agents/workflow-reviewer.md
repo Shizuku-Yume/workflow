@@ -64,9 +64,9 @@ change; a fixed entry left in place is a finding.
 
 ### Decisions
 
-Read `.workflow/decisions.md`. Report any choice in the change that contradicts a
-recorded decision, and any choice made silently where the alternatives had real
-consequences. Entries marked `Superseded by` are history; judge against the entry
+Read `.workflow/decisions.md`. Report choices that contradict a recorded decision,
+or lack a record when CONVENTIONS §1.2 requires one. Entries marked `Superseded by`
+are history: judge against the entry
 that replaced them. The log is append-only: an edit to an existing entry, other than
 adding a `**Superseded by:**` line, is a finding. A blocking review finding waived by
 a `Mine: yes` entry is a finding: only the user waives those (CONVENTIONS §7).
@@ -126,8 +126,8 @@ heading is noise.
 Mark every finding `blocking` or `nonblocking`. Blocking: a wrong result, a missing
 or half-done requirement, a broken invariant, a violated written standard, a security
 problem, no evidence the new behaviour works, a document now stating something false,
-a choice contradicting a recorded decision, an unrecorded decision with real
-consequences, a `Dirty at start` path in the diff. Everything else is nonblocking. The
+a choice contradicting a recorded decision, an unrecorded choice that qualifies under
+CONVENTIONS §1.2, a `Dirty at start` path in the diff. Everything else is nonblocking. The
 label is yours and stands (CONVENTIONS §7): the implementer fixes a blocking finding
 or takes it to the user.
 

@@ -2,6 +2,10 @@
 
 Task-driven workflow for coding agents: decide what to build, write it down, break it into tasks, build, review.
 
+Lightweight by design: reduce project-management overhead during agent-assisted
+development, with consistent rules only where they prevent real mistakes. Small
+changes stay small; the workflow is not a mandatory ceremony for every edit.
+
 Installs into a project, not globally. Everything is committed with the project.
 
 ## Install
@@ -16,7 +20,7 @@ Fill in `.workflow/standards.md` (or let `flow-start` fill it from the repositor
 
 The CLI is copied into the project as `.workflow/bin/` and committed with it, so teammates, CI and cloud agents need no toolkit checkout. `init`, `update` and `uninstall` copy from the toolkit, so run those from the checkout; everything else works from either copy.
 
-Requirements: Bash 3.2 or newer (stock macOS is fine), git, python3, and the usual awk/sed (BSD or GNU).
+Requirements: Bash 3.2 or newer (stock macOS is fine), git, Python 3.8+, and the usual awk/sed (BSD or GNU).
 
 **Claude Code** reads `.claude/skills/` and `CLAUDE.md`, not `.agents/` and `AGENTS.md`. `--claude` also installs the skills and review agents there and adds a `CLAUDE.md` block that imports `AGENTS.md`. It turns on by itself when the project already has `CLAUDE.md` or `.claude/`; `--no-claude` turns it off. Codex reads `.agents/skills/` and `AGENTS.md` directly.
 

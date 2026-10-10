@@ -40,21 +40,25 @@ Default for a detail is "decide it and say so". Draft decision entries while you
 
 ## 4. Ask the round
 
-Ask every question you can ask now without guessing another answer, in one message, ranked by what unblocks most, formatted and capped per CONVENTIONS §1. Extras beyond the cap are things to decide yourself: decide, log, list one line each under the questions.
+Ask every Bucket C question you can ask now without guessing another answer, in one
+message, ranked by what unblocks most, formatted and capped per CONVENTIONS §1. Decide
+routine details with a stated default. Then stop only when a user-owned decision is
+needed; if repeated rounds still do not unblock the work, use `flow-map` or a smaller
+slice.
 
-Then stop and wait for the answers.
+## 5. Resolve remaining decisions
 
-## 5. Repeat only for questions the answers opened
-
-Recompute the tree; ask another round only if a blocking question remains. Two to four rounds is normal. Entering a fifth usually means the work is too big: suggest `flow-map` or a smaller slice.
+Questions beyond the round's cap wait for the next round; the cap does not change
+who owns a decision. Repeat only while a blocking question remains.
 
 ## 6. Name things as you go
 
-When you land on a name for a concept, module or state, write it to `.workflow/glossary.md` immediately: the term, what it means, what not to call it. A term that names two things gets split now.
+Record project terms that need a shared meaning in `.workflow/glossary.md`: the term, what it means, and competing names to avoid. Do not catalogue routine code identifiers. A term that names two things gets split now.
 
 ## 7. Confirm and stop
 
-Restate every decision as a numbered list (CONVENTIONS §1) and state the next step in one line.
+Restate Bucket C decisions and any logged choices as a numbered list (CONVENTIONS §1),
+then state the next step. Routine defaults need no confirmation.
 
 If the user says "enough": write the decision log, list what's still open (one line each), hand back.
 

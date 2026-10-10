@@ -48,9 +48,9 @@ if someone else holds it, say whose and stop. Under `direct`, say in one line th
 work goes onto the current branch.
 
 New start: write `**Base commit:** <git rev-parse HEAD>`, `**Started:** <ISO 8601>`
-and `**Status:** active` before touching code. Resume: keep the recorded SHA and
+and `**Status:** active` before touching code. Under `pr`, commit and push this task
+file before touching code so the claim is visible. Resume: keep the recorded SHA and
 confirm `git cat-file -e <sha>^{commit}`; if it fails, stop and report.
-`flow-verify` needs this exact commit.
 
 `.workflow/specs/<effort>.md` says `proposed`, or says `done` (a later task joined a
 closed effort, CONVENTIONS §6): set it to `**Status:** in progress`. Then note in
@@ -88,9 +88,9 @@ Before review, so the review sees them:
 - Fix any fact in the spec, glossary or `standards.md` the code no longer matches.
 - Put what the task taught into spec, glossary or decisions; the archived task file
   doesn't replace the spec.
-- Append a five-field entry to `.workflow/decisions.md`, tagged `**Effort:**
-  <effort>`, for each choice affecting scope, interfaces, compatibility, risk or
-  maintenance. Note the ones you made yourself (`Mine: yes`) for the report.
+- Log only choices that qualify under CONVENTIONS §1.2, in the format in
+  `.workflow/decisions.md`, tagged `**Effort:** <effort>`. Note the ones you made
+  yourself (`Mine: yes`) for the report.
 
 ## 5. Review it
 

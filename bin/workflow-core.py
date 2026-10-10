@@ -20,7 +20,7 @@ import re
 import subprocess
 import sys
 
-VERSION = "2.6.0"
+VERSION = "2.6.1"
 
 KNOWN_FIELDS = {
     "task", "effort", "task type", "base commit", "delivers", "blocked by",
@@ -942,14 +942,15 @@ def cmd_next(args):
             sys.stdout.write("No tasks found (tasks directory is missing).\n")
         return 0
 
-    # Blockers archived under done/<effort>/ are finished and never block.
+    # Blockers archived under done/ are finished and never block.
     archived = set()
     for path in task_files(done_dir):
         m = TASK_FILE_RE.match(os.path.basename(path))
-        effort = dir_effort(done_dir, path)
-        if not m or not effort:
+        if not m:
             continue
-        effort = read_fields(path).get("effort") or effort
+        effort = read_fields(path).get("effort") or dir_effort(done_dir, path)
+        if not effort:
+            continue
         archived.add(task_ref(effort, norm_number(m.group(1))))
 
     branches = task_branches(root)

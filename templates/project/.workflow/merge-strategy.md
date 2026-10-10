@@ -19,7 +19,7 @@ once, fast-forward the main branch, delete the task branch. Nothing is pushed, s
 it suits one person, with parallel tasks in separate worktrees.
 
 **`pr`** — one branch per task as above, pushed, merged through a pull request.
-The task is landed when its PR is merged. Push and open the PR as the last step of
+The task is landed when its PR is merged. Open the PR as the last step of
 `flow-implement`. Use it whenever several people share a remote: pushed task
 branches are how they see each other's claims.
 
@@ -41,6 +41,9 @@ ready; under `pr`, `git fetch` first so teammates' branches show. A branch that
 exists for a task you are not resuming means someone else has it. To resume a
 paused or blocked task, check out its branch. Under `direct` there is one working
 tree and the task file's `Status` is the whole story.
+
+Under `pr`, fetch before claiming. Commit the task's start record and push its branch
+before building so teammates can see the claim; do not replace an existing claim.
 
 ## Worktrees
 
@@ -85,9 +88,8 @@ compares against `git merge-base <main branch> HEAD` instead.
 
 ## Merge style
 
-Rebase and fast-forward (or rebase-merge on the hosting side): linear history, each
-task one commit, easy to bisect. Squash-merge is the fallback. Task work gets no
-merge commits.
+Rebase and fast-forward (or rebase-merge on the hosting side): linear history,
+easy to bisect. Squash-merge is the fallback. Task work gets no merge commits.
 
 ## Rebase and conflicts
 

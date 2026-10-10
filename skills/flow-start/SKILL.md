@@ -50,8 +50,10 @@ State the outage you understood and fix it, with no grilling or spec. Verify whe
 Run `git status --porcelain` first: paths already modified or untracked belong to someone else (CONVENTIONS §2). Then:
 
 - **No decisions needed:** say what you understood and build.
-- **One or two decisions:** ask in one message with your recommendation (CONVENTIONS §1), wait, then build. Log a decision with real trade-offs.
-- **Three or more:** it's complex; route to `flow-grill`.
+- **User-owned decisions:** ask in one message with your recommendation, wait, then
+  build. Log only choices that qualify under CONVENTIONS §1.2.
+- **Routine choices:** use the existing convention; several routine choices do not
+  make the work complex.
 
 The fast path keeps what CONVENTIONS §4 requires of small tasks (read the code and its callers, tests before and after, proof by running it, CONVENTIONS §8 for a bug, the CONVENTIONS §7 security pass). Land it per `.workflow/merge-strategy.md`.
 

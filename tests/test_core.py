@@ -356,6 +356,13 @@ class NextTests(Base):
         self.assertNotIn("Scope must not", text)
         self.assertNotIn("Second line", text)
 
+    def test_flat_archived_blocker_uses_effort_field(self):
+        self.p.write(".workflow/done/01-done.md", task("01", "Done", "core"))
+        self.p.write(".workflow/tasks/core/02-a.md", task("02", "A", "core", blocked="01"))
+        data = self.p.next()
+        self.assertEqual([t["number"] for t in data["ready_tasks"]], [2])
+        self.assertEqual((data["ready_count"], data["task_count"], data["blocked_count"]), (1, 1, 0))
+
     def test_archived_blockers_satisfied_and_blocked_status(self):
         self.p.write(".workflow/done/core/01-done.md", task("01", "Done", "core"))
         self.p.write(".workflow/tasks/core/02-a.md", task("02", "A", "core", blocked="01"))

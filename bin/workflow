@@ -24,7 +24,7 @@
 # need no checkout of this toolkit and nothing on PATH.
 set -euo pipefail
 
-VERSION="2.6.0"
+VERSION="2.6.1"
 BIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 KIT="$(cd "$BIN_DIR/.." && pwd)"
 
@@ -1685,14 +1685,17 @@ hook_script() {
   cat <<'EOF'
 #!/bin/sh
 # workflow:pre-commit - written by `workflow hook install`; remove with
-# `.workflow/bin/workflow hook uninstall`. Blocks the commit only when
-# `workflow validate` reports errors (exit 2); warnings pass.
-root=$(git rev-parse --show-toplevel) || exit 0
+# `.workflow/bin/workflow hook uninstall`. Validation errors and unavailable
+# validation block the commit; warnings pass.
+root=$(git rev-parse --show-toplevel) || exit 1
 cli="$root/.workflow/bin/workflow"
-[ -f "$cli" ] || exit 0
+if [ ! -f "$cli" ]; then
+  echo "workflow validate unavailable: missing $cli. Restore it or run 'workflow hook uninstall' from a toolkit checkout." >&2
+  exit 1
+fi
 bash "$cli" validate --no-color
 if [ $? -ge 2 ]; then
-  echo "workflow validate found errors. Fix them, or commit with --no-verify to skip." >&2
+  echo "workflow validate found errors or could not run. Fix them, or commit with --no-verify to skip." >&2
   exit 1
 fi
 exit 0
@@ -1771,8 +1774,14 @@ EOF
 # validate and next live in workflow-core.py beside this script.
 run_core() {
   local core="$BIN_DIR/workflow-core.py"
-  [ -f "$core" ] || die "missing $core; run 'workflow update' from a toolkit checkout ($TOOLKIT_URL)"
-  have_python || die "workflow $1 needs python3 (3.8+) on PATH; install it and retry"
+  [ -f "$core" ] || {
+    printf "Error: missing %s; run 'workflow update' from a toolkit checkout (%s)\n" "$core" "$TOOLKIT_URL" >&2
+    return 2
+  }
+  have_python || {
+    printf 'Error: workflow %s needs python3 (3.8+) on PATH; install it and retry\n' "$1" >&2
+    return 2
+  }
   exec python3 "$core" "$@"
 }
 
