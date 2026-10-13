@@ -15,7 +15,7 @@ Injects conventions, skills, document layouts, and a task scheduling CLI directl
 - **DAG Task Queue & Dependency Tracking**: Complex efforts are broken down via `flow-break` into bite-sized, single-session task files (`.workflow/tasks/<effort>/`), scheduled topologically by `workflow next` based on priority and dependencies.
 - **Observable Verification (§2.1, §8)**: Every task requires an explicit `Check` command. Features and bug fixes must reproduce or fail before changes and pass afterward; unverified deliverables are rejected.
 - **Append-Only Decision Log**: Significant architectural decisions are appended to `.workflow/decisions.md` with five structured fields (`Decided`, `Instead of`, `Because`, `Mine`, `Revisit when`). Git union merge configuration prevents merge conflicts across parallel branches.
-- **Independent Two-Brief Reviews (§7)**: Built-in `workflow-reviewer` agent conducts independent reviews covering both process adherence and code implementation quality.
+- **Independent Two-Brief Reviews (§7)**: Built-in `workflow-reviewer` agent conducts independent reviews covering both process adherence and code implementation quality; `security-reviewer` reviews the boundary closure when the change touches a trust boundary. A round covers one boundary; its fixes are rechecked together.
 
 ---
 
@@ -109,6 +109,7 @@ AGENTS.md                          # Primary agent rules entry point (workflow m
 .agents/
   skills/<name>/SKILL.md           # Implementation steps for the 9 workflow skills
   agents/workflow-reviewer.md      # Reviewer agent briefs (process & quality)
+  agents/security-reviewer.md      # Security brief (trust-boundary closure)
 .workflow/
   bin/workflow                     # Committed CLI executable (Bash)
   bin/workflow-core.py             # Committed validator and queue engine (Python 3 stdlib)

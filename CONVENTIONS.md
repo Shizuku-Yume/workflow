@@ -283,10 +283,10 @@ follow-up work is a new effort instead, with its own spec.
 
 **Pause handoff.** The resuming session never saw this one. Before setting
 `Status: paused`, `## Progress` says: what is done, the next concrete step, open review
-findings, the branch or worktree, and where uncommitted work is (in the tree, or a
-stash named `<effort>/<NN> paused`). Under `local-merge` and `pr`, commit the task file
-alone on its branch so `next` can read it; under `pr`, push it. A next session that
-would need this conversation means the handoff is incomplete.
+findings, the `Review boundary` line, the branch or worktree, and where uncommitted
+work is (in the tree, or a stash named `<effort>/<NN> paused`). Under `local-merge` and
+`pr`, commit the task file alone on its branch so `next` can read it; under `pr`, push
+it. A next session that would need this conversation means the handoff is incomplete.
 
 ---
 
@@ -295,11 +295,14 @@ would need this conversation means the handoff is incomplete.
 Shared by every review path (`flow-verify`, `flow-implement`, `flow-close`, the fast
 paths); skills point here. What to look for lives in the `workflow-reviewer` brief.
 
-**Security pass.** Runs whenever a change touches authentication, authorisation, input
-reaching a query or shell, secrets, file paths, or another trust boundary, on every
-path and every `flow-implement` level. Use a security-review agent if the
-harness has one, else a subagent briefed for it. When it doesn't apply, say so in one
-line.
+**Security pass.** Runs when the change touches a trust boundary: authentication or
+authorisation, credentials, untrusted input reaching a shell, query, path, URL or
+process, a listener or egress, or permission state. Untrusted means outside this
+project's own code and configuration. Review the boundary closure — the changed lines
+and the changed functions' direct callers and callees at those boundaries — not the
+whole change set. Name the boundaries reviewed, or say in one line that none applies.
+Use a `security-reviewer` agent when the harness has one, else a subagent with
+`.agents/agents/security-reviewer.md`.
 
 **The reviewer classifies** each finding `blocking` or `nonblocking`; that label
 stands.
@@ -308,10 +311,22 @@ stands.
 decision entry with `Mine: no`. Declining a nonblocking finding needs a `Mine: yes`
 entry only when the choice qualifies under §1.2.
 
-**Fixes get rechecked.** Keep the reviewed change set identifiable, fix the finding,
-and rerun the affected check. If the fix changes scope or introduces a new risk,
-return to the same reviewer role with that delta. Do not create a separate review
-round for routine changes solely because of line count.
+**The round has a boundary.** A round covers one change set: a comparison point, its
+paths, and the deliverable and trust boundaries it touches. The reviewer names that
+boundary in its report; it goes into `## Progress` as
+`Review boundary: <point> + <paths>; round: N; briefs: A,B,sec; boundaries: <names|none>;
+findings: n blocking / n nonblocking`. A new comparison point — a rebase, a landing, an
+integration merge, a resumed task — starts a new round.
+
+**Inside or outside.** A fix is inside the boundary when the point, the paths and the
+deliverable are unchanged and it adds no caller, sink or trust boundary. Anything else
+is outside and moves the boundary.
+
+**Fixes get rechecked.** Rerun the affected check and the check the finding came from.
+A fix inside the boundary needs no new round. One delta round with the same role,
+batched with every other open finding from that boundary, covers a `blocking` finding
+and any fix that moves the boundary (the security pass re-runs with it) — never a
+nonblocking finding, and never a routine change because of line count.
 
 **Findings are kept.** Each blocking finding and its outcome (fixed, or accepted with
 the decision heading) goes into the task's `## Progress`, so `flow-close` can see

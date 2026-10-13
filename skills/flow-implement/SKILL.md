@@ -98,15 +98,20 @@ Before review, so the review sees them:
 ## 5. Review it
 
 Run the CONVENTIONS §7 security pass when its trigger applies; otherwise say so in
-one line.
+one line. It covers the boundary closure, not the whole change set.
 
 Run `flow-verify` with the task's exact Base commit and task file path. `thorough`:
 then `flow-architect` on the touched area. Append each architect finding you don't
 act on to `.workflow/technical-debt.md` under `## Entries`: `## <concrete symptom>`
 with `Where`, `Added`, `Priority`, `Problem`, `Impact`, `Solution`, `Cost`.
 
-Handle findings per CONVENTIONS §7. If a fix changes what the task delivers, update
-the task file and rerun the affected brief.
+Record the round in `## Progress`: the `Review boundary` line the reports name, and
+the brief statuses and findings.
+
+Handle findings per CONVENTIONS §7: fix this round's findings together and recheck
+once. A new round is for a `blocking` finding or a fix that moves the boundary, and it
+takes every such fix at once. If a fix changes what the task delivers, update the task
+file and rerun the affected brief.
 
 ## 6. Archive, commit, land
 

@@ -102,9 +102,11 @@ easy to bisect. Squash-merge is the fallback. Task work gets no merge commits.
 
 The whole `flow-verify` doesn't rerun after a rebase: the change itself hasn't
 moved. The Check and the real path do, because a rebase can break behaviour
-without a textual conflict. If conflict resolution changed the task's own lines,
-that resolution is a fix: CONVENTIONS §7 decides whether it goes back to the
-reviewer.
+without a textual conflict. A rebase, a landing or an integration merge starts a new
+`Review boundary` record (CONVENTIONS §7): the comparison point becomes
+`git merge-base <main branch> HEAD` and the round number goes up. If conflict
+resolution changed the task's own lines, that resolution is a fix: CONVENTIONS §7
+decides whether it goes back to the reviewer.
 
 ## Protection rules
 

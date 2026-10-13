@@ -68,7 +68,9 @@ requirements. It also reads `.workflow/` for documents, decisions and debt.
 Give each agent the diff commands, untracked file list, commit list, and the task
 file and spec paths; they run the commands themselves. Name the brief in the prompt
 so the agent knows which half of its instructions applies. Their `blocking` /
-`nonblocking` labels stand (CONVENTIONS §7).
+`nonblocking` labels stand (CONVENTIONS §7). Ask each agent to name the boundary it
+reviewed: comparison point, paths, deliverable and trust boundaries. CONVENTIONS §7
+records that line in `## Progress`.
 
 If the named agent isn't available in this harness, use a general-purpose subagent
 with the brief pasted in (`.agents/agents/workflow-reviewer.md`), and say in the
@@ -90,9 +92,13 @@ End with one line: ready or not, and if not, the shortest path. Any `blocked` or
 
 ## 5. Then what
 
-Fix the findings or hand them to the user, per CONVENTIONS §7 (waivers, rechecks
-sized to the fix, findings kept). The reviewed diff must match the change being
-released: if fixes alter scope, update the task and rerun the affected brief.
+Fix the findings or hand them to the user, per CONVENTIONS §7 (waivers, the boundary,
+rechecks sized to the fix, findings kept). One round, one boundary: fix every finding
+this round produced, from both briefs, together, then recheck once. Rerun a brief only
+when a fix moves the boundary — new caller, new file, new trust boundary, changed
+deliverable — and rerun it once for all such fixes. The reviewed diff must match the
+change being released: if fixes alter scope, update the task and rerun the affected
+brief.
 
 Called from `flow-implement` or `flow-close`: return to it for its remaining steps.
 
@@ -102,6 +108,19 @@ Called from `flow-implement` or `flow-close`: return to it for its remaining ste
 
 - **One brief.** Each task was already reviewed for quality when it landed, so run
   brief A only. For a large effort the user may ask for brief B as well.
+- **Reuse the task records.** Each task's `## Progress` holds its `Review boundary`
+  and findings; a task whose boundary is unchanged is already reviewed, so do not
+  rerun its briefs. Open only commits no brief covered, code changed after its task's
+  review, and the assembly checks.
+- **The assembly checks always run**, whatever the task records say:
+  - every spec check ID, pass / fail / not runnable, plus "What it does" and "What it
+    must not do";
+  - the integration diff from the effort's true base — the earliest Base commit, or
+    the merge-base with the main branch — not each slice's own base;
+  - the interfaces and callers between tasks, and generated, config, schema and API
+    compatibility across the whole;
+  - the trust-boundary inventory over the aggregate diff; the CONVENTIONS §7 security
+    pass runs when it is non-empty.
 - **Comparison point:** use the point and effort commit list from `flow-close`
   step 1. Other efforts may have landed since: judge the listed commits, not
   everything in the range.

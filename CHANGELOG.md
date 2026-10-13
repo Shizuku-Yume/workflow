@@ -3,6 +3,23 @@
 What changed in each version and what an existing project has to do about it.
 Usage lives in the README and in `--help`.
 
+## 2.6.4
+
+### Upgrade
+
+Run `npm install --global @shizuku-yume/workflow` to update the global CLI, then `workflow update` in existing projects.
+
+### Changes
+
+- Scope a review round to a boundary: a comparison point, its paths, and the deliverable and trust boundaries. A fix inside the boundary needs no new round; a `blocking` finding or a boundary-moving fix gets one delta round carrying every such fix at once. The reviewer names the boundary and `flow-implement` records it in `## Progress` and the pause handoff (CONVENTIONS §7, §6).
+- Trigger the security pass on a named trust-boundary list instead of any file path, and review the boundary closure rather than the whole change set. Adds the `security-reviewer` agent brief; CONVENTIONS §7 names the agent and the fallback brief.
+- `flow-verify` effort mode reuses each task's `Review boundary` record and runs a fixed assembly checklist (spec checks, the integration diff from the effort's true base, cross-task interfaces, generated/config/schema/API compatibility, the aggregate trust-boundary inventory), instead of re-reviewing tasks that already passed.
+- A rebase, a landing or an integration merge starts a new review round (`merge-strategy.md`).
+
+### Fixes
+
+- `next` reads every branch naming a task, not just the newest, and treats an archive carried by any branch — including an integration branch not named after the task — as finished-not-landed. A stale slice branch no longer masks a task that is already archived elsewhere.
+
 ## 2.6.3
 
 ### Upgrade

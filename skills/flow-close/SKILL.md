@@ -35,7 +35,13 @@ Then use the feature once the way the spec's "What it does" describes, as a user
 
 ## 3. Review the whole
 
-Run `flow-verify` in effort mode (its "Effort mode" section) with the comparison point and commit list from step 1.
+Run `flow-verify` in effort mode (its "Effort mode" section) with the comparison point
+and commit list from step 1: it reuses the tasks' `Review boundary` records and runs
+the assembly checks, without replaying per-task briefs.
+
+A spec may ask for a separate evidence or documentation pass over the assembled whole;
+that pass is an independent invocation, judging the assembly and the evidence, never a
+rerun of an unchanged task brief.
 
 Handle findings per CONVENTIONS §7. A fix that passes as a small task (CONVENTIONS §4) is made here, rechecked, and committed with the close. Anything bigger becomes a task in this effort through `flow-break` amend, and closing waits for it.
 

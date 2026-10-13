@@ -20,7 +20,7 @@ import re
 import subprocess
 import sys
 
-VERSION = "2.6.3"
+VERSION = "2.6.4"
 
 KNOWN_FIELDS = {
     "task", "effort", "task type", "base commit", "base branch", "delivers", "blocked by",
@@ -925,7 +925,7 @@ def strip_remote_prefix(rest, remotes):
 
 
 def task_branches(root):
-    """{task ref: (refname, branch)} for <effort>/<NN>-<slug> branches.
+    """{task ref: [(refname, branch), ...]} for <effort>/<NN>-<slug> branches.
 
     Local branches win over remote ones; among remotes, newer commits win.
     The checked-out branch is skipped because the working tree already shows its task file."""
@@ -950,8 +950,28 @@ def task_branches(root):
         if not m or name == current:
             continue
         ref = task_ref(m.group(1), norm_number(m.group(2)))
-        found.setdefault(ref, (refname, name))
+        found.setdefault(ref, []).append((refname, name))
     return found
+
+
+def all_branch_names(root):
+    """Every local and remote branch name, newest first."""
+    listing = git_out(root, "for-each-ref", "--sort=-committerdate", "--format=%(refname)",
+                      "refs/heads", "refs/remotes")
+    if not listing:
+        return []
+    raw_remotes = (git_out(root, "remote") or "").splitlines()
+    remotes = sorted((r.strip() for r in raw_remotes if r.strip()), key=len, reverse=True)
+    names = []
+    for refname in listing.split():
+        if refname.startswith("refs/heads/"):
+            names.append(refname[len("refs/heads/"):])
+        elif refname.startswith("refs/remotes/"):
+            name = strip_remote_prefix(refname[len("refs/remotes/"):], remotes)
+            if name and name != "HEAD" and not name.endswith("/HEAD"):
+                names.append(name)
+    return names
+
 
 def branch_task_status(root, refname, branch):
     """active | paused | blocked | finished, read from the task file on a branch."""
@@ -1023,11 +1043,19 @@ def cmd_next(args):
     branches = task_branches(root)
     branch_status_cache = {}
     finished_branches = {}
-    for b_ref, (b_refname, b_name) in branches.items():
-        b_status = branch_task_status(root, b_refname, b_name)
-        branch_status_cache[b_ref] = b_status
-        if b_status == "finished":
-            finished_branches[b_ref] = b_name
+    for b_ref, candidates in branches.items():
+        for b_refname, b_name in candidates:
+            b_status = branch_task_status(root, b_refname, b_name)
+            branch_status_cache[(b_ref, b_name)] = b_status
+            if b_status == "finished" and b_ref not in finished_branches:
+                finished_branches[b_ref] = b_name
+    # A task's archive may sit on a branch that is not named after it (an integration
+    # or aggregate branch), so union every branch's done/ tree and record who carries it.
+    union_cache = {}
+    archived_branch = {}
+    for b_name in all_branch_names(root):
+        for carried in branch_archived_tasks(root, b_name, union_cache):
+            archived_branch.setdefault(carried, b_name)
 
     ready, started, stackable = [], [], []
     block_tasks, block_numbers = {}, {}
@@ -1060,10 +1088,14 @@ def cmd_next(args):
 
         # Started here (Status in this tree) or on its own task branch: not ready.
         branch = None
-        if ref in branches:
-            refname, branch = branches[ref]
-            if status not in ("active", "paused", "blocked"):
-                status = branch_status_cache[ref]
+        if status not in ("active", "paused", "blocked"):
+            if ref in finished_branches:
+                status, branch = "finished", finished_branches[ref]
+            elif ref in archived_branch:
+                status, branch = "finished", archived_branch[ref]
+            elif ref in branches:
+                branch = branches[ref][0][1]
+                status = branch_status_cache[(ref, branch)]
         if status in STARTED_ORDER:
             started.append((STARTED_ORDER[status], int(number), ref, title, status, branch, effort))
             if status == "blocked":

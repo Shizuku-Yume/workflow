@@ -15,7 +15,7 @@
 - **依赖拓扑与任务调度（DAG Queue）**：复杂工作通过 `flow-break` 拆解为单会话可交付的独立任务文件（`.workflow/tasks/<effort>/`），通过 `workflow next` 自动按优先级和依赖关系输出就绪任务。
 - **严格的可观测验证（§2.1、§8）**：所有任务均要求具备明确的验证命令（`Check`）。功能与 Bugfix 必须在修改前复现或确认失败、修改后通过验证，严禁无证据交付。
 - **不可逆决策日志（Decisions Log）**：重大技术决策在 `.workflow/decisions.md` 中以结构化要素（`Decided`, `Instead of`, `Because`, `Mine`, `Revisit when`）追加记录。通过 Git union merge 属性杜绝多分支合并冲突。
-- **双重视角独立审查（§7）**：内置 `workflow-reviewer` 审查智能体，分别从交付规范一致性与代码实现质量两个独立维度进行把关。
+- **双重视角独立审查（§7）**：内置 `workflow-reviewer` 审查智能体，分别从交付规范一致性与代码实现质量两个独立维度进行把关；触及信任边界时另有 `security-reviewer` 复核边界闭包。审查以“边界”为一轮，同轮修复一起复审。
 
 ---
 
@@ -109,6 +109,7 @@ AGENTS.md                          # Agent 规则总入口（workflow 标记块�
 .agents/
   skills/<name>/SKILL.md           # 9 个工作流技能实现步骤
   agents/workflow-reviewer.md      # 代码与规范审查 Agent Brief
+  agents/security-reviewer.md      # 信任边界安全复核 Agent Brief
 .workflow/
   bin/workflow                     # 随项目提交的 CLI 入口（Bash 实现）
   bin/workflow-core.py             # 随项目提交的验证与队列引擎（Python 3 标准库）

@@ -449,6 +449,44 @@ class NextTests(Base):
         self.assertEqual([t["number"] for t in data["ready_tasks"]], [3])
         self.assertNotIn("core/03", [t["task"] for t in data["in_progress"]])
 
+    def test_archive_on_a_branch_not_named_for_the_task(self):
+        # An integration branch carries the archive; the task is finished, not in progress.
+        self.p.write(".workflow/tasks/core/01-a.md", task("01", "A", "core"))
+        self.p.write(".workflow/tasks/core/02-b.md", task("02", "B", "core"))
+        self.commit_all("plan")
+        main = subprocess.run(["git", "-C", self.p.root, "symbolic-ref", "--short", "HEAD"],
+                              stdout=subprocess.PIPE, universal_newlines=True).stdout.strip()
+        self.git("checkout", "-q", "-b", "core/09-integration", main)
+        os.makedirs(os.path.join(self.p.root, ".workflow/done/core"), exist_ok=True)
+        self.git("mv", ".workflow/tasks/core/01-a.md", ".workflow/done/core/01-a.md")
+        self.commit_all("archive 01 on the integration branch")
+        self.git("checkout", "-q", main)
+        data = self.p.next()
+        self.assertEqual([t["number"] for t in data["ready_tasks"]], [2])
+        self.assertEqual([(t["task"], t["status"], t["branch"]) for t in data["in_progress"]],
+                         [("core/01", "finished", "core/09-integration")])
+        text = self.p.run("next", "--no-color").stdout
+        self.assertIn("Finished on a branch, not landed yet:\n"
+                      "  core/01 A (branch core/09-integration)", text)
+
+    def test_archive_wins_over_a_newer_branch_for_the_same_task(self):
+        # Two branches name one task; the newer one has no archive and must not mask the other.
+        self.p.write(".workflow/tasks/core/01-a.md", task("01", "A", "core"))
+        self.commit_all("plan")
+        main = subprocess.run(["git", "-C", self.p.root, "symbolic-ref", "--short", "HEAD"],
+                              stdout=subprocess.PIPE, universal_newlines=True).stdout.strip()
+        self.git("checkout", "-q", "-b", "core/01-archive", main)
+        os.makedirs(os.path.join(self.p.root, ".workflow/done/core"), exist_ok=True)
+        self.git("mv", ".workflow/tasks/core/01-a.md", ".workflow/done/core/01-a.md")
+        self.commit_all("archive 01")
+        self.git("checkout", "-q", "-b", "core/01-stale", main)
+        self.git("commit", "-q", "--allow-empty", "-m", "stale slice branch")
+        self.git("checkout", "-q", main)
+        data = self.p.next()
+        self.assertEqual(data["ready_tasks"], [])
+        self.assertEqual([(t["task"], t["status"], t["branch"]) for t in data["in_progress"]],
+                         [("core/01", "finished", "core/01-archive")])
+
     def test_branch_of_a_landed_task_is_ignored(self):
         self.p.write(".workflow/done/core/01-a.md", task("01", "A", "core"))
         self.p.write(".workflow/tasks/core/02-b.md", task("02", "B", "core", blocked="01"))
