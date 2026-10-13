@@ -3,13 +3,26 @@
 What changed in each version and what an existing project has to do about it.
 Usage lives in the README and in `--help`.
 
-## Unreleased
+## 2.6.3
+
+### Upgrade
+
+Run `npm install --global @shizuku-yume/workflow` to update the global CLI, then `workflow update` in existing projects.
+
+### Changes
+
+- Add `workflow hook install --append` to inject a managed pre-commit validation block into an existing hook and remove only that block on `hook uninstall` or `uninstall`.
+- Recognize `Base branch` in task metadata and `next`, surfacing stackable tasks when blockers are finished on unlanded branches and treating blockers archived on a recorded `Base branch` as satisfied.
+- Validate `Priority` and `Status` across all `.workflow/specs/*.md` files even before tasks are broken down, and verify recorded `Base branch` refs.
+- Sort remote task branches by committer date and support multi-slash remote names.
+- Instruct `flow-start` to populate unfilled `.workflow/standards.md` placeholders from repository configs on first run.
 
 ### Fixes
 
 - Let single-tree local tasks switch back to main for landing; with separate
   worktrees, land from main's tree and remove the task tree before its branch.
 - Preserve the original dirty-file record on resume so a task's own unfinished changes are not mistaken for unrelated work.
+- Prepend the managed `AGENTS.md` workflow block to existing content and leave one blank separator line between them during `init` and `update`.
 
 ## 2.6.2
 

@@ -192,6 +192,18 @@ class ValidateTests(Base):
         self.assertIssue(data, "duplicate check field")
         self.assertIssue(data, "invalid effort slug 'Bad_Slug'")
 
+    def test_standalone_spec_and_base_branch_validation(self):
+        self.p.write(".workflow/specs/orphan.md", "**Status:** Bogus\n**Priority:** ultra\n")
+        code, data = self.p.validate()
+        self.assertEqual(code, 1)
+        self.assertIssue(data, "invalid Priority 'ultra'", "WARNING")
+        self.assertIssue(data, "invalid spec Status 'bogus'", "WARNING")
+        self.p.write(".workflow/specs/orphan.md", "**Status:** proposed\n**Priority:** high\n")
+        self.p.write(".workflow/tasks/orphan/01-a.md",
+                     task("01", "A", "orphan", extra="**Base branch:** no-such-branch\n"))
+        code, data = self.p.validate()
+        self.assertEqual(code, 2)
+        self.assertIssue(data, "invalid Base branch 'no-such-branch'")
     def test_decisions_errors(self):
         self.p.write(".workflow/decisions.md", textwrap.dedent("""\
             # Decisions
@@ -444,6 +456,25 @@ class NextTests(Base):
         self.git("branch", "core/01-a")
         data = self.p.next()
         self.assertEqual(([t["number"] for t in data["ready_tasks"]], data["in_progress"]), ([2], []))
+
+    def test_stacked_tasks_and_finished_blocker_branches(self):
+        self.p.write(".workflow/tasks/core/01-a.md", task("01", "A", "core"))
+        self.p.write(".workflow/tasks/core/02-b.md", task("02", "B", "core", blocked="01"))
+        self.commit_all("plan")
+        main = subprocess.run(["git", "-C", self.p.root, "symbolic-ref", "--short", "HEAD"],
+                              stdout=subprocess.PIPE, universal_newlines=True).stdout.strip()
+        self.git("checkout", "-q", "-b", "core/01-a", main)
+        os.makedirs(os.path.join(self.p.root, ".workflow/done/core"), exist_ok=True)
+        self.git("mv", ".workflow/tasks/core/01-a.md", ".workflow/done/core/01-a.md")
+        self.commit_all("archive 01 on branch")
+        self.git("checkout", "-q", main)
+        text = self.p.run("next", "--no-color").stdout
+        self.assertIn("Stackable under pr (blockers finished on branch): core/02 (on core/01-a)", text)
+        # Once Base branch is recorded on task 02, next treats 01 as satisfied on that branch.
+        self.p.write(".workflow/tasks/core/02-b.md",
+                     task("02", "B", "core", blocked="01", extra="**Base branch:** core/01-a\n"))
+        data = self.p.next()
+        self.assertEqual([t["number"] for t in data["ready_tasks"]], [2])
 
     def test_no_ready_tasks_and_no_tasks(self):
         text = self.p.run("next").stdout

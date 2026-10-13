@@ -737,6 +737,35 @@ test_agents_block_force_overwrites() {
   fi
 }
 
+# --- Scenario: AGENTS.md workflow block is prepended with one blank separator ---
+test_agents_block_prepended() {
+  local mode repo start end existing separator
+  for mode in init update; do
+    repo="$TMPDIR/repo_agents_block_prepend_$mode"
+    mkdir -p "$repo"
+    git -C "$repo" init -q
+    git -C "$repo" config user.email "test@example.com"
+    git -C "$repo" config user.name "Test User"
+    printf '# Existing project rules\n\nKeep local conventions.\n' > "$repo/AGENTS.md"
+    git -C "$repo" add AGENTS.md
+    git -C "$repo" commit -q -m initial
+
+    (cd "$repo" && "$WORKFLOW" "$mode" --no-claude >/dev/null 2>&1)
+
+    start="$(grep -nFx '<!-- workflow:start -->' "$repo/AGENTS.md" | cut -d: -f1)"
+    end="$(grep -nFx '<!-- workflow:end -->' "$repo/AGENTS.md" | cut -d: -f1)"
+    existing="$(grep -nFx '# Existing project rules' "$repo/AGENTS.md" | cut -d: -f1)"
+    separator="$(sed -n "$((end + 1))p" "$repo/AGENTS.md")"
+
+    if [ "$start" -eq 1 ] && [ "$existing" -eq $((end + 2)) ] && [ -z "$separator" ] &&
+       grep -qFx 'Keep local conventions.' "$repo/AGENTS.md"; then
+      pass "$mode prepends the AGENTS.md workflow block with one blank separator"
+    else
+      fail "$mode should prepend the AGENTS.md workflow block with one blank separator"
+    fi
+  done
+}
+
 # --- Scenario: dependency cycle detection simple (01 <-> 02) ---
 test_cycle_detection_simple() {
   local repo="$TMPDIR/repo_cycle_simple"
@@ -2000,6 +2029,18 @@ EOF
   printf '#!/bin/sh\nexit 0\n' > "$repo/.git/hooks/pre-commit"
   if (cd "$repo" && "$cli" hook install >/dev/null 2>&1); then fail "hook install should refuse a foreign hook"; else pass "hook install refuses to replace someone else's hook"; fi
   if grep -q 'exit 0' "$repo/.git/hooks/pre-commit" && ! grep -q 'workflow:pre-commit' "$repo/.git/hooks/pre-commit"; then pass "foreign hook left untouched"; else fail "foreign hook was modified"; fi
+  (cd "$repo" && "$cli" hook install --append >/dev/null 2>&1)
+  if grep -q 'workflow:pre-commit:start' "$repo/.git/hooks/pre-commit" && grep -q 'exit 0' "$repo/.git/hooks/pre-commit"; then
+    pass "hook install --append adds managed block to foreign hook"
+  else
+    fail "hook install --append should preserve foreign hook and add managed block"
+  fi
+  (cd "$repo" && "$cli" hook uninstall >/dev/null 2>&1)
+  if [ -f "$repo/.git/hooks/pre-commit" ] && grep -q 'exit 0' "$repo/.git/hooks/pre-commit" && ! grep -q 'workflow:pre-commit' "$repo/.git/hooks/pre-commit"; then
+    pass "hook uninstall removes only the appended block from foreign hook"
+  else
+    fail "hook uninstall should remove only the appended block and keep foreign hook"
+  fi
   (cd "$repo" && "$cli" hook install --force >/dev/null 2>&1)
   (cd "$repo" && "$WORKFLOW" uninstall >/dev/null 2>&1)
   if git -C "$repo" commit --allow-empty -q -m uninstalled >/dev/null 2>&1; then pass "full uninstall leaves no blocking workflow hook"; else fail "full uninstall should leave commits possible without the CLI"; fi
@@ -2122,6 +2163,7 @@ test_map_staleness
 test_draft_statistics
 test_task_heading_mismatch
 test_task_heading_match_ok
+test_agents_block_prepended
 test_agents_block_edit_preserved
 test_agents_block_force_overwrites
 test_cycle_detection_simple

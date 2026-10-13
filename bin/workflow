@@ -24,7 +24,7 @@
 # need no checkout of this toolkit and nothing on PATH.
 set -euo pipefail
 
-VERSION="2.6.2"
+VERSION="2.6.3"
 BIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 KIT="$(cd "$BIN_DIR/.." && pwd)"
 
@@ -35,6 +35,8 @@ VENDORED=0
 if [ ! -d "$KIT/skills" ] && [ "${KIT##*/}" = ".workflow" ]; then VENDORED=1; fi
 TOOLKIT_URL="https://github.com/Shizuku-Yume/workflow"
 HOOK_MARKER="# workflow:pre-commit"
+HOOK_BLOCK_START="# workflow:pre-commit:start"
+HOOK_BLOCK_END="# workflow:pre-commit:end"
 MARKER_START="<!-- workflow:start -->"
 MARKER_END="<!-- workflow:end -->"
 
@@ -897,15 +899,15 @@ install_claude() {
     "$root/.workflow/.claude-block.workflow-managed" "$force"
 }
 
-# Append, replace, or leave alone the marked block in AGENTS.md.
+# Prepend, replace, or leave alone the marked block in AGENTS.md.
 install_agents_block() {
-  install_marked_block "$1" "AGENTS.md" "$2" "$1/.workflow/.agents-block.workflow-managed" "${3:-0}"
+  install_marked_block "$1" "AGENTS.md" "$2" "$1/.workflow/.agents-block.workflow-managed" "${3:-0}" 1
 }
 
-# install_marked_block ROOT FILE SOURCE MARKER FORCE - the same for any file
+# install_marked_block ROOT FILE SOURCE MARKER FORCE PREPEND - the same for any file
 # that carries a workflow:start/end block (AGENTS.md, CLAUDE.md).
 install_marked_block() {
-  local root="$1" name="$2" source="$3" marker="$4" force="${5:-0}"
+  local root="$1" name="$2" source="$3" marker="$4" force="${5:-0}" prepend="${6:-0}"
   local file="$root/$name"
   assert_symlink_safety "$root" "$file"
   assert_symlink_safety "$root" "$marker"
@@ -925,9 +927,20 @@ install_marked_block() {
   read -r starts ends malformed <<< "$marker_state"
 
   if [ "$starts" -eq 0 ] && [ "$ends" -eq 0 ] && [ "$malformed" -eq 0 ]; then
-    printf '\n%s\n' "$block" >> "$file"
-    mark_managed "$source" "$marker"
-    ok "$name (workflow block appended)"
+    if [ "$prepend" = 1 ]; then
+      tmp="$(mktemp)"
+      if ! { printf '%s\n\n' "$block"; cat "$file"; } > "$tmp"; then
+        rm -f "$tmp"
+        die "could not prepare the $name workflow block"
+      fi
+      mv "$tmp" "$file"
+      mark_managed "$source" "$marker"
+      ok "$name (workflow block prepended)"
+    else
+      printf '\n%s\n' "$block" >> "$file"
+      mark_managed "$source" "$marker"
+      ok "$name (workflow block appended)"
+    fi
     return 0
   fi
   if [ "$starts" -ne 1 ] || [ "$ends" -ne 1 ] || [ "$malformed" -ne 0 ]; then
@@ -1659,7 +1672,7 @@ cmd_uninstall() {
   remove_gitattributes "$root"
   local hook; hook="$(hook_path "$root" 2>/dev/null || true)"
   if [ -n "$hook" ] && [ -f "$hook" ] && grep -qF "$HOOK_MARKER" "$hook"; then
-    rm -f "$hook"; ok "removed the pre-commit hook"
+    remove_hook_file_or_block "$hook"
   fi
 
   say ""
@@ -1681,12 +1694,8 @@ hook_path() {
   printf '%s/pre-commit\n' "$dir"
 }
 
-hook_script() {
+hook_body() {
   cat <<'EOF'
-#!/bin/sh
-# workflow:pre-commit - written by `workflow hook install`; remove with
-# `.workflow/bin/workflow hook uninstall`. Validation errors and unavailable
-# validation block the commit; warnings pass.
 root=$(git rev-parse --show-toplevel) || exit 1
 cli="$root/.workflow/bin/workflow"
 if [ ! -f "$cli" ]; then
@@ -1698,24 +1707,114 @@ if [ $? -ge 2 ]; then
   echo "workflow validate found errors or could not run. Fix them, or commit with --no-verify to skip." >&2
   exit 1
 fi
-exit 0
 EOF
 }
 
+hook_script() {
+  cat <<'EOF'
+#!/bin/sh
+# workflow:pre-commit - written by `workflow hook install`; remove with
+# `.workflow/bin/workflow hook uninstall`. Validation errors and unavailable
+# validation block the commit; warnings pass.
+EOF
+  hook_body
+  printf 'exit 0\n'
+}
+
+hook_block() {
+  printf '%s\n' "$HOOK_BLOCK_START"
+  hook_body
+  printf '%s\n' "$HOOK_BLOCK_END"
+}
+
+append_hook_block() {
+  local hook="$1" tmp block_file
+  tmp="$(mktemp)"
+  block_file="$(mktemp)"
+  hook_block > "$block_file"
+  if grep -qxF "$HOOK_BLOCK_START" "$hook" && grep -qxF "$HOOK_BLOCK_END" "$hook"; then
+    awk -v s="$HOOK_BLOCK_START" -v e="$HOOK_BLOCK_END" -v bf="$block_file" '
+      $0 == s {
+        while ((getline line < bf) > 0) print line
+        close(bf)
+        skipping = 1
+        next
+      }
+      $0 == e { skipping = 0; next }
+      !skipping { print }
+    ' "$hook" > "$tmp"
+  else
+    awk -v bf="$block_file" '
+      { lines[NR] = $0 }
+      END {
+        insert_before = 0
+        for (i = NR; i >= 1; i--) {
+          if (lines[i] ~ /^[[:space:]]*$/) continue
+          if (lines[i] ~ /^[[:space:]]*exit([[:space:]]+0)?[[:space:]]*$/) insert_before = i
+          break
+        }
+        for (i = 1; i <= NR; i++) {
+          if (i == insert_before) {
+            while ((getline line < bf) > 0) print line
+            close(bf)
+          }
+          print lines[i]
+        }
+        if (insert_before == 0) {
+          while ((getline line < bf) > 0) print line
+          close(bf)
+        }
+      }
+    ' "$hook" > "$tmp"
+  fi
+  mv "$tmp" "$hook"
+  chmod +x "$hook"
+  rm -f "$block_file"
+}
+
+remove_hook_file_or_block() {
+  local hook="$1"
+  if grep -qxF "$HOOK_BLOCK_START" "$hook" && grep -qxF "$HOOK_BLOCK_END" "$hook"; then
+    local tmp; tmp="$(mktemp)"
+    awk -v s="$HOOK_BLOCK_START" -v e="$HOOK_BLOCK_END" '
+      $0 == s { skipping = 1; next }
+      $0 == e { skipping = 0; next }
+      !skipping { print }
+    ' "$hook" > "$tmp"
+    mv "$tmp" "$hook"
+    ok "removed workflow block from pre-commit hook"
+  else
+    rm -f "$hook"
+    ok "pre-commit hook removed"
+  fi
+}
+
 cmd_hook() {
-  local action="${1:-status}" force=0
+  local action="${1:-status}" force=0 append=0
   [ "$#" -gt 0 ] && shift
   for arg in "$@"; do
-    case "$arg" in --force) force=1 ;; -h|--help) usage; exit 0 ;; *) die "unknown argument: $arg" ;; esac
+    case "$arg" in
+      --force) force=1 ;;
+      --append) append=1 ;;
+      -h|--help) usage; exit 0 ;;
+      *) die "unknown argument: $arg" ;;
+    esac
   done
   local root hook; root="$(project_root)"
   hook="$(hook_path "$root")" || die "not a git repository: $root"
   case "$action" in
     install)
-      if [ -f "$hook" ] && ! grep -qF "$HOOK_MARKER" "$hook" && [ "$force" != 1 ]; then
-        die "$hook already exists and is not ours; add 'bash .workflow/bin/workflow validate --no-color || [ \$? -lt 2 ]' to it, or use --force to replace it"
-      fi
       mkdir -p "$(dirname "$hook")"
+      if [ -f "$hook" ] && [ "$force" != 1 ]; then
+        if [ "$append" = 1 ] || grep -qxF "$HOOK_BLOCK_START" "$hook"; then
+          append_hook_block "$hook"
+          ok "pre-commit hook updated (appended block): $hook"
+          say "Commits are blocked when workflow validate reports errors; warnings pass."
+          return 0
+        elif ! grep -qF "$HOOK_MARKER" "$hook"; then
+          die "$hook already exists and is not ours; use --append to add workflow validate to it, or --force to replace it"
+        fi
+      fi
       hook_script > "$hook"
       chmod +x "$hook"
       ok "pre-commit hook installed: $hook"
@@ -1723,7 +1822,7 @@ cmd_hook() {
       ;;
     uninstall)
       if [ -f "$hook" ] && grep -qF "$HOOK_MARKER" "$hook"; then
-        rm -f "$hook"; ok "pre-commit hook removed"
+        remove_hook_file_or_block "$hook"
       elif [ -f "$hook" ]; then
         warn "kept $hook: not written by workflow"
       else
@@ -1751,7 +1850,7 @@ Setup (from a toolkit checkout):
 
 Anywhere, including the project's own copy, .workflow/bin/workflow:
   workflow doctor              report what is installed and what is missing
-  workflow hook install|uninstall|status [--force]
+  workflow hook install|uninstall|status [--force|--append]
                                pre-commit hook that blocks on validate errors
   workflow validate [--strict] [--format text|json]
                                check task files and the decision log

@@ -20,10 +20,10 @@ import re
 import subprocess
 import sys
 
-VERSION = "2.6.2"
+VERSION = "2.6.3"
 
 KNOWN_FIELDS = {
-    "task", "effort", "task type", "base commit", "delivers", "blocked by",
+    "task", "effort", "task type", "base commit", "base branch", "delivers", "blocked by",
     "files", "read first", "check", "covers", "done when", "priority", "status",
     "started", "finished", "question", "time box", "goal", "scope", "spec",
     "dependencies", "notes",
@@ -31,6 +31,7 @@ KNOWN_FIELDS = {
 FIELD_ALIASES = {"base": "base commit", "type": "task type"}
 TASK_TYPES = ("feature", "bugfix", "spike", "refactor")
 PRIORITY_RANK = {"critical": 0, "urgent": 0, "high": 1, "normal": 2, "low": 3}
+SPEC_STATUSES = ("proposed", "in progress", "done")
 TASK_STATUSES = ("active", "paused", "blocked")
 FINISHED_STATUSES = ("done", "completed", "archived")
 DECISION_FIELDS = ("Decided", "Instead of", "Because", "Mine", "Revisit when")
@@ -541,9 +542,9 @@ class Validator(object):
                            % ", ".join(TASK_STATUSES))
 
     def check_priorities(self):
-        """The spec header's Priority is what `next` ranks by.
+        """The spec header's Priority is what `next` ranks by, and Status tracks lifecycle.
 
-        A typo there silently falls back to normal, so the effort loses its place
+        A typo in Priority silently falls back to normal, so the effort loses its place
         in the queue without a word. A task-level Priority does nothing at all.
         """
         specs = {}
@@ -557,38 +558,66 @@ class Validator(object):
             effort = self.effort[path]
             if effort and effort not in specs:
                 specs[effort] = True
+        specs_dir = os.path.join(self.wf, "specs")
+        if os.path.isdir(specs_dir):
+            for name in sorted(os.listdir(specs_dir)):
+                if name.endswith(".md"):
+                    specs[name[:-3]] = True
         for effort in sorted(specs):
             path = os.path.join(self.wf, "specs", effort + ".md")
             if not os.path.isfile(path):
                 continue
-            value = read_fields(path).get("priority", "").lower()
+            meta = read_fields(path)
+            value = meta.get("priority", "").lower()
             if value and value not in PRIORITY_RANK:
-                self.issue("WARNING", path, 1, "invalid Priority '%s'" % value,
+                self.issue("WARNING", path, meta.line.get("priority", 1),
+                           "invalid Priority '%s'" % value,
                            "Use one of: %s. An unknown value ranks as normal."
                            % ", ".join(sorted(PRIORITY_RANK)))
+            status = meta.get("status", "").lower()
+            if status and status not in SPEC_STATUSES:
+                self.issue("WARNING", path, meta.line.get("status", 1),
+                           "invalid spec Status '%s'" % status,
+                           "Use one of: %s." % ", ".join(SPEC_STATUSES))
 
     def check_bases(self):
-        values = {}
+        commits, branches = {}, {}
         for path in self.files:
             value = self.meta[path].get("base commit").strip()
             if value and value not in ("<commit-sha>", "not-started"):
-                values.setdefault(value, []).append(path)
-        if not values:
+                commits.setdefault(value, []).append(path)
+            branch = self.meta[path].get("base branch").strip()
+            if branch and not (branch.startswith("<") and branch.endswith(">")):
+                branches.setdefault(branch, []).append(path)
+        if not commits and not branches:
             return
         is_git = subprocess.run(["git", "-C", self.root, "rev-parse", "--git-dir"],
                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
-        for value in sorted(values):
+        for value in sorted(commits):
             ok = False
             if is_git:
                 ok = subprocess.run(["git", "-C", self.root, "rev-parse", "--verify", "--quiet",
                                      "--end-of-options", value + "^{commit}"],
                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
             if not ok:
-                for path in values[value]:
+                for path in commits[value]:
                     self.issue(self.sev(path), path, self.line_of(path, "base commit"),
                                "invalid Base commit '%s'" % value,
                                "Use an existing git commit ref, or <commit-sha> for drafts.")
-
+        for branch in sorted(branches):
+            ok = False
+            if is_git:
+                for candidate in (branch, "origin/" + branch):
+                    if subprocess.run(["git", "-C", self.root, "rev-parse", "--verify", "--quiet",
+                                       "--end-of-options", candidate + "^{commit}"],
+                                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0:
+                        ok = True
+                        break
+            if not ok:
+                for path in branches[branch]:
+                    self.issue(self.sev(path), path, self.line_of(path, "base branch"),
+                               "invalid Base branch '%s'" % branch,
+                               "Use an existing blocker branch name, or drop Base branch once rebased.")
     def check_cycles(self, edges):
         state = {}
 
@@ -869,7 +898,7 @@ def spec_check_ids(wf, effort):
 
 # A started task's file lives on its branch until it lands (merge-strategy.md), so
 # `next` reads task branches to tell claimed, paused and blocked tasks from ready ones.
-TASK_BRANCH_RE = re.compile(r"^([a-z0-9]+(?:-[a-z0-9]+)*)/([0-9]+)-(.+)$")
+TASK_BRANCH_RE = re.compile(r"^([a-z0-9]+(?:-[a-z0-9]+)*)/([0-9]+)-([^/]+)$")
 STARTED_ORDER = {"paused": 0, "blocked": 1, "active": 2, "finished": 3}
 
 
@@ -883,31 +912,46 @@ def git_out(root, *args):
     return proc.stdout if proc.returncode == 0 else None
 
 
+def strip_remote_prefix(rest, remotes):
+    """Strip the remote prefix from refs/remotes/<rest>, supporting multi-slash remotes."""
+    for remote in remotes:
+        prefix = remote + "/"
+        if rest.startswith(prefix):
+            return rest[len(prefix):]
+    parts = rest.split("/")
+    if len(parts) >= 3:
+        return "/".join(parts[-2:])
+    return parts[1] if len(parts) == 2 else ""
+
+
 def task_branches(root):
     """{task ref: (refname, branch)} for <effort>/<NN>-<slug> branches.
 
-    Local branches win over remote ones; the checked-out branch is skipped because
-    the working tree already shows its task file."""
-    listing = git_out(root, "for-each-ref", "--format=%(refname)", "refs/heads", "refs/remotes")
+    Local branches win over remote ones; among remotes, newer commits win.
+    The checked-out branch is skipped because the working tree already shows its task file."""
+    listing = git_out(root, "for-each-ref", "--sort=-committerdate",
+                      "--format=%(refname)", "refs/heads", "refs/remotes")
     if not listing:
         return {}
     current = (git_out(root, "symbolic-ref", "-q", "--short", "HEAD") or "").strip()
-    found = {}
+    raw_remotes = (git_out(root, "remote") or "").splitlines()
+    remotes = sorted((r.strip() for r in raw_remotes if r.strip()), key=len, reverse=True)
+    heads, remote_refs = [], []
     for refname in listing.split():
         if refname.startswith("refs/heads/"):
-            name = refname[len("refs/heads/"):]
-        else:
-            parts = refname[len("refs/remotes/"):].split("/", 1)
-            if len(parts) < 2 or parts[1] == "HEAD":
-                continue
-            name = parts[1]
+            heads.append((refname, refname[len("refs/heads/"):]))
+        elif refname.startswith("refs/remotes/"):
+            name = strip_remote_prefix(refname[len("refs/remotes/"):], remotes)
+            if name and name != "HEAD" and not name.endswith("/HEAD"):
+                remote_refs.append((refname, name))
+    found = {}
+    for refname, name in heads + remote_refs:
         m = TASK_BRANCH_RE.match(name)
         if not m or name == current:
             continue
         ref = task_ref(m.group(1), norm_number(m.group(2)))
         found.setdefault(ref, (refname, name))
     return found
-
 
 def branch_task_status(root, refname, branch):
     """active | paused | blocked | finished, read from the task file on a branch."""
@@ -921,6 +965,29 @@ def branch_task_status(root, refname, branch):
     if git_out(root, "cat-file", "-e", "%s:.workflow/done/%s/%s.md" % (refname, effort, rest)) is not None:
         return "finished"
     return "active"
+
+
+def branch_archived_tasks(root, branch, cache):
+    """Set of task refs archived under .workflow/done/ on `branch` (for stacked tasks)."""
+    if branch in cache:
+        return cache[branch]
+    found = set()
+    target_ref = None
+    for candidate in (branch, "origin/" + branch):
+        if git_out(root, "rev-parse", "--verify", "--quiet", "--end-of-options", candidate + "^{commit}") is not None:
+            target_ref = candidate
+            break
+    if target_ref:
+        tree = git_out(root, "ls-tree", "-r", "--name-only", target_ref, ".workflow/done")
+        if tree:
+            for rel in tree.splitlines():
+                parts = rel.split("/")
+                if len(parts) >= 4 and parts[0] == ".workflow" and parts[1] == "done":
+                    m = TASK_FILE_RE.match(parts[-1])
+                    if m:
+                        found.add(task_ref(parts[2], norm_number(m.group(1))))
+    cache[branch] = found
+    return found
 
 
 def cmd_next(args):
@@ -954,10 +1021,19 @@ def cmd_next(args):
         archived.add(task_ref(effort, norm_number(m.group(1))))
 
     branches = task_branches(root)
-    ready, started = [], []
+    branch_status_cache = {}
+    finished_branches = {}
+    for b_ref, (b_refname, b_name) in branches.items():
+        b_status = branch_task_status(root, b_refname, b_name)
+        branch_status_cache[b_ref] = b_status
+        if b_status == "finished":
+            finished_branches[b_ref] = b_name
+
+    ready, started, stackable = [], [], []
     block_tasks, block_numbers = {}, {}
     task_count = blocked_count = waiting = 0
     specs = {}
+    base_archived_cache = {}
 
     def record(blocker, ref, number):
         block_tasks.setdefault(blocker, []).append(ref)
@@ -987,12 +1063,17 @@ def cmd_next(args):
         if ref in branches:
             refname, branch = branches[ref]
             if status not in ("active", "paused", "blocked"):
-                status = branch_task_status(root, refname, branch)
+                status = branch_status_cache[ref]
         if status in STARTED_ORDER:
             started.append((STARTED_ORDER[status], int(number), ref, title, status, branch, effort))
             if status == "blocked":
                 blocked_count += 1
             continue
+
+        base_branch = meta.get("base branch").strip()
+        stacked_done = set()
+        if base_branch and not (base_branch.startswith("<") and base_branch.endswith(">")):
+            stacked_done = branch_archived_tasks(root, base_branch, base_archived_cache)
 
         blocked = False
         raw = meta.get("blocked by")
@@ -1004,11 +1085,13 @@ def cmd_next(args):
                 open_refs = []
                 for token, _ in parse_blockers(raw):
                     target = resolve_ref(token, effort)
-                    if target not in archived and target not in open_refs:
+                    if target not in archived and target not in stacked_done and target not in open_refs:
                         open_refs.append(target)
                 for target in open_refs:
                     record(target, ref, number)
                 blocked = bool(open_refs)
+                if open_refs and all(t in finished_branches for t in open_refs):
+                    stackable.append((ref, [finished_branches[t] for t in open_refs]))
             except BlockerError:
                 blocked = True
                 sys.stderr.write("Warning: %s has malformed Blocked by: %s\n" % (name, raw))
@@ -1022,7 +1105,6 @@ def cmd_next(args):
                 "goal": goal, "check": meta.get("check") or "(not specified)",
                 "start_command": "flow-implement " + ref}
         ready.append((rank, int(number), len(ready), ref, task))
-
     ready.sort(key=lambda item: item[:3])
     started.sort(key=lambda item: (item[0], item[6], item[1]))
     blockers = sorted(block_tasks, key=lambda b: (-len(block_tasks[b]), b.encode("utf-8")))[:5]
@@ -1068,6 +1150,9 @@ def cmd_next(args):
     if waiting:
         out.append("Waiting on dependencies: %d task(s); top blockers: %s\n" % (
             waiting, ", ".join("%s (%d)" % (b, len(block_tasks[b])) for b in blockers)))
+        if stackable:
+            out.append("Stackable under pr (blockers finished on branch): %s\n" % (
+                ", ".join("%s (on %s)" % (r, ", ".join(bs)) for r, bs in stackable)))
     sys.stdout.write("".join(out))
     return 0
 

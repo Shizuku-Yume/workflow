@@ -84,8 +84,8 @@ Run `workflow <command>` via the global CLI or call `.workflow/bin/workflow <com
   Statically validates schemas, field grammar, dependency references, and decision logs across `tasks/`, `done/`, and `specs/`.
 - `workflow doctor`
   Diagnoses repository health, validating managed files, symlink safety, AGENTS markers, glossary integrity, and task dependency cycles.
-- `workflow hook install|uninstall|status [--force]`
-  Manages the Git pre-commit hook that runs validation before commits.
+- `workflow hook install|uninstall|status [--force|--append]`
+  Manages the Git pre-commit hook that runs validation before commits (`--append` adds a managed block to an existing hook).
 - `workflow version`
   Prints current toolkit version.
 

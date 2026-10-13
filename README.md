@@ -84,8 +84,8 @@ workflow hook install
   静态校验所有任务文件（`tasks/` 与 `done/`）、Spec（`specs/`）和决策记录（`decisions.md`）的语法与依赖完整性。
 - `workflow doctor`
   全面诊断工作流安装健康状况，检查受管文件完整性、软链接安全、AGENTS 标记配对、术语表格式及任务依赖死锁。
-- `workflow hook install|uninstall|status [--force]`
-  管理 Git pre-commit 钩子，拦截存在校验错误的代码提交。
+- `workflow hook install|uninstall|status [--force|--append]`
+  管理 Git pre-commit 钩子，拦截存在校验错误的代码提交（`--append` 可向项目已有的钩子追加校验块）。
 - `workflow version`
   显示当前工作流工具版本号。
 
