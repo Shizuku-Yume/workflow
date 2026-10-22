@@ -2133,12 +2133,14 @@ test_doctor_branch_version_drift() {
     fail "doctor should not warn on a clean main: $out"
   fi
 
+  local current
+  current="$(sed -n 's/^version: //p' "$repo/.workflow/.workflow-version")"
   git -C "$repo" checkout -q -b feature
   sed -i 's/^version: .*/version: 2.6.0/' "$repo/.workflow/.workflow-version"
   git -C "$repo" commit -qam "stale workflow"
   status=0
   out="$(cd "$repo" && "$WORKFLOW" doctor 2>&1)" || status=$?
-  if [ "$status" -ne 0 ] && [[ "$out" == *"this tree has workflow 2.6.0, main has 2.7.0: merge main into this branch, or commit the update on main"* ]]; then
+  if [ "$status" -ne 0 ] && [[ "$out" == *"this tree has workflow 2.6.0, main has $current: merge main into this branch, or commit the update on main"* ]]; then
     pass "doctor warns when a branch carries an older workflow than main"
   else
     fail "doctor should report version drift and fail (exit $status): $out"
@@ -2151,7 +2153,7 @@ test_doctor_uncommitted_update() {
   git -C "$repo" branch -M main
   git -C "$repo" add -A
   git -C "$repo" commit -q -m "workflow install"
-  sed -i 's/^version: .*/version: 2.7.1/' "$repo/.workflow/.workflow-version"
+  sed -i 's/^version: .*/version: 99.0.0/' "$repo/.workflow/.workflow-version"
   status=0
   out="$(cd "$repo" && "$WORKFLOW" doctor 2>&1)" || status=$?
   if [ "$status" -ne 0 ] && [[ "$out" == *"the last 'workflow update' is not committed: commit it on main; other branches and worktrees keep the old rules until they merge it"* ]]; then

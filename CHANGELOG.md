@@ -3,6 +3,19 @@
 What changed in each version and what an existing project has to do about it.
 Usage lives in the README and in `--help`.
 
+## 2.7.1
+
+### Upgrade
+
+Run `npm install --global @shizuku-yume/workflow`, then `workflow update` on the main
+branch and commit the result.
+
+### Fixes
+
+- `validate` no longer prints `DeprecationWarning` lines on Python 3.13 and later
+  (positional `maxsplit`/`count` in the decision-log parser). The core tests now fail
+  on any deprecation warning.
+
 ## 2.7.0
 
 ### Upgrade

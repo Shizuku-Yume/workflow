@@ -53,7 +53,8 @@ class Project(object):
     def run(self, *args):
         proc = subprocess.run([sys.executable, CORE] + list(args), cwd=self.root,
                               stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                              universal_newlines=True, env=dict(os.environ, NO_COLOR="1"))
+                              universal_newlines=True,
+                              env=dict(os.environ, NO_COLOR="1", PYTHONWARNINGS="error::DeprecationWarning"))
         return proc
 
     def validate(self, *args):

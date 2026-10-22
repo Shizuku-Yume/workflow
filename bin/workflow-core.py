@@ -20,7 +20,7 @@ import re
 import subprocess
 import sys
 
-VERSION = "2.7.0"
+VERSION = "2.7.1"
 
 KNOWN_FIELDS = {
     "task", "effort", "task type", "base commit", "base branch", "delivers", "blocked by",
@@ -887,7 +887,7 @@ def decision_problems(lines):
             state.update(entry=True, start=number, values={})
             seen, pending = {}, ""
             title = re.sub(r"^##[ \t]+", "", s)
-            date = re.split(r"[ \t]", title, 1)[0]
+            date = re.split(r"[ \t]", title, maxsplit=1)[0]
             if not valid_iso(date) or not DECISION_HEADING_RE.match(title):
                 problems.append((number, "malformed decision heading",
                                  "Use ## ISO-date - title with a valid ISO8601 date or timestamp."))
@@ -897,7 +897,7 @@ def decision_problems(lines):
                 problems.append((number, "decision field outside an entry",
                                  "Add ## ISO-date - title above it."))
             continue
-        v = re.sub(r"^[ \t]*-[ \t]+", "", s.replace("**", ""), 1)
+        v = re.sub(r"^[ \t]*-[ \t]+", "", s.replace("**", ""), count=1)
         key = v.split(":", 1)[0]
         if key in DECISION_FIELDS:
             seen[key] = seen.get(key, 0) + 1
