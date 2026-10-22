@@ -76,6 +76,18 @@ class Base(unittest.TestCase):
     def tearDown(self):
         self.p.close()
 
+    def git(self, *args):
+        subprocess.run(["git", "-C", self.p.root, "-c", "user.email=t@t", "-c", "user.name=t"] + list(args),
+                       check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    def commit_all(self, message):
+        self.git("add", "-A")
+        self.git("commit", "-qm", message)
+
+    def head_short(self, rev="HEAD"):
+        return subprocess.run(["git", "-C", self.p.root, "rev-parse", "--short", rev],
+                              stdout=subprocess.PIPE, universal_newlines=True).stdout.strip()
+
     def messages(self, data, severity=None):
         return [i["message"] for i in data["issues"] if severity in (None, i["severity"])]
 
@@ -324,6 +336,113 @@ class ValidateTests(Base):
         self.assertNotIn("\033[", proc.stdout)
 
 
+    def test_new_archive_unticked_item(self):
+        self.p.write(".workflow/tasks/core/01-a.md", task("01", "A", "core"))
+        self.commit_all("plan")
+        os.remove(os.path.join(self.p.root, ".workflow/tasks/core/01-a.md"))
+        self.p.write(".workflow/done/core/01-a.md", textwrap.dedent("""\
+            # 01: A
+
+            **Effort:** core
+            **Check:** Run the tests.
+            **Blocked by:** None
+
+            ## Progress
+
+            - [x] Wrote it
+            - [ ] Ship it
+            Check after: ran on the final code
+            """))
+        code, data = self.p.validate()
+        self.assertEqual(code, 2)
+        self.assertIssue(data, "archived with an unticked item: Ship it")
+        self.assertIn("Tick it if it is done", data["issues"][0]["suggestion"])
+
+    def test_new_archive_needs_check_after(self):
+        self.p.write(".workflow/tasks/core/01-a.md", task("01", "A", "core"))
+        self.commit_all("plan")
+        os.remove(os.path.join(self.p.root, ".workflow/tasks/core/01-a.md"))
+        body = "# 01: A\n\n**Effort:** core\n**Check:** Run.\n**Blocked by:** None\n"
+        self.p.write(".workflow/done/core/01-a.md", body)
+        code, data = self.p.validate()
+        self.assertEqual(code, 2)
+        self.assertIssue(data, "archived without a Check after record")
+        self.p.write(".workflow/done/core/01-a.md",
+                     body + "\n## Progress\n\nCheck after: ran it on the final code\n")
+        code, data = self.p.validate()
+        self.assertEqual((code, data["issues"]), (0, []))
+
+    def test_new_spike_archive_needs_findings(self):
+        self.p.write(".workflow/tasks/core/01-a.md", task("01", "A", "core"))
+        self.commit_all("plan")
+        os.remove(os.path.join(self.p.root, ".workflow/tasks/core/01-a.md"))
+        body = ("# 01: A\n\n**Effort:** core\n**Task type:** spike\n"
+                "**Check:** Run.\n**Blocked by:** None\n")
+        self.p.write(".workflow/done/core/01-a.md", body)
+        code, data = self.p.validate()
+        self.assertEqual(code, 2)
+        self.assertIssue(data, "spike archived without ## Findings")
+        # A spike needs findings instead of a Check after record.
+        self.p.write(".workflow/done/core/01-a.md", body + "\n## Findings\n\nThe idea holds.\n")
+        code, data = self.p.validate()
+        self.assertEqual((code, data["issues"]), (0, []))
+
+    def test_committed_archive_is_not_rejudged(self):
+        self.p.write(".workflow/tasks/core/01-a.md", task("01", "A", "core"))
+        self.p.write(".workflow/done/core/00-old.md",
+                     "# 00: Old\n\n**Effort:** core\n**Check:** Run.\n"
+                     "**Blocked by:** None\n\n- [ ] never finished\n")
+        self.commit_all("history")
+        os.remove(os.path.join(self.p.root, ".workflow/tasks/core/01-a.md"))
+        code, data = self.p.validate()
+        self.assertEqual((code, data["issues"]), (0, []))
+
+    def test_spec_done_with_an_open_task(self):
+        self.p.write(".workflow/specs/core.md", "# Spec: core\n\n**Status:** done\n")
+        self.p.write(".workflow/tasks/core/01-a.md", task("01", "A", "core"))
+        code, data = self.p.validate()
+        self.assertEqual(code, 2)
+        self.assertIssue(data, "specs/core.md says done but core/01 is still open")
+        issue = [i for i in data["issues"] if "still open" in i["message"]][0]
+        self.assertEqual((issue["file"], issue["line"]), (".workflow/specs/core.md", 3))
+        os.remove(os.path.join(self.p.root, ".workflow/tasks/core/01-a.md"))
+        self.p.write(".workflow/done/core/01-a.md",
+                     "# 01: A\n\n**Effort:** core\n**Check:** Run.\n**Blocked by:** None\n"
+                     "\n## Progress\n\nCheck after: ran on the final code\n")
+        code, data = self.p.validate()
+        self.assertNotIn("still open", " ".join(self.messages(data)))
+        self.assertEqual(code, 0)
+
+    def test_spec_done_needs_acceptance(self):
+        self.git("symbolic-ref", "HEAD", "refs/heads/main")
+        self.p.write("README.md", "root\n")
+        self.commit_all("base")
+        self.p.write(".workflow/specs/core.md", "# Spec: core\n\n**Status:** done\n")
+        code, data = self.p.validate()
+        self.assertEqual(code, 2)
+        self.assertIssue(data, "specs/core.md is marked done without a recorded acceptance")
+        retro = ".workflow/done/core/retrospective.md"
+        self.p.write(retro, "# Retrospective\n\n- **Accepted:** 2026-10-01 by Ada\n")
+        code, data = self.p.validate()
+        self.assertEqual((code, data["issues"]), (0, []))
+        # Every reopening needs a fresh acceptance.
+        self.p.write(retro, "# Retrospective\n\n- **Accepted:** 2026-10-01 by Ada\n\n"
+                            "## Reopened\n\nA bug surfaced.\n")
+        code, data = self.p.validate()
+        self.assertEqual(code, 2)
+        self.assertIssue(data, "without a recorded acceptance")
+        self.p.write(retro, "# Retrospective\n\n- **Accepted:** 2026-10-01 by Ada\n\n"
+                            "## Reopened\n\nA bug surfaced.\n\n"
+                            "**Accepted:** 2026-10-05 by Ada\n")
+        code, data = self.p.validate()
+        self.assertEqual((code, data["issues"]), (0, []))
+        # A spec already done in HEAD is history, not this change's claim.
+        self.commit_all("close")
+        os.remove(os.path.join(self.p.root, retro))
+        code, data = self.p.validate()
+        self.assertNotIn("without a recorded acceptance", " ".join(self.messages(data)))
+
+
 class NextTests(Base):
     def spec(self, effort, priority, goal):
         self.p.write(".workflow/specs/%s.md" % effort, textwrap.dedent("""\
@@ -392,14 +511,6 @@ class NextTests(Base):
                          [("core/04", "blocked", None)])
         text = self.p.run("next", "--no-color").stdout
         self.assertIn("Needs replanning (Status: blocked; flow-break amend):\n  core/04 C (this working tree)", text)
-
-    def git(self, *args):
-        subprocess.run(["git", "-C", self.p.root, "-c", "user.email=t@t", "-c", "user.name=t"] + list(args),
-                       check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-
-    def commit_all(self, message):
-        self.git("add", "-A")
-        self.git("commit", "-qm", message)
 
     def test_started_tasks_are_not_ready(self):
         # Status in this tree: active, paused and blocked tasks are listed, never ready.
@@ -514,6 +625,129 @@ class NextTests(Base):
         data = self.p.next()
         self.assertEqual([t["number"] for t in data["ready_tasks"]], [2])
 
+    def test_tree_header_names_the_tree_and_main_distance(self):
+        self.git("symbolic-ref", "HEAD", "refs/heads/main")
+        self.p.write(".workflow/tasks/core/01-a.md", task("01", "A", "core", extra="**Status:** active\n"))
+        self.commit_all("plan")
+        self.git("checkout", "-q", "-b", "core/01-a")
+        self.p.write(".workflow/tasks/core/02-b.md", task("02", "B", "core"))
+        self.commit_all("branch work")
+        branch_head = self.head_short()
+        self.git("checkout", "-q", "main")
+        self.p.write(".workflow/tasks/core/03-c.md", task("03", "C", "core"))
+        self.commit_all("main work")
+        self.git("checkout", "-q", "core/01-a")
+        data = self.p.next()
+        self.assertEqual(data["tree"], {"branch": "core/01-a", "head": branch_head,
+                                        "main": "main", "behind_main": 1})
+        text = self.p.run("next", "--no-color").stdout
+        self.assertTrue(text.startswith(
+            "Reading core/01-a (%s); main is 1 commit(s) ahead.\n" % branch_head), text)
+        self.git("checkout", "-q", "--detach")
+        text = self.p.run("next", "--no-color").stdout
+        self.assertTrue(text.startswith(
+            "Reading detached HEAD (%s); main is 1 commit(s) ahead.\n" % branch_head), text)
+        self.git("checkout", "-q", "-b", "topic", "main")
+        data = self.p.next()
+        self.assertEqual(data["tree"]["behind_main"], 0)
+        self.assertTrue(self.p.run("next").stdout.startswith(
+            "Reading topic (%s).\n" % data["tree"]["head"]))
+        self.git("checkout", "-q", "main")
+        self.assertFalse(self.p.run("next").stdout.startswith("Reading "))
+        self.assertEqual(self.p.next()["tree"],
+                         {"branch": "main", "head": self.head_short(), "main": "main",
+                          "behind_main": 0})
+
+    def test_landed_on_main_is_reported_and_unblocks(self):
+        self.git("symbolic-ref", "HEAD", "refs/heads/main")
+        self.p.write(".workflow/tasks/core/01-a.md", task("01", "A", "core"))
+        self.p.write(".workflow/tasks/core/02-b.md", task("02", "B", "core", blocked="01"))
+        self.commit_all("plan")
+        self.git("checkout", "-q", "-b", "work")
+        self.git("checkout", "-q", "main")
+        os.makedirs(os.path.join(self.p.root, ".workflow/done/core"), exist_ok=True)
+        self.git("mv", ".workflow/tasks/core/01-a.md", ".workflow/done/core/01-a.md")
+        self.commit_all("land 01")
+        self.git("checkout", "-q", "work")
+        data = self.p.next()
+        self.assertEqual([t["number"] for t in data["ready_tasks"]], [2])
+        self.assertEqual([(t["task"], t["status"], t["branch"]) for t in data["in_progress"]],
+                         [("core/01", "landed", "main")])
+        text = self.p.run("next", "--no-color").stdout
+        self.assertIn("Landed on main, still open in this tree (merge main into this branch):\n"
+                      "  core/01 A (branch main)", text)
+        self.assertNotIn("Finished on a branch", text)
+
+    def test_integration_branch_scoping(self):
+        self.git("symbolic-ref", "HEAD", "refs/heads/main")
+        self.p.write(".workflow/specs/core.md", textwrap.dedent("""\
+            # Spec: core
+
+            **Status:** in progress
+            **Integration branch:** core/integration
+            """))
+        self.p.write(".workflow/tasks/core/01-a.md", task("01", "A", "core"))
+        self.p.write(".workflow/tasks/core/02-b.md", task("02", "B", "core", blocked="01"))
+        self.commit_all("plan")
+        self.git("checkout", "-q", "-b", "core/integration")
+        os.makedirs(os.path.join(self.p.root, ".workflow/done/core"), exist_ok=True)
+        self.git("mv", ".workflow/tasks/core/01-a.md", ".workflow/done/core/01-a.md")
+        self.commit_all("archive 01 on the integration branch")
+
+        # On main the effort is being worked elsewhere: hidden, with one summary line.
+        self.git("checkout", "-q", "main")
+        data = self.p.next()
+        self.assertEqual(data["integrating"], [{"effort": "core", "branch": "core/integration",
+                                                "archived": 1, "open": 1}])
+        self.assertEqual((data["ready_tasks"], data["task_count"], data["blocked_count"]), ([], 0, 0))
+        self.assertEqual(data["in_progress"], [])
+        text = self.p.run("next", "--no-color").stdout
+        self.assertIn("Integrating on another branch (run next there):\n"
+                      "  core on core/integration: 1 archived, 1 open", text)
+
+        # A task branch of the effort sees 01 as landed on B, and B's archive unblocks 02.
+        self.git("checkout", "-q", "-b", "core/02-b", "main")
+        data = self.p.next()
+        self.assertEqual(data["integrating"], [])
+        self.assertEqual([t["number"] for t in data["ready_tasks"]], [2])
+        self.assertEqual([(t["task"], t["status"], t["branch"]) for t in data["in_progress"]],
+                         [("core/01", "landed", "core/integration")])
+        text = self.p.run("next", "--no-color").stdout
+        self.assertIn("Landed on core/integration, still open in this tree "
+                      "(merge core/integration into this branch):", text)
+        self.assertNotIn("Finished on a branch", text)
+
+        # On the integration branch itself the effort is local work, not an integration elsewhere.
+        self.git("checkout", "-q", "core/integration")
+        data = self.p.next()
+        self.assertEqual(data["integrating"], [])
+        self.assertEqual(data["ready_tasks"], [])
+        self.assertEqual([(t["task"], t["status"], t["branch"]) for t in data["in_progress"]],
+                         [("core/02", "active", "core/02-b")])
+
+    def test_duplicate_claims_are_named_last(self):
+        self.git("symbolic-ref", "HEAD", "refs/heads/main")
+        self.p.write(".workflow/tasks/core/01-a.md", task("01", "A", "core"))
+        self.commit_all("plan")
+        self.git("branch", "core/01-first")
+        self.git("branch", "core/01-second")
+        self.git("update-ref", "refs/remotes/origin/core/01-first", "HEAD")
+        data = self.p.next()
+        self.assertEqual(data["duplicate_claims"],
+                         [{"task": "core/01", "branches": ["core/01-first", "core/01-second"]}])
+        text = self.p.run("next", "--no-color").stdout
+        self.assertTrue(text.rstrip().endswith(
+            "Several branches claim one task (keep one; rename retries to attempt/<effort>-<NN>): "
+            "core/01 (2)"), text)
+        # One claim plus a remote copy of the same name is not a duplicate.
+        self.git("branch", "-D", "core/01-second")
+        self.git("update-ref", "-d", "refs/remotes/origin/core/01-first")
+        self.p.write(".workflow/tasks/core/02-b.md", task("02", "B", "core"))
+        self.commit_all("more")
+        self.git("branch", "core/02-b")
+        self.git("update-ref", "refs/remotes/origin/core/02-b", "HEAD")
+        self.assertEqual(self.p.next()["duplicate_claims"], [])
+
     def test_no_ready_tasks_and_no_tasks(self):
         text = self.p.run("next").stdout
         self.assertIn("No tasks found.", text)
@@ -523,8 +757,9 @@ class NextTests(Base):
         self.assertIn("No ready tasks.", text)
         self.assertIn("Waiting on dependencies: 2 task(s); top blockers: core/01 (1), core/02 (1)", text)
         data = self.p.next()
-        self.assertEqual(sorted(data), ["blocked_count", "blockers", "in_progress", "ready_count", "ready_tasks",
-                                        "task_count"])
+        self.assertEqual(sorted(data), ["blocked_count", "blockers", "duplicate_claims",
+                                        "in_progress", "integrating", "ready_count", "ready_tasks",
+                                        "task_count", "tree"])
 
     def test_missing_workflow(self):
         shutil.rmtree(os.path.join(self.p.root, ".workflow"))

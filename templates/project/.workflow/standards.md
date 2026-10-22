@@ -10,7 +10,7 @@ disagrees with CONVENTIONS.md or STYLE.md, this file wins.
 ## What this project is
 
 <One or two sentences. What it does, who uses it. Enough that someone can tell
-whether a change belongs here.>
+whether a change belongs here. Not its progress: that lives in specs and tasks.>
 
 ## Running it
 
@@ -23,6 +23,12 @@ whether a change belongs here.>
 ```
 
 Run the test command before claiming anything works.
+
+Real path: <how to run the product the way a user does, and where test credentials
+or devices come from, so a Check can use the real thing instead of a stand-in.>
+
+Evidence: <where logs, screenshots and receipts go, e.g. `.workflow/evidence/`
+(gitignored) or a directory outside the repository. Never a temporary directory.>
 
 ## Layout
 
@@ -52,6 +58,7 @@ Landing: <direct | local-merge | pr>
 
 How finished work reaches the main branch: `direct` commits on the current branch,
 `local-merge` (the default) lands a branch locally, `pr` through a pull request.
-Several people sharing a remote: use `pr`.
+Several people sharing a remote: use `pr`. An effort that must not land piece by
+piece names an integration branch in its spec header (not under `direct`).
 `.workflow/merge-strategy.md` describes each. Name the main branch here if it is
 neither `main` nor `master`.

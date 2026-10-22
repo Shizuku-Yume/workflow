@@ -175,6 +175,10 @@ test_explicit_archived_cross_effort() {
 **Check:** `true` passes
 **Base commit:** <commit-sha>
 **Blocked by:** None, can start now
+
+## Progress
+
+Check after: `true` passed on the final code
 EOF
 
   cat > "$repo/.workflow/tasks/01-draft.md" <<'EOF'
@@ -1991,7 +1995,8 @@ test_pre_commit_hook() {
 **Blocked by:** None
 EOF
   mkdir -p "$repo/.workflow/done/core"
-  printf '# 02: Old\n\n**Effort:** core\n' > "$repo/.workflow/done/core/02-old.md"
+  printf '# 02: Old\n\n**Effort:** core\n\n## Progress\n\nCheck after: ran on the final code\n' \
+    > "$repo/.workflow/done/core/02-old.md"
   local status=0
   (cd "$repo" && "$cli" validate --no-color >/dev/null 2>&1) || status=$?
   if [ "$status" -eq 1 ]; then pass "hook warning fixture returns validate exit 1"; else fail "hook warning fixture should return validate exit 1, got $status"; fi
@@ -2113,6 +2118,79 @@ test_gitattributes_block() {
   if [[ "$out" == *".gitattributes is missing the workflow union-merge block"* ]]; then pass "doctor reports a missing .gitattributes block"; else fail "doctor should report the missing block: $out"; fi
 }
 
+# --- 2.7: branches must agree on the workflow version ---
+test_doctor_branch_version_drift() {
+  local repo="$TMPDIR/repo_drift" out status
+  setup_repo "$repo"
+  git -C "$repo" branch -M main
+  git -C "$repo" add -A
+  git -C "$repo" commit -q -m "workflow install"
+
+  out="$(cd "$repo" && "$WORKFLOW" doctor 2>&1)" || true
+  if [[ "$out" != *"this tree has workflow"* ]] && [[ "$out" != *"is not committed"* ]]; then
+    pass "doctor is quiet about workflow versions on a clean main"
+  else
+    fail "doctor should not warn on a clean main: $out"
+  fi
+
+  git -C "$repo" checkout -q -b feature
+  sed -i 's/^version: .*/version: 2.6.0/' "$repo/.workflow/.workflow-version"
+  git -C "$repo" commit -qam "stale workflow"
+  status=0
+  out="$(cd "$repo" && "$WORKFLOW" doctor 2>&1)" || status=$?
+  if [ "$status" -ne 0 ] && [[ "$out" == *"this tree has workflow 2.6.0, main has 2.7.0: merge main into this branch, or commit the update on main"* ]]; then
+    pass "doctor warns when a branch carries an older workflow than main"
+  else
+    fail "doctor should report version drift and fail (exit $status): $out"
+  fi
+}
+
+test_doctor_uncommitted_update() {
+  local repo="$TMPDIR/repo_uncommitted" out status
+  setup_repo "$repo"
+  git -C "$repo" branch -M main
+  git -C "$repo" add -A
+  git -C "$repo" commit -q -m "workflow install"
+  sed -i 's/^version: .*/version: 2.7.1/' "$repo/.workflow/.workflow-version"
+  status=0
+  out="$(cd "$repo" && "$WORKFLOW" doctor 2>&1)" || status=$?
+  if [ "$status" -ne 0 ] && [[ "$out" == *"the last 'workflow update' is not committed: commit it on main; other branches and worktrees keep the old rules until they merge it"* ]]; then
+    pass "doctor reports an uncommitted workflow update"
+  else
+    fail "doctor should report the uncommitted update and fail (exit $status): $out"
+  fi
+}
+
+# --- 2.7: update points at the main branch ---
+test_update_branch_guidance() {
+  local repo="$TMPDIR/repo_update_branch" out status
+  setup_repo "$repo"
+  git -C "$repo" branch -M main
+  git -C "$repo" add -A
+  git -C "$repo" commit -q -m "workflow install"
+
+  status=0
+  out="$(cd "$repo" && "$WORKFLOW" update 2>&1)" || status=$?
+  if [ "$status" -eq 0 ] &&
+     [[ "$out" == *"Commit these files on the main branch; other branches and worktrees keep the old rules until they merge or rebase onto it."* ]] &&
+     [[ "$out" != *"not main: commit the update on main first"* ]]; then
+    pass "update asks for a commit on main without warning when already there"
+  else
+    fail "update should point at main and not warn on main (exit $status): $out"
+  fi
+
+  git -C "$repo" checkout -q -b feature
+  status=0
+  out="$(cd "$repo" && "$WORKFLOW" update 2>&1)" || status=$?
+  if [ "$status" -eq 0 ] &&
+     [[ "$out" == *"Commit these files on the main branch; other branches and worktrees keep the old rules until they merge or rebase onto it."* ]] &&
+     [[ "$out" == *"you are on feature, not main: commit the update on main first"* ]]; then
+    pass "update warns when run on a branch other than main"
+  else
+    fail "update should warn on a non-main branch (exit $status): $out"
+  fi
+}
+
 # --- 2.5: removed commands and stale managed copies ---
 test_removed_commands_and_stale_copies() {
   local repo="$TMPDIR/repo_removed" out status cmd
@@ -2190,6 +2268,9 @@ test_claude_adapter
 test_pre_commit_hook
 test_effort_directory_layout
 test_gitattributes_block
+test_doctor_branch_version_drift
+test_doctor_uncommitted_update
+test_update_branch_guidance
 test_removed_commands_and_stale_copies
 
 printf '\nResults: %d passed, %d failed\n' "$passed" "$failed"

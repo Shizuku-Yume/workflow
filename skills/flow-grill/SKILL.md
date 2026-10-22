@@ -19,6 +19,14 @@ CONVENTIONS §0: before asking anything, check whether the code, tests, configs 
 
 List the decisions this work depends on: what it's for, what it must not do, where it plugs into existing code, what shape data takes, how it gets tested, what happens when it fails, what the user sees. Mark each as settled (by the user's message or existing docs), a fact to look up (do it now, step 1), or a real open decision. Only the last group can become questions.
 
+When the work replaces existing behaviour (a port, a migration, a rewrite, a swapped
+engine or library), the old behaviour is part of the requirement. Before deciding
+anything, map it: each user-visible flow and each concept of the old system, its
+counterpart in the new one, and where the two differ. Read the new side's own code
+and docs for its model; don't assume a matching name means a matching concept. Each
+difference is an open decision (keep the old behaviour, adopt the new, or change it),
+and the user usually owns it. The mapped terms go into the glossary.
+
 For expensive choices (infrastructure, architecture shifts, breaking changes, new dependencies), decompose before deciding:
 - Restate the problem without naming a solution.
 - List the hard constraints.

@@ -13,7 +13,9 @@
 - **项目本地化（Project-Local）**：所有规范、技能、模板与调度工具均拷贝并提交至仓库根目录（`.workflow/`、`.agents/`，以及可选的 `.claude/`）。任何克隆该仓库的协作者、CI 或云端智能体无需在全局环境安装依赖或配置 PATH，即可获得完全一致的工作流。
 - **事实与证据先于提问（§0、§1）**：智能体在打扰用户前，必须自主在代码库中检索证据（模式、现有行为、接口与配置）；仅当涉及用户决策所有权（目标、偏好、范围、无法逆转的权衡）时才批量向用户提问。
 - **依赖拓扑与任务调度（DAG Queue）**：复杂工作通过 `flow-break` 拆解为单会话可交付的独立任务文件（`.workflow/tasks/<effort>/`），通过 `workflow next` 自动按优先级和依赖关系输出就绪任务。
-- **严格的可观测验证（§2.1、§8）**：所有任务均要求具备明确的验证命令（`Check`）。功能与 Bugfix 必须在修改前复现或确认失败、修改后通过验证，严禁无证据交付。
+- **严格的可观测验证（§2.1、§8）**：所有任务均要求具备明确的验证命令（`Check`）。功能与 Bugfix 必须在修改前复现或确认失败、修改后通过验证，严禁无证据交付。针对 fixture 或 mock 的检查只证明替身本身；依赖真实服务的行为要对真实服务检查。
+- **真实路径验收（§6）**：`flow-close` 在将要交付的构建上重跑全部 spec 检查，并像用户一样走一遍主流程。只有用户明确同意后 Effort 才算完成，并在复盘中记录 `**Accepted:**`。
+- **并行与集成分支（§9）**：并行任务各用独立 worktree。不能逐个落地的 Effort 在 spec 中声明集成分支，任务先落到集成分支，收尾时整体落地到 main。把任务委派给子代理时，验证责任仍属于归档该任务的会话。
 - **不可逆决策日志（Decisions Log）**：重大技术决策在 `.workflow/decisions.md` 中以结构化要素（`Decided`, `Instead of`, `Because`, `Mine`, `Revisit when`）追加记录。通过 Git union merge 属性杜绝多分支合并冲突。
 - **双重视角独立审查（§7）**：内置 `workflow-reviewer` 审查智能体，分别从交付规范一致性与代码实现质量两个独立维度进行把关；触及信任边界时另有 `security-reviewer` 复核边界闭包。审查以“边界”为一轮，同轮修复一起复审。
 
@@ -79,11 +81,11 @@ workflow hook install
 ### 日常调度与校验
 
 - `workflow next [--format text|json]`
-  分析当前任务依赖拓扑，按优先级输出最多 5 个可立即执行的就绪任务，同时展示处于暂停中（paused）或阻塞（blocked）状态的任务。
+  分析当前任务依赖拓扑，按优先级输出最多 5 个可立即执行的就绪任务，同时展示处于暂停中（paused）或阻塞（blocked）状态的任务。不在 main 上时会说明读取的分支和 main 领先的提交数；列出已在 main 落地但本树仍未归档的任务，把在其他分支集成的 Effort 显示为一行，并指出被多个分支认领的任务。
 - `workflow validate [--strict] [--format text|json]`
-  静态校验所有任务文件（`tasks/` 与 `done/`）、Spec（`specs/`）和决策记录（`decisions.md`）的语法与依赖完整性。
+  静态校验所有任务文件（`tasks/` 与 `done/`）、Spec（`specs/`）和决策记录（`decisions.md`）的语法与依赖完整性。正在归档的任务必须勾完所有清单项并记录 `Check after:`；Spec 在仍有未完成任务、或未记录用户验收时不能标记为 done。
 - `workflow doctor`
-  全面诊断工作流安装健康状况，检查受管文件完整性、软链接安全、AGENTS 标记配对、术语表格式及任务依赖死锁。
+  全面诊断工作流安装健康状况，检查受管文件完整性、软链接安全、AGENTS 标记配对、术语表格式及任务依赖死锁。当前分支的工作流版本与 main 不一致、或上次 update 未提交时给出警告。
 - `workflow hook install|uninstall|status [--force|--append]`
   管理 Git pre-commit 钩子，拦截存在校验错误的代码提交（`--append` 可向项目已有的钩子追加校验块）。
 - `workflow version`
@@ -94,7 +96,7 @@ workflow hook install
 - `workflow init [--force] [--claude|--no-claude]`
   将工作流骨架、规则文档与 CLI 复制到当前项目。
 - `workflow update [--force] [--claude|--no-claude]`
-  在工具链版本升级后，重新同步受管技能、规则模板及项目内 CLI，保留用户自定义内容。
+  在工具链版本升级后，重新同步受管技能、规则模板及项目内 CLI，保留用户自定义内容。结果需提交到 main：其他分支和 worktree 合并 main 之前仍使用旧规则。
 - `workflow uninstall`
   安全清理项目内的工作流受管文件，不损伤用户的业务代码与未清理的项目文档。
 

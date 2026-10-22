@@ -58,8 +58,13 @@ One entry per real alternative:
 ## How we will know it works
 Checks that prove behavior, each with an ID. Tasks list the IDs they make pass
 in `Covers`; `flow-close` runs all of them against the finished effort.
-- **W1.** <what command, what result>
+- **W1.** <what command or user step, what result someone can observe>
 - **W2.** ...
+
+At least one check walks the main use from "What it does" end to end, through the
+real entry point with real dependencies; name any stand-in (fixture, mock,
+recorded reply) a check still uses. Work that replaces existing behaviour adds a
+check that the main flows behave as before, except where this spec says otherwise.
 
 Also:
 - What's tested at which level, and why that level.
@@ -96,7 +101,8 @@ Before presenting, verify:
 - "What this is for" stands alone as a problem statement
 - "What it does" describes observable behavior
 - "How it is built" names modules, boundaries, data shapes
-- "How we will know it works" has runnable checks, each with an ID
+- "How we will know it works" has runnable checks, each with an ID, and one walks
+  the main use on the real path
 - No duplicate facts across sections, no contradictions (the latest decision wins)
 - Terms match `.workflow/glossary.md` or are newly added
 - Decisions the spec relies on cite their entry as `decisions.md: <date> - <title>`

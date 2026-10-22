@@ -3,6 +3,96 @@
 What changed in each version and what an existing project has to do about it.
 Usage lives in the README and in `--help`.
 
+## 2.7.0
+
+### Upgrade
+
+Run `npm install --global @shizuku-yume/workflow`, then in each project, on the main
+branch with a clean tree:
+
+```sh
+workflow update
+git add .workflow .agents AGENTS.md && git commit   # plus .claude CLAUDE.md if used
+```
+
+Then merge the main branch into every branch and worktree still in use: each tree
+runs the rules it has checked out, so an uncommitted or unmerged update reaches
+nobody else. `doctor` now says when a branch runs a different version than main.
+
+- **`validate` may report new errors**, each on a real inconsistency:
+  - a task file being archived (in `done/` but not yet in `HEAD`) with an unticked
+    checklist item, or without `Check after:` (a spike: without `## Findings`);
+  - a spec just set to `done` whose retrospective has no `**Accepted:**` line (one
+    more than its `## Reopened` sections);
+  - a spec that says `done` while a task of its effort is still under `tasks/`. This
+    one can show up in old projects: set the spec back to `in progress` or archive
+    the task.
+
+  Archives already committed are never re-judged.
+- `standards.md` is yours, so `update` leaves it alone. The template gained two
+  lines worth copying: `Real path:` (how to run the product as a user does, and
+  where test credentials come from) and `Evidence:` (where receipts go).
+
+### Changes
+
+- **Proof runs on the real path.** A Check proves what it runs against; one that
+  uses a fixture, mock or recorded reply says so, and behaviour that depends on a
+  real service is checked against it (CONVENTIONS §2.1). A spec has at least one
+  check that walks the main use end to end. The reviewer brief treats stand-in-only
+  evidence as missing.
+- **Closing an effort reruns its checks on what ships.** `flow-close` runs every spec
+  check on the landing branch's head, built the way a user gets it; task Checks and
+  earlier receipts were taken on the pieces and don't count. The demo goes through
+  the real entry point.
+- **Only the user accepts an effort.** Passing checks are not acceptance. The spec
+  stays `in progress` until the user says yes, recorded as `**Accepted:**` in the
+  retrospective; anything short of it is reported as what it is (CONVENTIONS §6).
+- **Replacing behaviour starts with a map of it.** For a port, migration, rewrite or
+  engine swap, `flow-grill` first maps each old flow and concept to its counterpart
+  and treats every difference as an open decision; the spec adds a check that the
+  main flows still behave as before.
+- **Delegation keeps the proof with the task** (new CONVENTIONS §9). Whoever
+  archives a task has run its Check before and after, the real path and the review;
+  a subagent told to skip checks builds a piece. No task archives on the promise
+  that a later gate checks it. Briefs name the absolute worktree, and parallel
+  subagents share neither a tree nor the product's runtime state.
+- **One place for each state.** Task state in the task file, effort state in the
+  spec header, what's next from `next`; other documents link instead of restating,
+  and superseded plans leave the spec. Status answers lead with done or not and
+  what is left (STYLE).
+- **Integration branches.** An effort that can't land piece by piece names
+  `**Integration branch:**` in its spec header. `flow-break` cuts it after the plan
+  commit; task branches start from it and land on it; the main branch is merged in,
+  never rebased; `flow-close` runs there and lands it on main by fast-forward or one
+  merge commit, never by replacing main's tree (`merge-strategy.md`).
+- **Landing rules close the gaps that let work drift.** A landing needs a clean
+  tree: stop and ask instead of routing work around unclaimed changes. One task,
+  one branch; restarts go through `attempt/<effort>-<NN>`. Worktrees live beside
+  the repository, never in a temporary directory. Evidence goes where
+  `standards.md` says, one current receipt per Check.
+- **Archiving needs a finished task.** Every checklist item is ticked, or deleted
+  with the reason in `## Progress`.
+- **Speed cuts repetition, not proof.** An instruction to go faster drops reruns of
+  unchanged checks, re-reviews and replayed history; skipping a task's Check or the
+  real-path run needs the user to name it (CONVENTIONS Precedence).
+- `flow-break` cuts the first task of a multi-module effort as a thin end-to-end
+  slice, and treats a task with many blockers as a gate that checks the whole.
+- After a compaction or resume, reread `next` and the active task file before acting.
+
+### CLI
+
+- `next` names the branch and commit it read when that is not the main branch, and
+  how far main is ahead. It lists tasks already landed on main but still open in
+  this tree, shows an effort integrating on another branch as one line (run `next`
+  there for its tasks), and names tasks that several branches claim. JSON gains
+  `tree`, `integrating` and `duplicate_claims`.
+- `validate` checks archive completeness, a done spec with an open task, and a
+  spec marked done without a recorded acceptance (see Upgrade).
+- `doctor` warns when this branch's workflow version differs from the main
+  branch's, and when the last `update` is not committed.
+- `update` ends by saying to commit on the main branch, and warns when run on
+  another branch.
+
 ## 2.6.4
 
 ### Upgrade

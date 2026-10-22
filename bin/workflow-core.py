@@ -20,13 +20,13 @@ import re
 import subprocess
 import sys
 
-VERSION = "2.6.4"
+VERSION = "2.7.0"
 
 KNOWN_FIELDS = {
     "task", "effort", "task type", "base commit", "base branch", "delivers", "blocked by",
     "files", "read first", "check", "covers", "done when", "priority", "status",
     "started", "finished", "question", "time box", "goal", "scope", "spec",
-    "dependencies", "notes",
+    "dependencies", "notes", "integration branch",
 }
 FIELD_ALIASES = {"base": "base commit", "type": "task type"}
 TASK_TYPES = ("feature", "bugfix", "spike", "refactor")
@@ -49,6 +49,9 @@ NONE_RE = re.compile(r"^none(\s*,\s*can\s+start\s+now)?$")
 QUALIFIED_REF_RE = re.compile(r"^([a-z0-9]+(-[a-z0-9]+)*)/([0-9]+)$")
 BARE_REF_RE = re.compile(r"^([0-9]+)$")
 SPEC_CHECK_RE = re.compile(r"^[-*]\s+\*\*([A-Za-z][A-Za-z0-9_-]*[0-9])\.\*\*")
+UNTICKED_RE = re.compile(r"^[-*]\s+\[ \]\s*(.*)$")
+ACCEPTED_RE = re.compile(r"^\s*(?:[-*]\s+)?(?:\*\*)?Accepted:(?:\*\*)?\s*\S")
+REOPENED_RE = re.compile(r"^\s*##\s+Reopened\s*:?\s*$", re.IGNORECASE)
 
 
 # ---------------------------------------------------------------- helpers
@@ -122,6 +125,55 @@ def strip_comments(line, in_comment):
                 return before, True
         else:
             return line, False
+
+
+def split_text(text):
+    """Lines of git output, split like read_lines (no trailing newline, no CR)."""
+    lines = text.split("\n")
+    if lines and lines[-1] == "":
+        lines.pop()
+    return [line[:-1] if line.endswith("\r") else line for line in lines]
+
+
+def git_result(root, *args):
+    """(ok, stdout) of a git command run in root."""
+    try:
+        proc = subprocess.run(["git", "-C", root] + list(args), stdout=subprocess.PIPE,
+                              stderr=subprocess.DEVNULL, universal_newlines=True)
+    except OSError:
+        return False, ""
+    return proc.returncode == 0, proc.stdout
+
+
+def visible_lines(lines):
+    """(lineno, line) outside fenced code blocks and HTML comments."""
+    shown = []
+    in_fence = in_comment = False
+    for lineno, line in enumerate(lines, 1):
+        if FENCE_RE.match(line):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+        line, in_comment = strip_comments(line, in_comment)
+        shown.append((lineno, line))
+    return shown
+
+
+def section_has_content(shown, heading):
+    """True when a `## heading` section has at least one non-heading text line."""
+    inside = False
+    for _, line in shown:
+        text = line.strip()
+        m = H2_RE.match(text)
+        if m:
+            inside = m.group(1).strip().rstrip(":").strip().lower() == heading
+            continue
+        if text.startswith("#"):
+            continue
+        if inside and text:
+            return True
+    return False
 
 
 class Meta(object):
@@ -345,6 +397,7 @@ class Validator(object):
         self.dir_effort = {}
         self.index = {}
         self.active = set()
+        self.tasks_dir = os.path.join(self.wf, "tasks") + os.sep
         self.done_dir = os.path.join(self.wf, "done") + os.sep
         self.lines_cache = {}
 
@@ -385,6 +438,9 @@ class Validator(object):
         self.check_covers()
         self.check_bases()
         self.check_cycles(edges)
+        self.check_new_archives()
+        self.check_spec_done_with_open_tasks()
+        self.check_spec_acceptance()
         self.check_decisions()
 
     def collect(self):
@@ -639,6 +695,106 @@ class Validator(object):
             if state.get(node, 0) == 0:
                 visit(node, [node])
 
+    def lines(self, path):
+        if path not in self.lines_cache:
+            self.lines_cache[path] = read_lines(path)
+        return self.lines_cache[path]
+
+    def head_exists(self):
+        ready, _ = git_result(self.root, "rev-parse", "--verify", "--quiet", "HEAD^{commit}")
+        return ready
+
+    def check_new_archives(self):
+        """Judge archives made in this change; committed history is never re-judged.
+
+        A task moves to done/ with its checkboxes ticked and a record of the Check
+        run. Only paths absent from HEAD's tree are checked, so an old archive that
+        predates the rule (or a checkout of one) stays quiet.
+        """
+        if not self.head_exists():
+            return
+        ready, listing = git_result(self.root, "ls-tree", "-r", "--name-only", "HEAD", "--",
+                                    ".workflow/done")
+        if not ready:
+            return
+        committed = set(listing.splitlines())
+        unticked_suggestion = ("Tick it if it is done; otherwise finish it, or delete it "
+                               "and say in ## Progress why it no longer applies.")
+        for path in self.files:
+            rel = self.rel(path)
+            if not rel.startswith(".workflow/done/") or rel in committed:
+                continue
+            shown = visible_lines(self.lines(path))
+            for lineno, line in shown:
+                m = UNTICKED_RE.match(line.strip())
+                if m:
+                    item = m.group(1).strip()
+                    if len(item) > 60:
+                        item = item[:57] + "..."
+                    self.issue("ERROR", path, lineno,
+                               "archived with an unticked item: %s" % item, unticked_suggestion)
+            if self.meta[path].get("task type").strip().lower() == "spike":
+                if not section_has_content(shown, "findings"):
+                    self.issue("ERROR", path, 1, "spike archived without ## Findings",
+                               "Record what the spike found under ## Findings.")
+            elif not any("check after" in line.lower() for _, line in shown):
+                self.issue("ERROR", path, 1, "archived without a Check after record",
+                           "Run the Check on the final code and record `Check after:` in ## Progress.")
+
+    def specs(self):
+        """(effort, path, meta) for every spec file, sorted by effort."""
+        specs_dir = os.path.join(self.wf, "specs")
+        found = []
+        if not os.path.isdir(specs_dir):
+            return found
+        for name in sorted(os.listdir(specs_dir)):
+            path = os.path.join(specs_dir, name)
+            if name.endswith(".md") and os.path.isfile(path):
+                found.append((name[:-3], path, read_fields(path)))
+        return found
+
+    def check_spec_done_with_open_tasks(self):
+        """A done spec whose effort still has a task under tasks/ was closed too early."""
+        for effort, path, meta in self.specs():
+            if meta.get("status").strip().lower() != "done":
+                continue
+            open_paths = sorted(p for p in self.files
+                                if p.startswith(self.tasks_dir) and self.effort.get(p) == effort)
+            if not open_paths:
+                continue
+            number = self.number[open_paths[0]]
+            self.issue("ERROR", path, meta.line.get("status", 1),
+                       "specs/%s.md says done but %s is still open"
+                       % (effort, task_ref(effort, number)),
+                       "Set the spec back to in progress (CONVENTIONS §6), or archive the task.")
+
+    def check_spec_acceptance(self):
+        """A spec that turns done in this change needs the user's acceptance on record.
+
+        flow-close writes one `**Accepted:**` line per acceptance, and a reopening
+        needs a fresh one, so the count must cover 1 + the number of ## Reopened
+        headings. A spec already done in HEAD is history and stays quiet.
+        """
+        if not self.head_exists():
+            return
+        for effort, path, meta in self.specs():
+            if meta.get("status").strip().lower() != "done":
+                continue
+            ready, text = git_result(self.root, "show", "HEAD:.workflow/specs/%s.md" % effort)
+            if ready and read_fields(path, split_text(text)).get("status").strip().lower() == "done":
+                continue
+            required, accepted = 1, 0
+            retro = os.path.join(self.done_dir, effort, "retrospective.md")
+            if os.path.isfile(retro):
+                lines = read_lines(retro)
+                required += sum(1 for line in lines if REOPENED_RE.match(line))
+                accepted = sum(1 for line in lines if ACCEPTED_RE.match(line))
+            if accepted < required:
+                self.issue("ERROR", path, meta.line.get("status", 1),
+                           "specs/%s.md is marked done without a recorded acceptance" % effort,
+                           "flow-close records `**Accepted:** <date> by <name>` in "
+                           "done/%s/retrospective.md once the user accepts." % effort)
+
     def check_decisions(self):
         path = os.path.join(self.wf, "decisions.md")
         if not os.path.isfile(path):
@@ -810,11 +966,19 @@ their effort goal and Check preview. Efforts rank by the **Priority:** of
 .workflow/specs/<effort>.md: critical, high, normal (default), low; ties sort
 by task number.
 
-Started tasks are listed above them, never as ready: paused, needing replanning
-(Status: blocked), in progress, or finished on a branch but not landed. A task
-counts as started when its file in this tree has a Status, or when a task branch
-<effort>/<NN>-<slug> exists locally or on a remote (under pr, git fetch first);
-the branch's copy of the task file gives its Status.
+On a branch, the first line names the tree and how far behind main it is. A
+task archived on main but still present here is listed as landed: merge main.
+An effort whose spec declares **Integration branch:** B lands on B instead:
+on B or its task branches, B's archives count as landed; on any other branch
+the effort is reported under "Integrating on another branch" and its tasks
+are neither ready nor counted.
+
+Started tasks are listed above the ready ones, never as ready: paused, needing
+replanning (Status: blocked), in progress, landed, or finished on a branch but
+not landed. A task counts as started when its file in this tree has a Status,
+or when a task branch <effort>/<NN>-<slug> exists locally or on a remote
+(under pr, git fetch first); the branch's copy of the task file gives its
+Status. Branches that all claim one task are named last.
 
 Options:
   --format TYPE  Output text (default) or JSON
@@ -899,7 +1063,7 @@ def spec_check_ids(wf, effort):
 # A started task's file lives on its branch until it lands (merge-strategy.md), so
 # `next` reads task branches to tell claimed, paused and blocked tasks from ready ones.
 TASK_BRANCH_RE = re.compile(r"^([a-z0-9]+(?:-[a-z0-9]+)*)/([0-9]+)-([^/]+)$")
-STARTED_ORDER = {"paused": 0, "blocked": 1, "active": 2, "finished": 3}
+STARTED_ORDER = {"paused": 0, "blocked": 1, "active": 2, "landed": 3, "finished": 4}
 
 
 def git_out(root, *args):
@@ -1010,6 +1174,71 @@ def branch_archived_tasks(root, branch, cache):
     return found
 
 
+def current_branch(root):
+    """The checked-out branch, or None on a detached HEAD."""
+    name = (git_out(root, "symbolic-ref", "-q", "--short", "HEAD") or "").strip()
+    return name or None
+
+
+def main_branch(root):
+    """`main` if it exists, else `master`, else None."""
+    for name in ("main", "master"):
+        if git_out(root, "rev-parse", "--verify", "--quiet", "--end-of-options",
+                   "refs/heads/" + name) is not None:
+            return name
+    return None
+
+
+def resolve_branch(root, name):
+    """The refname that resolves `name` locally or as origin/`name`, or None."""
+    for candidate in (name, "origin/" + name):
+        if git_out(root, "rev-parse", "--verify", "--quiet", "--end-of-options",
+                   candidate + "^{commit}") is not None:
+            return candidate
+    return None
+
+
+def tree_info(root):
+    """Where this working tree sits relative to the main branch."""
+    branch = current_branch(root)
+    head = (git_out(root, "rev-parse", "--short", "HEAD") or "").strip() or None
+    main = main_branch(root)
+    behind = 0
+    if main and branch != main and head:
+        count = (git_out(root, "rev-list", "--count", "HEAD.." + main) or "").strip()
+        if count.isdigit():
+            behind = int(count)
+    return {"branch": branch, "head": head, "main": main, "behind_main": behind}
+
+
+def tree_header(tree):
+    """The first `next` line: which tree is being read and how stale it is."""
+    main = tree["main"]
+    if not main or tree["branch"] == main or not tree["head"]:
+        return ""
+    label = tree["branch"] or "detached HEAD"
+    if tree["behind_main"]:
+        return "Reading %s (%s); %s is %d commit(s) ahead.\n" % (
+            label, tree["head"], main, tree["behind_main"])
+    return "Reading %s (%s).\n" % (label, tree["head"])
+
+
+def branch_effort_counts(root, ref, effort):
+    """(archived, open) task-file counts for one effort in a branch's tree."""
+    counts = []
+    for area in ("done", "tasks"):
+        total = 0
+        tree = git_out(root, "ls-tree", "-r", "--name-only", ref, "--",
+                       ".workflow/%s/%s" % (area, effort))
+        for rel in (tree or "").splitlines():
+            parts = rel.split("/")
+            if (len(parts) >= 4 and parts[0] == ".workflow" and parts[1] == area
+                    and parts[2] == effort and TASK_FILE_RE.match(parts[-1])):
+                total += 1
+        counts.append(total)
+    return counts[0], counts[1]
+
+
 def cmd_next(args):
     opts, code = parse_common(args, NEXT_USAGE, ())
     if code is not None:
@@ -1021,12 +1250,16 @@ def cmd_next(args):
         sys.stderr.write("Error: no .workflow directory at %s; run 'workflow init' first\n" % root)
         return 1
     as_json = opts["format"] == "json"
+    tree = tree_info(root)
+    header = tree_header(tree)
     if not os.path.isdir(tasks_dir):
         if as_json:
-            sys.stdout.write('{"ready_count":0,"task_count":0,"blocked_count":0,'
-                             '"ready_tasks":[],"blockers":[]}\n')
+            out = {"ready_count": 0, "task_count": 0, "blocked_count": 0, "ready_tasks": [],
+                   "blockers": [], "in_progress": [], "tree": tree, "integrating": [],
+                   "duplicate_claims": []}
+            sys.stdout.write(json.dumps(out, ensure_ascii=False, separators=(",", ":")) + "\n")
         else:
-            sys.stdout.write("No tasks found (tasks directory is missing).\n")
+            sys.stdout.write(header + "No tasks found (tasks directory is missing).\n")
         return 0
 
     # Blockers archived under done/ are finished and never block.
@@ -1040,6 +1273,48 @@ def cmd_next(args):
             continue
         archived.add(task_ref(effort, norm_number(m.group(1))))
 
+    # Archived on main while this tree still has the task file: landed, merge main.
+    current = tree["branch"]
+    main = tree["main"]
+    landed_main = set()
+    if main and current != main:
+        landed_main = branch_archived_tasks(root, main, {})
+        archived |= landed_main
+
+    # An effort with an integration branch runs its tasks against that branch. On the
+    # branch (or one of its task branches) its archives count as landed; elsewhere the
+    # effort is being worked in another checkout and must not be handed out here.
+    hidden_efforts = set()
+    integrating = []
+    integration_landed = {}
+    skip_branches = set()
+    integration_cache = {}
+    specs_dir = os.path.join(wf, "specs")
+    if os.path.isdir(specs_dir):
+        for name in sorted(os.listdir(specs_dir)):
+            path = os.path.join(specs_dir, name)
+            if not name.endswith(".md") or not os.path.isfile(path):
+                continue
+            effort = name[:-3]
+            integration = read_fields(path).get("integration branch").strip()
+            if not integration or (integration.startswith("<") and integration.endswith(">")):
+                continue
+            ref = resolve_branch(root, integration)
+            if ref is None:
+                continue
+            match = TASK_BRANCH_RE.match(current) if current else None
+            if current == integration or (match is not None and match.group(1) == effort):
+                for carried in branch_archived_tasks(root, ref, integration_cache):
+                    if carried.split("/", 1)[0] == effort:
+                        archived.add(carried)
+                        integration_landed.setdefault(carried, integration)
+                skip_branches.update((integration, ref))
+            else:
+                done_count, open_count = branch_effort_counts(root, ref, effort)
+                integrating.append({"effort": effort, "branch": integration,
+                                    "archived": done_count, "open": open_count})
+                hidden_efforts.add(effort)
+
     branches = task_branches(root)
     branch_status_cache = {}
     finished_branches = {}
@@ -1047,13 +1322,16 @@ def cmd_next(args):
         for b_refname, b_name in candidates:
             b_status = branch_task_status(root, b_refname, b_name)
             branch_status_cache[(b_ref, b_name)] = b_status
-            if b_status == "finished" and b_ref not in finished_branches:
+            if b_status == "finished" and b_ref not in finished_branches and b_name not in skip_branches:
                 finished_branches[b_ref] = b_name
     # A task's archive may sit on a branch that is not named after it (an integration
     # or aggregate branch), so union every branch's done/ tree and record who carries it.
     union_cache = {}
     archived_branch = {}
-    for b_name in all_branch_names(root):
+    branch_names = all_branch_names(root)
+    for b_name in branch_names:
+        if b_name in skip_branches:
+            continue
         for carried in branch_archived_tasks(root, b_name, union_cache):
             archived_branch.setdefault(carried, b_name)
 
@@ -1062,6 +1340,7 @@ def cmd_next(args):
     task_count = blocked_count = waiting = 0
     specs = {}
     base_archived_cache = {}
+    open_refs = set()
 
     def record(blocker, ref, number):
         block_tasks.setdefault(blocker, []).append(ref)
@@ -1075,16 +1354,27 @@ def cmd_next(args):
             continue
         number = norm_number(m.group(1))
         meta = read_fields(path)
-        status = meta.get("status").lower()
-        if status in ("done", "completed", "archived"):
-            continue
         effort = meta.get("effort") or dir_effort(tasks_dir, path) or "none"
         if not SLUG_RE.match(effort):
             sys.stderr.write("Warning: %s has an invalid effort reference; using default priority\n" % name)
             effort = "none"
+        if effort in hidden_efforts:
+            continue
+        status = meta.get("status").lower()
+        if status in ("done", "completed", "archived"):
+            continue
         task_count += 1
         ref = task_ref(effort, number)
+        open_refs.add(ref)
         title = meta.title or meta.get("task") or "Untitled"
+
+        if ref in landed_main:
+            started.append((STARTED_ORDER["landed"], int(number), ref, title, "landed", main, effort))
+            continue
+        if ref in integration_landed:
+            started.append((STARTED_ORDER["landed"], int(number), ref, title, "landed",
+                            integration_landed[ref], effort))
+            continue
 
         # Started here (Status in this tree) or on its own task branch: not ready.
         branch = None
@@ -1114,16 +1404,16 @@ def cmd_next(args):
             record("(missing Blocked by field)", ref, number)
         else:
             try:
-                open_refs = []
+                open_refs_needed = []
                 for token, _ in parse_blockers(raw):
                     target = resolve_ref(token, effort)
-                    if target not in archived and target not in stacked_done and target not in open_refs:
-                        open_refs.append(target)
-                for target in open_refs:
+                    if target not in archived and target not in stacked_done and target not in open_refs_needed:
+                        open_refs_needed.append(target)
+                for target in open_refs_needed:
                     record(target, ref, number)
-                blocked = bool(open_refs)
-                if open_refs and all(t in finished_branches for t in open_refs):
-                    stackable.append((ref, [finished_branches[t] for t in open_refs]))
+                blocked = bool(open_refs_needed)
+                if open_refs_needed and all(t in finished_branches for t in open_refs_needed):
+                    stackable.append((ref, [finished_branches[t] for t in open_refs_needed]))
             except BlockerError:
                 blocked = True
                 sys.stderr.write("Warning: %s has malformed Blocked by: %s\n" % (name, raw))
@@ -1141,26 +1431,38 @@ def cmd_next(args):
     started.sort(key=lambda item: (item[0], item[6], item[1]))
     blockers = sorted(block_tasks, key=lambda b: (-len(block_tasks[b]), b.encode("utf-8")))[:5]
 
+    claims = {}
+    for branch_name in set(branch_names):
+        m = TASK_BRANCH_RE.match(branch_name)
+        if not m:
+            continue
+        ref = task_ref(m.group(1), norm_number(m.group(2)))
+        claims.setdefault(ref, set()).add(branch_name)
+    duplicates = [(ref, sorted(names)) for ref, names in claims.items()
+                  if len(names) >= 2 and ref in open_refs]
+    duplicates.sort(key=lambda item: (-len(item[1]), item[0]))
+
     if as_json:
         out = {"ready_count": len(ready), "task_count": task_count, "blocked_count": blocked_count,
                "ready_tasks": [item[4] for item in ready[:5]],
                "blockers": [{"dependency": b, "count": len(block_tasks[b]), "tasks": block_numbers[b]}
                             for b in blockers],
                "in_progress": [{"task": item[2], "number": item[1], "effort": item[6], "title": item[3],
-                                "status": item[4], "branch": item[5]} for item in started]}
+                                "status": item[4], "branch": item[5]} for item in started],
+               "tree": tree, "integrating": integrating,
+               "duplicate_claims": [{"task": ref, "branches": names} for ref, names in duplicates]}
         sys.stdout.write(json.dumps(out, ensure_ascii=False, separators=(",", ":")) + "\n")
         return 0
 
     color = colors_enabled(opts["no_color"])
     bold, dim, off = ("\033[1m", "\033[2m", "\033[0m") if color else ("", "", "")
-    out = []
-    if task_count == 0:
-        sys.stdout.write("No tasks found.\n")
+    out = [header]
+    if task_count == 0 and not integrating:
+        sys.stdout.write(header + "No tasks found.\n")
         return 0
     headings = (("paused", "Paused (resume before starting new work):"),
                 ("blocked", "Needs replanning (Status: blocked; flow-break amend):"),
-                ("active", "In progress:"),
-                ("finished", "Finished on a branch, not landed yet:"))
+                ("active", "In progress:"))
     for state, heading in headings:
         rows = [item for item in started if item[4] == state]
         if rows:
@@ -1168,23 +1470,48 @@ def cmd_next(args):
             for item in rows:
                 where = "branch %s" % item[5] if item[5] else "this working tree"
                 out.append("  %s%s%s %s (%s)\n" % (bold, item[2], off, item[3], where))
-    if ready:
-        out.append("%sReady tasks%s (%d total; showing up to 5):\n" % (bold, off, len(ready)))
-        for i, item in enumerate(ready[:5], 1):
-            ref, task = item[3], item[4]
-            out.append("%d) %s%s%s %s (priority: %s)\n" % (i, bold, ref, off, task["title"], task["priority"]))
-            if task["goal"] != "(not specified)":
-                out.append("   %sGoal:%s %s\n" % (dim, off, task["goal"]))
-            out.append("   %sCheck:%s %s\n" % (dim, off, task["check"]))
-            out.append("   Start: flow-implement %s\n" % ref)
-    else:
-        out.append("No ready tasks.\n")
+    landed_branches = []
+    for item in started:
+        if item[4] == "landed" and item[5] not in landed_branches:
+            landed_branches.append(item[5])
+    for landed_branch in landed_branches:
+        out.append("Landed on %s, still open in this tree (merge %s into this branch):\n"
+                   % (landed_branch, landed_branch))
+        for item in started:
+            if item[4] == "landed" and item[5] == landed_branch:
+                out.append("  %s%s%s %s (branch %s)\n" % (bold, item[2], off, item[3], landed_branch))
+    finished_rows = [item for item in started if item[4] == "finished"]
+    if finished_rows:
+        out.append("Finished on a branch, not landed yet:\n")
+        for item in finished_rows:
+            out.append("  %s%s%s %s (branch %s)\n" % (bold, item[2], off, item[3], item[5]))
+    if task_count:
+        if ready:
+            out.append("%sReady tasks%s (%d total; showing up to 5):\n" % (bold, off, len(ready)))
+            for i, item in enumerate(ready[:5], 1):
+                ref, task = item[3], item[4]
+                out.append("%d) %s%s%s %s (priority: %s)\n" % (i, bold, ref, off, task["title"], task["priority"]))
+                if task["goal"] != "(not specified)":
+                    out.append("   %sGoal:%s %s\n" % (dim, off, task["goal"]))
+                out.append("   %sCheck:%s %s\n" % (dim, off, task["check"]))
+                out.append("   Start: flow-implement %s\n" % ref)
+        else:
+            out.append("No ready tasks.\n")
     if waiting:
         out.append("Waiting on dependencies: %d task(s); top blockers: %s\n" % (
             waiting, ", ".join("%s (%d)" % (b, len(block_tasks[b])) for b in blockers)))
         if stackable:
             out.append("Stackable under pr (blockers finished on branch): %s\n" % (
                 ", ".join("%s (on %s)" % (r, ", ".join(bs)) for r, bs in stackable)))
+    if integrating:
+        out.append("Integrating on another branch (run next there):\n")
+        for item in integrating:
+            out.append("  %s on %s: %d archived, %d open\n" % (
+                item["effort"], item["branch"], item["archived"], item["open"]))
+    if duplicates:
+        out.append("Several branches claim one task (keep one; rename retries to "
+                   "attempt/<effort>-<NN>): %s\n" % ", ".join(
+                       "%s (%d)" % (ref, len(names)) for ref, names in duplicates[:5]))
     sys.stdout.write("".join(out))
     return 0
 

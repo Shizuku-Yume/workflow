@@ -40,9 +40,11 @@ do not invent requirements to judge against.
 
 Is there proof the change works? A test that would fail if the behaviour broke, or a
 recorded run with its output. "It compiles", "the types check", and "the existing
-tests still pass" are not evidence that new behaviour works. The task's `## Progress`
-records `Check before` and `Check after`; what they should say depends on
-`Task type`:
+tests still pass" are not evidence that new behaviour works. A run against a
+fixture, mock or recorded reply proves the stand-in: behaviour that depends on a
+real service, provider or device needs a real-path run, or the gap named. The task's
+`## Progress` records `Check before` and `Check after`; what they should say depends
+on `Task type`:
 
 - `feature`, `bugfix`: Check before failed (or couldn't run yet); Check after passes.
   A Check that passed before the change proves nothing.

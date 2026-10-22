@@ -9,9 +9,10 @@ argument-hint: "<effort>/<NN> [thorough]"
 # Flow: Implement
 
 Read the task file and the spec sections it names, and CONVENTIONS §6 (pause
-handoff), §7 (review) and §8 (fixing bugs). Read `.workflow/STYLE.md` when writing
-the commit message and the report. A task file that needs the conversation that
-produced it is broken; fixing it is part of this job.
+handoff), §7 (review) and §8 (fixing bugs); §9 too when you hand any of it to a
+subagent. Read `.workflow/STYLE.md` when writing the commit message and the report.
+A task file that needs the conversation that produced it is broken; fixing it is
+part of this job.
 
 Find facts in the code. Work end to end; stop only for a decision that changes what
 gets built (one batch of questions) or when the plan is wrong (below). Bare `NN` is
@@ -27,18 +28,19 @@ governs the build.
 
 Under `local-merge` and `pr` a started task's file lives on its branch (`next`
 names it): check that branch out first and read the task file there. If
-`flow-break` amend has since changed the task on the main branch, rebase onto the
-main branch and keep the main branch's copy of the task file.
+`flow-break` amend has since changed the task on the landing branch, rebase onto
+it and keep its copy of the task file.
 
 `Status: blocked`: say so and stop. `Status: paused`: resume from `## Progress`,
 restore what it names (branch, worktree, stash), keep its Base commit and
 `Dirty at start`, set `Status: active`, continue from the next step it gives.
 
-For a new task, the task file must be committed on the main branch. When resuming,
-use the committed task file on the claimed task branch; do not stop merely because
-it has not reached main. In either case, every task in `Blocked by` must be archived
-under `.workflow/done/<effort>/` and landed (or this task stacked on its branch).
-Otherwise name what's missing and stop.
+For a new task, the task file must be committed on the landing branch (the main
+branch, or the integration branch the spec names; `merge-strategy.md`). When
+resuming, use the committed task file on the claimed task branch; do not stop
+merely because it has not reached the landing branch. In either case, every task in
+`Blocked by` must be archived under `.workflow/done/<effort>/` and landed (or this
+task stacked on its branch). Otherwise name what's missing and stop.
 
 For a new task, run `git status --porcelain` and record its paths in `## Progress`
 as `Dirty at start: <paths>` (or `none`). They belong to someone else and stay out
@@ -46,9 +48,9 @@ of every commit; if the task needs one, ask. On resume, keep the original record
 the task's own work named in the handoff is not someone else's dirty work.
 
 Read `Landing:` in `.workflow/standards.md`. Under `local-merge` and `pr`, claim and
-create the branch `<effort>/<NN>-<slug>` as `.workflow/merge-strategy.md` describes;
-if someone else holds it, say whose and stop. Under `direct`, say in one line that
-work goes onto the current branch.
+create the branch `<effort>/<NN>-<slug>` from the landing branch as
+`.workflow/merge-strategy.md` describes; if someone else holds it, say whose and
+stop. Under `direct`, say in one line that work goes onto the current branch.
 
 New start: write `**Base commit:** <git rev-parse HEAD>`, `**Started:** <ISO 8601>`
 and `**Status:** active` before touching code. Under `pr`, commit and push this task
@@ -82,8 +84,9 @@ entry in `.workflow/technical-debt.md` deletes that entry in its commit.
 ## 3. Prove it
 
 Run the Check and record `Check after:`. Exercise the real path once (open the UI,
-run the command) and note what you saw, including anything odd. If the Check can't
-pass, say what blocks it and keep the Check as strict as it is.
+run the command, call the real service) and note what you saw, including anything
+odd. If the Check can't pass, say what blocks it and keep the Check as strict as it
+is. If only a stand-in could run, say which; the real path is still owed.
 
 ## 4. Sync documents and record decisions
 
@@ -115,20 +118,21 @@ file and rerun the affected brief.
 
 ## 6. Archive, commit, land
 
-1. Close the task file: tick finished items, add `**Finished:** <ISO 8601>`, remove
-   `**Status:**`, keep `## Progress`.
+1. Close the task file: every checklist item is ticked, or deleted with the reason
+   in `## Progress`; add `**Finished:** <ISO 8601>`, remove `**Status:**`, keep
+   `## Progress`. An item you can't tick or justify means the task isn't finished.
 2. `git mv .workflow/tasks/<effort>/<NN>-<slug>.md .workflow/done/<effort>/`.
 3. Run `.workflow/bin/workflow validate`. Errors block the commit.
 4. Stage the task's paths by name (`git add -- <paths>`), never `Dirty at start`
    paths. One commit: code, tests, docs, decisions and the archive move.
-5. Land it per `Landing:` (`.workflow/merge-strategy.md`). Push or open a PR only
-   under `pr` or when the user asks.
+5. Land it per `Landing:` (`.workflow/merge-strategy.md`) on the landing branch.
+   Push or open a PR only under `pr` or when the user asks.
 6. Last task of the effort, all landed: if `.workflow/specs/<effort>.md` exists, go
    to `flow-close` (here if the window is light, else in a fresh session,
    `.workflow/phase-boundaries.md`). Without a spec, the effort is done.
 
 Spike: findings go into the task's `## Findings` and into spec, decisions or
-glossary. Throwaway code stays off the main branch: drop it, or keep it on
+glossary. Throwaway code stays off the landing branch: drop it, or keep it on
 `spike/<effort>-<NN>` named in Findings. Then archive, commit and land as above.
 
 ## 7. Report

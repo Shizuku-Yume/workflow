@@ -24,7 +24,7 @@
 # need no checkout of this toolkit and nothing on PATH.
 set -euo pipefail
 
-VERSION="2.6.4"
+VERSION="2.7.0"
 BIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 KIT="$(cd "$BIN_DIR/.." && pwd)"
 
@@ -148,6 +148,28 @@ base_commit_ok() {
   case "$value" in ""|"<commit-sha>"|not-started) return 1 ;; esac
   git -C "$root" rev-parse --git-dir >/dev/null 2>&1 &&
     git -C "$root" rev-parse --verify --end-of-options "$value^{commit}" >/dev/null 2>&1
+}
+
+# The repository's main branch: main if it exists, else master, else empty.
+main_branch() {
+  local root="$1" name
+  for name in main master; do
+    if git -C "$root" rev-parse --verify --quiet "refs/heads/$name" >/dev/null 2>&1; then
+      printf '%s\n' "$name"
+      return 0
+    fi
+  done
+  return 0
+}
+
+# The checked-out branch name, empty on a detached HEAD.
+current_branch() {
+  git -C "$1" symbolic-ref --short -q HEAD 2>/dev/null || true
+}
+
+# The version: line of a .workflow-version manifest, empty when absent.
+manifest_version() {
+  sed -n 's/^version: //p' "$1" 2>/dev/null | head -n 1
 }
 
 # Find the project root with Git, falling back to the requested directory.
@@ -1245,6 +1267,15 @@ cmd_update() {
   prune_stale_files "$root"
   write_manifest "$root" "$claude"
   ok "updated to $VERSION"
+  say "Commit these files on the main branch; other branches and worktrees keep the old rules until they merge or rebase onto it."
+  if git -C "$root" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    local main_name head_name
+    main_name="$(main_branch "$root")"
+    head_name="$(current_branch "$root")"
+    if [ -n "$main_name" ] && [ "$head_name" != "$main_name" ]; then
+      warn "you are on ${head_name:-a detached HEAD}, not $main_name: commit the update on $main_name first"
+    fi
+  fi
   say ""
   say "Your own files (standards, glossary, decisions, specs, tasks) were not touched."
   say "Skills, agents, and rulebooks you edited yourself were skipped; run 'workflow init --force' to replace them."
@@ -1321,6 +1352,29 @@ cmd_doctor() {
   else
     warn "not installed here; run 'workflow init'"
     problems=$((problems + 1))
+  fi
+
+  if git -C "$root" rev-parse --is-inside-work-tree >/dev/null 2>&1 &&
+     [ -f "$root/.workflow/.workflow-version" ]; then
+    local main_name head_name here_version main_version changed
+    main_name="$(main_branch "$root")"
+    head_name="$(current_branch "$root")"
+    if [ -n "$main_name" ]; then
+      here_version="$(manifest_version "$root/.workflow/.workflow-version")"
+      if [ "$head_name" != "$main_name" ]; then
+        main_version="$(git -C "$root" show "$main_name:.workflow/.workflow-version" 2>/dev/null |
+          sed -n 's/^version: //p' | head -n 1)"
+        if [ -n "$here_version" ] && [ -n "$main_version" ] && [ "$main_version" != "$here_version" ]; then
+          warn "this tree has workflow $here_version, $main_name has $main_version: merge $main_name into this branch, or commit the update on $main_name"
+          problems=$((problems + 1))
+        fi
+      fi
+      changed="$(git -C "$root" status --porcelain -- .workflow .agents AGENTS.md CLAUDE.md .claude .gitattributes 2>/dev/null || true)"
+      if printf '%s\n' "$changed" | grep -q '\.workflow/\.workflow-version'; then
+        warn "the last 'workflow update' is not committed: commit it on $main_name; other branches and worktrees keep the old rules until they merge it"
+        problems=$((problems + 1))
+      fi
+    fi
   fi
 
   local skills_expected name

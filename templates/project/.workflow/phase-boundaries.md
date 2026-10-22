@@ -30,8 +30,10 @@ Take the first rule that applies:
 3. Compact or clear only at a phase boundary and on a real signal: the window is
    past about half full with phases still to run, or reasoning visibly degrades
    (answered questions asked again, recorded decisions missed, files re-read).
-   Mid-phase, finish the phase first or delegate the rest.
+   Mid-phase, finish the phase first or delegate the rest. After any compaction,
+   reread `next` and the active task file before acting.
 4. Delegate tightly scoped, independent lookups to a subagent: library research
    during grilling, impact analysis during a task, a deep dive during
-   `flow-architect`.
+   `flow-architect`. A session driving many tasks delegates each task's build
+   instead of holding it (CONVENTIONS §9).
 5. Otherwise continue. It costs nothing and loses nothing.

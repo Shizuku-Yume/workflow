@@ -13,7 +13,9 @@ Injects conventions, skills, document layouts, and a task scheduling CLI directl
 - **Project-Local & Zero Extra Setup**: All conventions, skills, templates, and scheduling tools are copied and committed into the repository root (`.workflow/`, `.agents/`, and optionally `.claude/`). Any teammate, CI runner, or cloud agent cloning the repository gets the identical workflow without global environment dependencies or PATH configuration.
 - **Evidence Before Questions (§0, §1)**: Agents must autonomously investigate codebase evidence (patterns, existing behaviors, APIs, constraints) before interrupting the user. Only questions involving user decision ownership (intent, preferences, scope, irreversible trade-offs) are batched and asked.
 - **DAG Task Queue & Dependency Tracking**: Complex efforts are broken down via `flow-break` into bite-sized, single-session task files (`.workflow/tasks/<effort>/`), scheduled topologically by `workflow next` based on priority and dependencies.
-- **Observable Verification (§2.1, §8)**: Every task requires an explicit `Check` command. Features and bug fixes must reproduce or fail before changes and pass afterward; unverified deliverables are rejected.
+- **Observable Verification (§2.1, §8)**: Every task requires an explicit `Check` command. Features and bug fixes must reproduce or fail before changes and pass afterward; unverified deliverables are rejected. A check against a fixture or mock proves only the stand-in: behaviour that depends on a real service is checked against it.
+- **Real-Path Acceptance (§6)**: `flow-close` reruns every spec check on the build that will ship and walks the main use as a user would. An effort is done only when the user says yes, recorded as `**Accepted:**` in its retrospective.
+- **Parallel Work with Integration Branches (§9)**: Parallel tasks run in separate worktrees. An effort that can't land piece by piece names an integration branch in its spec; its tasks land there and the whole effort lands on main at close. Delegating a task to a subagent keeps its proof with the session that archives it.
 - **Append-Only Decision Log**: Significant architectural decisions are appended to `.workflow/decisions.md` with five structured fields (`Decided`, `Instead of`, `Because`, `Mine`, `Revisit when`). Git union merge configuration prevents merge conflicts across parallel branches.
 - **Independent Two-Brief Reviews (§7)**: Built-in `workflow-reviewer` agent conducts independent reviews covering both process adherence and code implementation quality; `security-reviewer` reviews the boundary closure when the change touches a trust boundary. A round covers one boundary; its fixes are rechecked together.
 
@@ -79,11 +81,11 @@ Run `workflow <command>` via the global CLI or call `.workflow/bin/workflow <com
 ### Daily Commands
 
 - `workflow next [--format text|json]`
-  Inspects task dependency graphs and displays up to 5 ready tasks by priority, along with paused and blocked tasks.
+  Inspects task dependency graphs and displays up to 5 ready tasks by priority, along with paused and blocked tasks. Off the main branch it names the branch it read and how far main is ahead; it lists tasks landed on main but still open in this tree, shows an effort integrating on another branch as one line, and names tasks that several branches claim.
 - `workflow validate [--strict] [--format text|json]`
-  Statically validates schemas, field grammar, dependency references, and decision logs across `tasks/`, `done/`, and `specs/`.
+  Statically validates schemas, field grammar, dependency references, and decision logs across `tasks/`, `done/`, and `specs/`. A task being archived must have every checklist item ticked and a `Check after:` record; a spec can't be marked done while one of its tasks is open or before the user's acceptance is recorded.
 - `workflow doctor`
-  Diagnoses repository health, validating managed files, symlink safety, AGENTS markers, glossary integrity, and task dependency cycles.
+  Diagnoses repository health, validating managed files, symlink safety, AGENTS markers, glossary integrity, and task dependency cycles. It warns when this branch runs a different workflow version than main, or when the last update is not committed.
 - `workflow hook install|uninstall|status [--force|--append]`
   Manages the Git pre-commit hook that runs validation before commits (`--append` adds a managed block to an existing hook).
 - `workflow version`
@@ -94,7 +96,7 @@ Run `workflow <command>` via the global CLI or call `.workflow/bin/workflow <com
 - `workflow init [--force] [--claude|--no-claude]`
   Installs workflow skills, rules, and the committed CLI into the current repository.
 - `workflow update [--force] [--claude|--no-claude]`
-  Re-copies skills, rules, and CLI updates while preserving custom user files and edits.
+  Re-copies skills, rules, and CLI updates while preserving custom user files and edits. Commit the result on the main branch: other branches and worktrees keep the old rules until they merge it.
 - `workflow uninstall`
   Cleanly removes workflow-managed files while retaining user code and data.
 

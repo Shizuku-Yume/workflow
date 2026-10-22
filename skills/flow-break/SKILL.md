@@ -24,6 +24,16 @@ Long sessions degrade, so each task fits one fresh session with room to spare. T
 - **Checkable** by someone other than its author.
 - **Independent** of tasks declared after it.
 
+**Integrate early.** When an effort spans several modules or layers, task 01 is the
+thinnest slice that runs end to end through the real entry point; later tasks widen
+it. Cutting by module and joining at the end moves every integration bug to the last
+tasks.
+
+**A gate checks the whole, not the parts.** A task blocked by many others (more than
+about five) is a gate: its Check runs the assembled behaviour. It never takes over a
+blocker's Check (CONVENTIONS §9), and a Check that reuses another task's observations
+proves nothing about this task.
+
 **Task types** (CONVENTIONS §2.1 owns what each Check proves):
 - `feature` (default) and `bugfix`: the Check fails before the change and passes after. A bugfix is built per CONVENTIONS §8: the Check reproduces the bug and `Delivers` says what works again. If nobody knows the cause yet, draft a spike first and block the fix on it.
 - `refactor`: behavior must not change; the Check passes before and after.
@@ -54,7 +64,7 @@ For each:
 - **Covers** — the spec check IDs this task makes pass, e.g. `W1, W3`. Omit when there is no spec or it covers none.
 - **Files** — expected starting locations, not a whitelist
 - **Read first** — spec sections, glossary entries, files needed to start. A long list means the task is too big.
-- **Check** — command and the result that means it works (spike: how the answer is validated)
+- **Check** — command and the result that means it works, on the real path when the behaviour depends on a real service (CONVENTIONS §2.1) (spike: how the answer is validated)
 - **Done when** — acceptance checklist
 
 Behavior and checks, not code: a snippet only when it carries a decision prose can't (schema, state machine, type). Create tasks only for work someone asked for.
@@ -68,6 +78,7 @@ If the user gave a priority, set `**Priority:**` in the spec header.
 Present one message:
 1. The spec summary in three to five lines: what it's for, what it does, the key decisions, open questions. Skip this when the spec was already confirmed in an earlier session.
 2. The breakdown as a numbered list: title, what it delivers, what blocks it. For parallel work, mark each pair as truly independent, sharing an interface ("Coordinate with NN on <interface>"), or easier merged in order ("Easier after NN").
+3. Where tasks land. If the main branch would be broken or half-switched between tasks, or must stay releasable while many tasks run in parallel, propose an integration branch (`merge-strategy.md`, not under `Landing: direct`) and add it to the spec header once approved.
 
 Ask: right size? Dependencies only what truly gates each task? Anything to join or split? One approval settles both the spec and the tasks. Iterate as one round, not a negotiation per task.
 
@@ -100,7 +111,7 @@ A one-task breakdown with an already confirmed spec skips the questions: say wha
 
 Run `.workflow/bin/workflow validate` and fix every error.
 
-Then commit the spec, decision and glossary entries and task files together, one commit on the main branch, before any task branch is cut (CONVENTIONS §2). Under `Landing: pr` that commit goes through a PR like any change.
+Then commit the spec, decision and glossary entries and task files together, one commit on the main branch, before any task branch is cut (CONVENTIONS §2). Under `Landing: pr` that commit goes through a PR like any change. If the spec names an `Integration branch`, cut it from that commit now (`merge-strategy.md`); from here on it is the effort's landing branch, and task branches start from it.
 
 ### 5. Hand off
 
@@ -111,7 +122,7 @@ Report:
 
 Each task must be buildable by a fresh session reading only its file and the spec sections it names. If it would need this conversation, fix the task file now.
 
-Build with `flow-implement`, one task at a time per working tree; parallel tasks need separate worktrees. A task whose branch `<effort>/<NN>-<slug>` exists is claimed. A task starts when every blocker is archived under `.workflow/done/<effort>/` and landed (`merge-strategy.md`), or, under `Landing: pr`, stacked on the blocker's branch and recorded as `Base branch`. `next` treats an archived blocker as finished.
+Build with `flow-implement`, one task at a time per working tree; parallel tasks need separate worktrees. A task whose branch `<effort>/<NN>-<slug>` exists is claimed. A task starts when every blocker is archived under `.workflow/done/<effort>/` and landed on the landing branch (`merge-strategy.md`), or, under `Landing: pr`, stacked on the blocker's branch and recorded as `Base branch`. `next` treats an archived blocker as finished.
 
 ## Amending an effort
 
@@ -121,9 +132,9 @@ Runs when a task of the effort is `Status: blocked`, or the spec changed under t
    If the spec says `done` — a task joined a closed effort — set it back to `**Status:** in progress` as part of this amend (CONVENTIONS §6).
 2. Go through every remaining task under `.workflow/tasks/<effort>/`, the blocked one first: does `Delivers` still match the spec? Do `Read first`, `Files`, `Check` and `Covers` point at the right things? Is `Blocked by` still the real gate?
 3. Rewrite what is stale. Delete a task with no reason left to exist: name it and why in the decision entry for the change, and fix every `Blocked by` that pointed at it. New tasks take numbers after the highest the effort has used, archived ones included; never renumber.
-4. Edit the blocked task from its branch copy, so `Base commit`, `Started` and `## Progress` reach the main branch with it, and remove `## Blocked`. Then take one of two branches:
+4. Edit the blocked task from its branch copy, so `Base commit`, `Started` and `## Progress` reach the landing branch with it, and remove `## Blocked`. Then take one of two branches:
    - **What it delivers is unchanged.** Set `Status: paused`, and make sure `## Progress` says where the earlier work is, so `flow-implement` resumes on the same Base commit.
    - **What it delivers changed.** Reset `Base commit` to the `<commit-sha>` placeholder, drop `Started` and `Status`, name reusable work in `## Progress`, and rename the old task branch to `attempt/<effort>-<NN>` so the task can be claimed afresh.
 5. Rerun the coverage gate.
 6. Present the changes as one round, as in step 3: what was rewritten, added, dropped, and why.
-7. Run `.workflow/bin/workflow validate`, then commit the spec, decision entries and task changes together on the main branch, as in step 4.
+7. Run `.workflow/bin/workflow validate`, then commit the spec, decision entries and task changes together on the landing branch (the integration branch, once the effort has one), as in step 4.

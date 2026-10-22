@@ -18,7 +18,7 @@ Every task was checked on its own, against its own baseline. Nobody has yet chec
 
 - Find the spec: `.workflow/specs/<effort>.md`. If there is none, stop and say so in one line: an effort without a spec (a lone bugfix, a spike, `maintenance`) is done when its last task lands, with no close and no retrospective.
 - No task of `<effort>` is left under `.workflow/tasks/<effort>/`. If one is, name it and stop: it is unfinished, or it should be dropped through `flow-break` amend.
-- Every archived task has landed on the main branch (`merge-strategy.md`). Work from an up-to-date main branch.
+- Every archived task has landed on the landing branch (`merge-strategy.md`). Work from an up-to-date copy of it. With an integration branch, merge the main branch into it first and rerun the tests.
 - If `.workflow/done/<effort>/retrospective.md` exists, this is a reopen (CONVENTIONS §6):
   the tasks added since the last close are what this run closes, and step 6 appends
   instead of rewriting. Use the `Base commit` of the earliest-started added task as
@@ -29,9 +29,9 @@ Every task was checked on its own, against its own baseline. Nobody has yet chec
 
 ## 2. Run the spec's checks
 
-Run every check in the spec's "How we will know it works", by ID, against the assembled code. These describe the whole; they are not the task Checks again. Record each as pass, fail, or not runnable with the reason. A check no task lists in `Covers` is expected: some only make sense once everything is in. A failing check is a blocking finding.
+Run every check in the spec's "How we will know it works", by ID, now, on the build that will ship: the landing branch's head, built and run the way a user gets it (the packaged app, the deployed service, the installed CLI). These describe the whole; task Checks and earlier receipts were taken on the pieces and don't count here. Record each as pass, fail, or not runnable with the reason; a check that ran only against a stand-in is recorded as that, not as pass. A check no task lists in `Covers` is expected: some only make sense once everything is in. A failing check is a blocking finding.
 
-Then use the feature once the way the spec's "What it does" describes, as a user would, and note what you saw. Step 5 shows this to the user.
+Then use the feature once the way the spec's "What it does" describes, as a user would: its real entry point, real dependencies, the main flow to the end. Note what you saw. Step 5 shows this to the user.
 
 ## 3. Review the whole
 
@@ -55,21 +55,25 @@ List open hotfix follow-ups (`grep -rl 'Hotfix:' .workflow/tasks/`) that touch t
 
 One message: each spec check by ID with its result, what the demo showed, review status per brief, triggered decisions. Ask whether the effort is accepted.
 
-This is the only stop in this skill. Accepted: carry on. Something missing: it becomes tasks through `flow-break` amend, and closing waits.
+This is the only stop in this skill, and only the user's explicit yes accepts the effort: passing checks are not acceptance, and neither is silence. Until then the spec stays `in progress`, and the effort is reported as waiting for acceptance, never as done. Accepted: carry on. Something missing: it becomes tasks through `flow-break` amend, and closing waits.
 
 ## 6. Write the retrospective
 
 `.workflow/done/<effort>/retrospective.md`. The git history of `.workflow/tasks/<effort>/`, `.workflow/done/<effort>/` and the spec answers the plan-versus-actual questions (`git log --stat --follow -- <path>`); the `## Progress` sections of archived tasks hold the review findings.
 
-On a reopen, append a `## Reopened <date>` section with the same headings, covering
-the tasks added since the last close, instead of replacing the file: what the effort
-originally shipped stays readable.
+On a reopen, append a `## Reopened <date>` section with the same headings and its own
+`**Accepted:**` line, covering the tasks added since the last close, instead of
+replacing the file: what the effort originally shipped stays readable. `validate`
+refuses to mark the spec done without one more `Accepted:` line than `## Reopened`
+headings.
 
 ```markdown
 # Retrospective: <effort>
 
 ## Goal
 <one or two sentences, from the spec>
+
+**Accepted:** <date> by <who said yes>
 
 ## What shipped
 <what a user can now do; spec check results by ID>
@@ -102,7 +106,7 @@ A pattern in the review findings is the most useful line here; a retrospective t
 
 1. Spec: `**Status:** done`.
 2. `.workflow/bin/workflow validate`. Errors block.
-3. One commit: retrospective, spec status, new checks or `standards.md` lines, decision entries, any fixes from step 3. Land it per `Landing:` (`merge-strategy.md`).
+3. One commit: retrospective, spec status, new checks or `standards.md` lines, decision entries, any fixes from step 3. Land it per `Landing:` (`merge-strategy.md`). With an integration branch, the close commit goes on it, and then the branch lands on the main branch by fast-forward or one merge commit, never by replacing the main branch's tree; delete it and the landed task branches afterwards.
 
 ## 8. Report
 

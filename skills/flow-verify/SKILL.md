@@ -30,7 +30,7 @@ Standalone: whatever the user named (commit, branch, tag). If nothing, use `main
 
 After a rebase (landing, `merge-strategy.md`), `git diff <Base commit>` also
 contains everything others landed in between. Compare against
-`git merge-base <main branch> HEAD`, or the stacked `Base branch`, and say so. The
+`git merge-base <landing branch> HEAD`, or the stacked `Base branch`, and say so. The
 Base commit stays in the task file as history.
 
 Capture the diff commands once and reuse them:

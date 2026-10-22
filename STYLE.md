@@ -54,3 +54,7 @@ Match length to the question: a yes/no question gets the answer plus one line of
 why; a design question gets the design.
 
 A work report says what changed, what was verified, and what was not done.
+
+A status answer ("where are we", "how much is left") starts with one sentence: done
+or not, and what is left, by task. Then the branch or tree it was read from, if that
+is not the main branch. Then detail, only if asked.
