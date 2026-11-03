@@ -3,6 +3,63 @@
 What changed in each version and what an existing project has to do about it.
 Usage lives in the README and in `--help`.
 
+## 2.10.0
+
+### Upgrade
+
+Run `npm install --global @shizuku-yume/workflow`, then on the main branch with a
+clean tree run:
+
+```sh
+workflow update   # add --force if AGENTS.md was edited locally and you want the updated block
+git add .workflow .agents AGENTS.md && git commit   # plus .claude CLAUDE.md if used
+```
+
+Merge the main branch into active branches and worktrees so every environment uses the
+updated rules and CLI.
+
+- If using parallel worktrees, ensure `.workflow/worktrees/` is ignored by git
+  (e.g. by adding `.workflow/worktrees/` to your project `.gitignore`).
+- If using pre-commit hooks, run `workflow hook install` to update to the index-staged
+  validator.
+
+### Changes
+
+- **Atomic task lifecycle CLI (`workflow task start` and `workflow task archive`)**:
+  - Added `workflow task start <task>` (accepts bare number or `<effort>/<NN>`): records
+    current git HEAD as `Base commit:`, sets `Status: active`, and advances matching
+    spec to `in progress` with full rollback if the spec update fails.
+  - Added `workflow task archive <task>`: verifies all checklist items are ticked,
+    verifies `Check after:` proof in `## Progress` (or `## Findings` for spike tasks),
+    removes `Status`, moves the file to `.workflow/done/<effort>/`, preserves file
+    mode/permissions, and runs repository validation on the resulting state with full
+    rollback if the newly archived task introduces errors.
+  - Defends task resolution and spec matching against path traversals (such as
+    `Effort: ../../../outside`) and symlinks escaping `.workflow/tasks`.
+- **Worktree sandboxing and review bounds**:
+  - Moved default parallel worktree path into the project sandbox at
+    `.workflow/worktrees/<effort>-<NN>` (with `.gitignore` rules in templates and
+    `.workflow/`), avoiding permission and path escape issues outside the repository
+    (`CONVENTIONS §7`, `flow-implement`).
+  - Capped review-fix cycles at 2 rounds in `flow-verify` (`CONVENTIONS §5`), automatically
+    stopping and escalating to the user on persistent blocking findings.
+  - Updated `flow-implement` to invoke `workflow task start` and `workflow task archive`.
+- **Git hook staged validation**:
+  - `workflow hook install` pre-commit hook now runs `workflow validate --staged`,
+    inspecting the staged git index (`git ls-files --stage`) rather than the working tree,
+    allowing dirty unstaged worktree edits while blocking commits with malformed task,
+    spec, or decision metadata.
+- **CLI and engine hardening**:
+  - Consolidated per-file `.workflow-managed` dotfiles into `.workflow/.workflow-version`
+    manifest; `workflow update` migrates and removes legacy `.workflow-managed` dotfiles
+    automatically.
+  - Batched `workflow next` git object inspection via `git cat-file --batch` and
+    `--batch-check`, deduplicating `.workflow/done` trees.
+  - Made `**Supersedes:**` in `decisions.md` append-only (no modification of older entries,
+    preserving git union merge safety). Supported `**Decided by:** user | agent`.
+  - Hardened CLI tempfile handling with cleanup traps on signals and exit.
+  - Robust JSON output parsing in `workflow doctor` without regex scraping.
+
 ## 2.9.0
 
 ### Upgrade

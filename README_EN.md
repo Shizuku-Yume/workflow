@@ -13,7 +13,7 @@ Lightweight, repo-local workflow skills and CLI for coding agents and developers
 - **Real-Path Verification**: Every task carries a runnable `Check` command. Reproduce bugs before fixing them, and verify changes through the real CLI or application entry point rather than mocks alone.
 - **Lean Implementation**: Reuse existing code and standard libraries before adding new code. Fix real reachable bugs without speculative defenses, passthrough wrappers, or unrequested compatibility flags.
 - **Fresh-Context Review**: A fresh `workflow-reviewer` subagent inspects requirement completion and code quality together, triggering `security-reviewer` at trust boundaries like auth or external input.
-- **Parallel Worktrees & Logged Decisions**: `workflow next` schedules ready tasks and flags shared-file overlaps. Parallel tasks run in isolated Git worktrees. Difficult-to-reverse technical decisions append to `.workflow/decisions.md` (Git union merge prevents conflicts), while project terms live in `glossary.md`.
+- **Parallel Worktrees & Logged Decisions**: `workflow next` schedules ready tasks and flags shared-file overlaps. Parallel tasks run in isolated Git worktrees (`.workflow/worktrees/<effort>-<NN>`). Difficult-to-reverse technical decisions append to `.workflow/decisions.md` (Git union merge prevents conflicts), while project terms live in `glossary.md`.
 
 ---
 
@@ -41,7 +41,7 @@ Most days only require 2–4 skills. The toolkit divides skills into **daily cor
 | `flow-grill` | Unclear requirements / open scope | Clarifies requirements and trade-offs against code facts. Moves directly to `flow-spec` or `flow-break` once settled, or saves a `maps/<slug>.md` note for multi-session exploration. |
 | `flow-spec` | Unsettled architecture / complex multi-task effort | Writes a concise technical spec (`specs/<effort>.md`); skipped for 1–3 clear tasks. |
 | `flow-break` | Splitting scope into tasks | Breaks specs or clear goals into task files with `Blocked by` dependencies and runnable `Check` commands. |
-| `flow-implement` | Building a task or an effort queue | Builds, verifies, reviews, and archives tasks; coordinates parallel waves across worktrees when given `<effort>`. |
+| `flow-implement` | Building a task or an effort queue | Builds, verifies, reviews, and archives tasks; coordinates parallel waves across worktrees in `.workflow/worktrees/` when given `<effort>`. |
 | `flow-verify` | Pre-merge code review | Runs a fresh `workflow-reviewer` subagent for requirements and code quality, plus security review at trust boundaries. |
 
 ### On-Demand Supporting Skills
@@ -97,6 +97,10 @@ Use `workflow <command>` globally, or `.workflow/bin/workflow <command>` inside 
 
 - `workflow next [--effort SLUG] [--all] [--brief] [--format text|json]`
   Lists ready tasks by priority, shows active/paused/blocked tasks, and warns on shared files; `--brief` prints a compact snapshot and stays silent when idle.
+- `workflow task start <task>`
+  Activates a task, records current HEAD as `Base commit`, sets `Status: active`, and advances matching spec to `in progress` if needed.
+- `workflow task archive <task>`
+  Verifies completed checkboxes and required task proof (`Check after:` or spike `## Findings`), removes `Status`, moves to `.workflow/done/<effort>/`, and validates repository state.
 - `workflow validate [--strict] [--format text|json]`
   Validates task files, archived tasks, specs, and `decisions.md`.
 - `workflow doctor`

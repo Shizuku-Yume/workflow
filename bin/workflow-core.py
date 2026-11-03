@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""workflow-core.py - `validate` and `next` for the workflow toolkit.
+"""workflow-core.py - `validate`, `next`, and `task` for the workflow toolkit.
 
-Called by bin/workflow as `python3 workflow-core.py validate|next ...`.
+Called by bin/workflow as `python3 workflow-core.py validate|next|task ...`.
 Python 3.8+, standard library only. Reads task files under .workflow/tasks/
 and .workflow/done/, specs under .workflow/specs/, and .workflow/decisions.md.
 
@@ -17,11 +17,12 @@ occurrence of a field wins; later ones are duplicates.
 import json
 import os
 import re
+import stat
 import subprocess
 import sys
+import tempfile
 
-VERSION = "2.9.0"
-
+VERSION = "2.10.0"
 KNOWN_FIELDS = {
     "task", "effort", "task type", "base commit", "base branch", "delivers", "blocked by",
     "files", "read first", "check", "covers", "question", "time box", "priority",
@@ -33,10 +34,11 @@ SPEC_STATUSES = ("proposed", "in progress", "done")
 TASK_STATUSES = ("active", "paused", "blocked")
 FINISHED_STATUSES = ("done", "completed", "archived")
 DECISION_REQUIRED_FIELDS = ("Decided", "Instead of", "Because")
-DECISION_FIELDS = ("Decided", "Instead of", "Because", "Decided by", "Revisit when")
+DECISION_FIELDS = ("Decided", "Instead of", "Because", "Decided by", "Revisit when", "Supersedes")
 SLUG_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 TASK_FILE_RE = re.compile(r"^([0-9]+)-.+\.md$")
-FENCE_RE = re.compile(r"^\s*(```|~~~)")
+FENCE_OPEN_RE = re.compile(r"^\s*(`{3,}|~{3,})(.*)$")
+FENCE_CLOSE_RE = re.compile(r"^\s*(`{3,}|~{3,})\s*$")
 TITLE_RE = re.compile(r"^#\s+([0-9]+):\s*(.*)$")
 H2_RE = re.compile(r"^##\s+(.*)$")
 CHECKLIST_RE = re.compile(r"^[-*]\s+\[[\sxX]\]")
@@ -48,8 +50,11 @@ QUALIFIED_REF_RE = re.compile(r"^([a-z0-9]+(-[a-z0-9]+)*)/([0-9]+)$")
 BARE_REF_RE = re.compile(r"^([0-9]+)$")
 SPEC_CHECK_RE = re.compile(r"^[-*]\s+\*\*([A-Za-z][A-Za-z0-9_-]*[0-9])\.\*\*")
 UNTICKED_RE = re.compile(r"^[-*]\s+\[ \]\s*(.*)$")
-ACCEPTED_RE = re.compile(r"^\s*(?:[-*]\s+)?(?:\*\*)?Accepted:(?:\*\*)?\s*\S")
+ACCEPTED_RE = re.compile(r"^\s*(?:[-*]\s+)?(?:\*\*Accepted:\*\*|Accepted:|\*\*Accepted\*\*:)[ \t]+\S")
 REOPENED_RE = re.compile(r"^\s*##\s+Reopened(?:\b.*)?$", re.IGNORECASE)
+STANDARDS_PLACEHOLDER_RE = re.compile(
+    r"<TODO:[^>]+>|<(install|run|test|typecheck|lint) command>|<direct \| local-merge \| pr>"
+)
 
 
 # ---------------------------------------------------------------- helpers
@@ -85,18 +90,62 @@ def task_ref(effort, number):
     return "%s/%02d" % (effort, int(number))
 
 
-def task_files(directory):
+def is_safe_path(path, root):
+    """True if path resolves within root."""
+    try:
+        real_root = os.path.realpath(root)
+        real_path = os.path.realpath(path)
+        common = os.path.commonpath([real_root, real_path])
+        return common == real_root
+    except (ValueError, OSError):
+        return False
+
+
+def is_subpath(path, base):
+    """True if canonical path resolves strictly within canonical base directory."""
+    try:
+        real_base = os.path.realpath(base)
+        real_path = os.path.realpath(path)
+        if real_base == real_path:
+            return False
+        common = os.path.commonpath([real_base, real_path])
+        return common == real_base
+    except (ValueError, OSError):
+        return False
+
+
+def is_lexical_subpath(path, base):
+    """True if normalized path is strictly within normalized base directory without resolving symlinks."""
+    try:
+        norm_base = os.path.abspath(base)
+        norm_path = os.path.abspath(path)
+        if norm_base == norm_path:
+            return False
+        common = os.path.commonpath([norm_base, norm_path])
+        return common == norm_base
+    except (ValueError, OSError):
+        return False
+
+
+def task_files(directory, root=None):
     """Every Markdown file under a task directory, at any depth, sorted."""
     found = []
     if not os.path.isdir(directory):
         return found
+    if root is None:
+        root = project_root()
     for base, dirs, files in os.walk(directory, followlinks=False):
         for name in files:
             if name.endswith(".md"):
-                found.append(os.path.join(base, name))
+                full = os.path.join(base, name)
+                if os.path.islink(full) and not is_safe_path(full, root):
+                    continue
+                found.append(full)
         for name in dirs:
             full = os.path.join(base, name)
             if os.path.islink(full) and name.endswith(".md") and os.path.isfile(full):
+                if not is_safe_path(full, root):
+                    continue
                 found.append(full)
     return sorted(found, key=lambda p: p.encode("utf-8", "surrogateescape"))
 
@@ -143,20 +192,39 @@ def git_result(root, *args):
     return proc.returncode == 0, proc.stdout
 
 
+def next_fence_state(fence, line):
+    """Updated fence `(char, length)` or `None`, plus True if `line` is a fence delimiter."""
+    if fence is not None:
+        m = FENCE_CLOSE_RE.match(line)
+        if m and m.group(1)[0] == fence[0] and len(m.group(1)) >= fence[1]:
+            return None, True
+        return fence, False
+    m = FENCE_OPEN_RE.match(line)
+    if m:
+        delim, info = m.group(1), m.group(2)
+        if delim[0] != "`" or "`" not in info:
+            return (delim[0], len(delim)), True
+    return None, False
+
+
 def visible_lines(lines):
     """(lineno, line) outside fenced code blocks and HTML comments."""
     shown = []
-    in_fence = in_comment = False
+    fence = None
+    in_comment = False
     for lineno, line in enumerate(lines, 1):
-        if FENCE_RE.match(line):
-            in_fence = not in_fence
+        if fence is not None:
+            fence, _ = next_fence_state(fence, line)
             continue
-        if in_fence:
-            continue
+        was_comment = in_comment
         line, in_comment = strip_comments(line, in_comment)
+        if (was_comment or in_comment) and not line.strip():
+            continue
+        fence, is_delim = next_fence_state(None, line)
+        if is_delim:
+            continue
         shown.append((lineno, line))
     return shown
-
 
 def section_has_content(shown, heading):
     """True when a `## heading` section has at least one non-heading text line."""
@@ -171,6 +239,52 @@ def section_has_content(shown, heading):
             continue
         if inside and text:
             return True
+    return False
+
+def check_after_in_progress(shown):
+    """True if shown lines contain a valid Check after field under ## Progress."""
+    in_progress = False
+    in_field = False
+    for _, line in shown:
+        raw = line
+        text = line.strip()
+        m2 = H2_RE.match(text)
+        if m2:
+            heading = m2.group(1).strip().rstrip(":").strip().lower()
+            in_progress = (heading == "progress")
+            in_field = False
+            continue
+        if not in_progress:
+            continue
+        if text.startswith("#"):
+            in_field = False
+            continue
+        if not text:
+            in_field = False
+            continue
+        if CHECKLIST_RE.match(text):
+            in_field = False
+            continue
+
+        clean = text
+        bm = BULLET_RE.match(clean)
+        if bm:
+            clean = bm.group(1).strip()
+        fm = BOLD_FIELD_RE.match(clean) or PLAIN_FIELD_RE.match(clean)
+        if fm:
+            key = fm.group(1).lower().rstrip(":").strip()
+            val = fm.group(2).strip()
+            if key == "check after":
+                in_field = True
+                if val:
+                    return True
+                continue
+            else:
+                in_field = False
+                continue
+        if in_field and (raw[:1].isspace() or BULLET_RE.match(text)):
+            if text:
+                return True
     return False
 
 
@@ -192,18 +306,20 @@ def read_fields(path, lines=None):
     meta = Meta()
     if lines is None:
         lines = read_lines(path)
-    in_fence = in_comment = False
+    fence = None
+    in_comment = False
     current = kind = None
     section_content = False
     title_seen = False
     sections = {}
     for lineno, line in enumerate(lines, 1):
-        line, in_comment = strip_comments(line, in_comment)
-        if FENCE_RE.match(line):
-            in_fence = not in_fence
-            current = kind = None
+        if fence is not None:
+            fence, _ = next_fence_state(fence, line)
             continue
-        if in_fence:
+        line, in_comment = strip_comments(line, in_comment)
+        fence, is_delim = next_fence_state(None, line)
+        if is_delim:
+            current = kind = None
             continue
         rawline = line
         line = line.strip()
@@ -335,6 +451,7 @@ REMOVED_FLAGS = {
 def parse_common(args, usage, allowed):
     """Parse shared CLI flags; returns (options, exit code or None)."""
     opts = {"format": "text", "no_color": False, "strict": False,
+            "audit": False, "staged": False,
             "all": False, "brief": False, "effort": None}
     i = 0
     while i < len(args):
@@ -346,6 +463,10 @@ def parse_common(args, usage, allowed):
             opts["no_color"] = True
         elif arg == "--strict" and "strict" in allowed:
             opts["strict"] = True
+        elif arg == "--audit" and "audit" in allowed:
+            opts["audit"] = True
+        elif arg == "--staged" and "staged" in allowed:
+            opts["staged"] = True
         elif arg == "--all" and "all" in allowed:
             opts["all"] = True
         elif arg == "--brief" and "brief" in allowed:
@@ -375,6 +496,8 @@ def parse_common(args, usage, allowed):
         return opts, usage_error("invalid effort slug: %s" % opts["effort"], "")
     if opts["format"] not in ("text", "json"):
         return opts, usage_error("invalid format: %s (use text or json)" % opts["format"], "")
+    if opts["brief"] and opts["format"] == "json":
+        return opts, usage_error("--brief cannot be combined with --format json", "")
     return opts, None
 
 
@@ -382,7 +505,7 @@ def parse_common(args, usage, allowed):
 
 VALIDATE_USAGE = """workflow validate - validate task files and the decision log
 
-Usage: workflow validate [--strict] [--format text|json] [--no-color]
+Usage: workflow validate [--strict] [--audit] [--staged] [--format text|json] [--no-color]
 Checks required Task, Effort, Check and Blocked by fields; effort slugs;
 that a task in tasks/<effort>/ says the same Effort; that the heading number
 matches the filename; Status and Priority values; blockers; Base commit refs;
@@ -390,18 +513,21 @@ task-number collisions within efforts; dependency cycles; Covers IDs no spec
 check defines; and decision format. Checks active and completed task files;
 problems in completed files warn instead of failing.
 
-  --strict     Treat warnings as errors
-  --format F   Output text (default) or JSON
-  --no-color   Disable color output
-  --help       Show help
-
+  --audit        Audit historical archives and spec acceptances (omitted by default)
+  --staged       Validate staged git index content instead of the working tree
+  --strict       Treat warnings as errors
+  --format TYPE  Output text (default) or JSON
+  --no-color     Disable terminal colors
+  -h, --help     Show this help
 Exit: 0 = valid, 1 = warnings, 2 = errors (including usage errors).
 """
 
 
 class Validator(object):
-    def __init__(self, root):
+    def __init__(self, root, audit=False, staged=False):
         self.root = root
+        self.audit = audit
+        self.staged = staged
         self.wf = os.path.join(root, ".workflow")
         self.issues = []
         self.errors = self.warnings = 0
@@ -416,6 +542,18 @@ class Validator(object):
         self.done_dir = os.path.join(self.wf, "done") + os.sep
         self.lines_cache = {}
 
+    def file_lines(self, path):
+        if self.staged:
+            rel = self.rel(path)
+            ready, text = git_result(self.root, "show", ":%s" % rel)
+            if not ready:
+                return None
+            return split_text(text)
+        if not os.path.isfile(path):
+            return None
+        if os.path.islink(path) and not is_safe_path(path, self.root):
+            return None
+        return read_lines(path)
     def rel(self, path):
         rel = os.path.relpath(path, self.root)
         return rel.replace(os.sep, "/")
@@ -436,12 +574,24 @@ class Validator(object):
         return self.meta[path].line.get(key, 1)
 
     def run(self):
-        if not os.path.isdir(self.wf):
-            self.issue("ERROR", self.wf, 1, "missing .workflow directory", "Run: workflow init")
-            return
-        if not os.path.isdir(os.path.join(self.wf, "tasks")):
-            self.issue("WARNING", os.path.join(self.wf, "tasks"), 1,
-                       "tasks directory is missing", "Run: workflow init")
+        if self.staged:
+            ready, out = git_result(self.root, "ls-files", "--cached", "--", ".workflow")
+            if not ready or not out.strip():
+                if not os.path.isdir(self.wf):
+                    self.issue("ERROR", self.wf, 1, "missing .workflow directory", "Run: workflow init")
+                    return
+            ready, out = git_result(self.root, "ls-files", "--cached", "--", ".workflow/tasks")
+            if not ready or not out.strip():
+                if not os.path.isdir(os.path.join(self.wf, "tasks")):
+                    self.issue("WARNING", os.path.join(self.wf, "tasks"), 1,
+                               "tasks directory is missing", "Run: workflow init")
+        else:
+            if not os.path.isdir(self.wf):
+                self.issue("ERROR", self.wf, 1, "missing .workflow directory", "Run: workflow init")
+                return
+            if not os.path.isdir(os.path.join(self.wf, "tasks")):
+                self.issue("WARNING", os.path.join(self.wf, "tasks"), 1,
+                           "tasks directory is missing", "Run: workflow init")
         self.collect()
         self.check_required()
         self.check_types_and_slugs()
@@ -452,23 +602,71 @@ class Validator(object):
         self.check_priorities()
         self.check_covers()
         self.check_bases()
+        self.check_files_field()
         self.check_cycles(edges)
         self.check_new_archives()
         self.check_spec_done_with_open_tasks()
         self.check_spec_acceptance()
         self.check_decisions()
+        self.check_standards()
 
     def collect(self):
+        if self.staged:
+            ready, listing = git_result(self.root, "ls-files", "--stage", "--",
+                                        ".workflow/tasks", ".workflow/done")
+            if ready and listing:
+                for line in listing.splitlines():
+                    parts = line.split(None, 2)
+                    if len(parts) < 3:
+                        continue
+                    mode = parts[0]
+                    rest = parts[2].split("\t", 1)
+                    if len(rest) != 2:
+                        continue
+                    stage_num, rel = rest[0].strip(), rest[1].strip()
+                    if stage_num != "0" or not rel.endswith(".md"):
+                        continue
+                    if mode == "120000":
+                        s_ready, s_target = git_result(self.root, "cat-file", "-p", parts[1])
+                        if s_ready:
+                            target = s_target.strip()
+                            resolved = os.path.normpath(os.path.join(os.path.dirname(os.path.join(self.root, rel)), target))
+                            if not is_safe_path(resolved, self.root):
+                                continue
+                    basename = os.path.basename(rel)
+                    m = TASK_FILE_RE.match(basename)
+                    if not m:
+                        continue
+                    path = os.path.join(self.root, rel)
+                    self.files.append(path)
+                    self.number[path] = norm_number(m.group(1))
+                    rel_parts = rel.split("/")
+                    sub = rel_parts[1] if len(rel_parts) >= 2 else "tasks"
+                    base_dir = os.path.join(self.wf, sub)
+                    self.dir_effort[path] = dir_effort(base_dir, path)
+                    meta = read_fields(path, lines=self.lines(path))
+                    self.meta[path] = meta
+                    for lno, name in meta.dups:
+                        self.issue(self.sev(path), path, lno, "duplicate %s field" % name,
+                                   "Keep one %s field." % name)
+                    self.effort[path] = meta.get("effort")
+                    key = task_ref(self.effort[path], self.number[path])
+                    self.index.setdefault(key, path)
+                    if sub == "tasks":
+                        self.active.add(key)
+            self.files.sort(key=lambda p: p.encode("utf-8", "surrogateescape"))
+            return
+
         for sub in ("tasks", "done"):
             directory = os.path.join(self.wf, sub)
-            for path in task_files(directory):
+            for path in task_files(directory, root=self.root):
                 m = TASK_FILE_RE.match(os.path.basename(path))
                 if not m:
                     continue
                 self.files.append(path)
                 self.number[path] = norm_number(m.group(1))
                 self.dir_effort[path] = dir_effort(directory, path)
-                meta = read_fields(path)
+                meta = read_fields(path, lines=self.lines(path))
                 self.meta[path] = meta
                 for line, name in meta.dups:
                     self.issue(self.sev(path), path, line, "duplicate %s field" % name,
@@ -478,7 +676,6 @@ class Validator(object):
                 self.index.setdefault(key, path)
                 if sub == "tasks":
                     self.active.add(key)
-
     def check_required(self):
         for path in self.files:
             meta = self.meta[path]
@@ -586,6 +783,21 @@ class Validator(object):
                                % (token, effort),
                                "Use one of: %s, or add the check to the spec."
                                % ", ".join(sorted(known)))
+
+    def check_files_field(self):
+        """Warn when an active non-spike task sets `Files:` to prose with no paths."""
+        for path in self.files:
+            if not path.startswith(self.tasks_dir):
+                continue
+            raw = self.meta[path].get("files", "").strip()
+            if not raw or FILES_NONE_RE.match(raw) or re.fullmatch(r"<[^<>]+>", raw):
+                continue
+            if self.meta[path].get("task type", "").strip().lower() == "spike":
+                continue
+            if not parse_task_files_field(self.root, raw):
+                self.issue("WARNING", path, self.line_of(path, "files"),
+                           "Files field lists no recognizable paths",
+                           "List repo-relative file or directory paths (comma- or space-separated), or omit Files.")
 
 
     def check_status(self):
@@ -712,7 +924,8 @@ class Validator(object):
 
     def lines(self, path):
         if path not in self.lines_cache:
-            self.lines_cache[path] = read_lines(path)
+            res = self.file_lines(path)
+            self.lines_cache[path] = res if res is not None else []
         return self.lines_cache[path]
 
     def head_exists(self):
@@ -720,24 +933,29 @@ class Validator(object):
         return ready
 
     def check_new_archives(self):
-        """Judge archives made in this change; committed history is never re-judged.
+        """Judge archives made in this change; committed history is never re-judged unless --audit is enabled.
 
         A task moves to done/ with its checkboxes ticked and a record of the Check
-        run. Only paths absent from HEAD's tree are checked, so an old archive that
-        predates the rule (or a checkout of one) stays quiet.
+        run. Only paths absent from HEAD's tree are checked by default, so an old archive
+        that predates the rule (or a checkout of one) stays quiet. Passing --audit checks
+        all archived tasks.
         """
-        if not self.head_exists():
-            return
-        ready, listing = git_result(self.root, "ls-tree", "-r", "--name-only", "HEAD", "--",
-                                    ".workflow/done")
-        if not ready:
-            return
-        committed = set(listing.splitlines())
+        committed = set()
+        if not self.audit:
+            if not self.head_exists():
+                return
+            ready, listing = git_result(self.root, "ls-tree", "-r", "--name-only", "HEAD", "--",
+                                        ".workflow/done")
+            if not ready:
+                return
+            committed = set(listing.splitlines())
         unticked_suggestion = ("Tick it if it is done; otherwise finish it, or delete it "
                                "and say in ## Progress why it no longer applies.")
         for path in self.files:
             rel = self.rel(path)
-            if not rel.startswith(".workflow/done/") or rel in committed:
+            if not rel.startswith(".workflow/done/"):
+                continue
+            if not self.audit and rel in committed:
                 continue
             shown = visible_lines(self.lines(path))
             for lineno, line in shown:
@@ -752,20 +970,39 @@ class Validator(object):
                 if not section_has_content(shown, "findings"):
                     self.issue("ERROR", path, 1, "spike archived without ## Findings",
                                "Record what the spike found under ## Findings.")
-            elif not any("check after" in line.lower() for _, line in shown):
+            elif not check_after_in_progress(shown):
                 self.issue("ERROR", path, 1, "archived without a Check after record",
                            "Run the Check on the final code and record `Check after:` in ## Progress.")
-
     def specs(self):
         """(effort, path, meta) for every spec file, sorted by effort."""
-        specs_dir = os.path.join(self.wf, "specs")
         found = []
+        if self.staged:
+            ready, listing = git_result(self.root, "ls-files", "--stage", "--", ".workflow/specs")
+            if ready and listing:
+                for line in listing.splitlines():
+                    parts = line.split(None, 2)
+                    if len(parts) < 3:
+                        continue
+                    rest = parts[2].split("\t", 1)
+                    if len(rest) != 2:
+                        continue
+                    stage_num, rel = rest[0].strip(), rest[1].strip()
+                    if stage_num != "0" or not rel.endswith(".md"):
+                        continue
+                    path = os.path.join(self.root, rel)
+                    name = os.path.basename(rel)[:-3]
+                    found.append((name, path, read_fields(path, lines=self.lines(path))))
+            return sorted(found, key=lambda x: x[0])
+
+        specs_dir = os.path.join(self.wf, "specs")
         if not os.path.isdir(specs_dir):
             return found
         for name in sorted(os.listdir(specs_dir)):
             path = os.path.join(specs_dir, name)
             if name.endswith(".md") and os.path.isfile(path):
-                found.append((name[:-3], path, read_fields(path)))
+                if os.path.islink(path) and not is_safe_path(path, self.root):
+                    continue
+                found.append((name[:-3], path, read_fields(path, lines=self.lines(path))))
         return found
 
     def check_spec_done_with_open_tasks(self):
@@ -788,20 +1025,22 @@ class Validator(object):
 
         flow-close writes one `**Accepted:**` line per acceptance, and a reopening
         needs a fresh one, so the count must cover 1 + the number of ## Reopened
-        headings. A spec already done in HEAD is history and stays quiet.
+        headings. A spec already done in HEAD is history and stays quiet by default.
+        Passing --audit checks all done specs.
         """
-        if not self.head_exists():
-            return
         for effort, path, meta in self.specs():
             if meta.get("status").strip().lower() != "done":
                 continue
-            ready, text = git_result(self.root, "show", "HEAD:.workflow/specs/%s.md" % effort)
-            if ready and read_fields(path, split_text(text)).get("status").strip().lower() == "done":
-                continue
+            if not self.audit:
+                if not self.head_exists():
+                    return
+                ready, text = git_result(self.root, "show", "HEAD:.workflow/specs/%s.md" % effort)
+                if ready and read_fields(path, split_text(text)).get("status").strip().lower() == "done":
+                    continue
             required, accepted = 1, 0
             closeout = os.path.join(self.done_dir, effort, "closeout.md")
-            if os.path.isfile(closeout):
-                lines = read_lines(closeout)
+            lines = self.file_lines(closeout)
+            if lines is not None:
                 required += sum(1 for line in lines if REOPENED_RE.match(line))
                 accepted = sum(1 for line in lines if ACCEPTED_RE.match(line))
             if accepted < required:
@@ -812,20 +1051,32 @@ class Validator(object):
 
     def check_decisions(self):
         path = os.path.join(self.wf, "decisions.md")
-        if not os.path.isfile(path):
+        lines = self.file_lines(path)
+        if lines is None:
             self.issue("WARNING", path, 1, "decision log is missing",
                        "Create .workflow/decisions.md with ## Entries.")
             return
-        for line, message, suggestion in decision_problems(read_lines(path)):
+        for line, message, suggestion in decision_problems(lines):
             self.issue("ERROR", path, line, message, suggestion)
 
+    def check_standards(self):
+        path = os.path.join(self.wf, "standards.md")
+        lines = self.file_lines(path)
+        if lines is None:
+            return
+        for lineno, line in enumerate(lines, 1):
+            if STANDARDS_PLACEHOLDER_RE.search(line):
+                self.issue("WARNING", path, lineno,
+                           "standards.md contains unfilled placeholder",
+                           "Fill in or remove placeholders in .workflow/standards.md.")
+                break
 
 
 ISO_TIME_RE = re.compile(r"^[0-9-]+T[0-9][0-9]:[0-9][0-9](:[0-9][0-9](\.[0-9]+)?)?"
                          r"(Z|[+-][0-9][0-9]:[0-9][0-9])?$")
 DATE_RE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
 DECISION_HEADING_RE = re.compile(r"^[^ \t]+[ \t]+-[ \t]+[^ \t]")
-DECISION_OUTSIDE_RE = re.compile(r"^[ \t]*-[ \t]+\*\*(Decided|Instead of|Because|Decided by|Revisit when):")
+DECISION_OUTSIDE_RE = re.compile(r"^[ \t]*-[ \t]+\*\*(Decided|Instead of|Because|Decided by|Revisit when|Supersedes):")
 DECIDED_BY_RE = re.compile(r"^(user|agent)([ \t.(]|$)")
 
 
@@ -873,13 +1124,18 @@ def decision_problems(lines):
             if not state["values"].get(name):
                 problems.append((state["start"], "missing or empty decision field %s" % name,
                                  "Add - **%s:** meaningful content." % name))
-        if "Revisit when" in seen and not state["values"].get("Revisit when"):
-            problems.append((state["start"], "missing or empty decision field Revisit when",
-                             "Add - **Revisit when:** meaningful content, or omit the field."))
-    in_comment = in_fence = entries = False
+        for opt_field in ("Revisit when", "Supersedes"):
+            if opt_field in seen and not state["values"].get(opt_field):
+                problems.append((state["start"], "missing or empty decision field %s" % opt_field,
+                                 "Add - **%s:** meaningful content, or omit the field." % opt_field))
+    fence = None
+    in_comment = entries = False
     seen = {}
     pending = ""
     for number, s in enumerate(lines, 1):
+        if fence is not None:
+            fence, _ = next_fence_state(fence, s)
+            continue
         if in_comment:
             if "-->" in s:
                 in_comment = False
@@ -888,10 +1144,8 @@ def decision_problems(lines):
             if "-->" not in s:
                 in_comment = True
             continue
-        if FENCE_RE.match(s):
-            in_fence = not in_fence
-            continue
-        if in_fence:
+        fence, is_delim = next_fence_state(None, s)
+        if is_delim:
             continue
         if re.match(r"^##[ \t]+Entries[ \t]*$", s):
             finish()
@@ -938,10 +1192,16 @@ def decision_problems(lines):
 
 
 def cmd_validate(args):
-    opts, code = parse_common(args, VALIDATE_USAGE, ("strict",))
+    opts, code = parse_common(args, VALIDATE_USAGE, ("strict", "audit", "staged"))
     if code is not None:
         return code
-    validator = Validator(project_root())
+    root = project_root()
+    if opts["staged"]:
+        ready, _ = git_result(root, "rev-parse", "--is-inside-work-tree")
+        if not ready:
+            sys.stderr.write("Error: --staged requires a git repository\n")
+            return 2
+    validator = Validator(root, audit=opts["audit"], staged=opts["staged"])
     validator.run()
     errors, warnings = validator.errors, validator.warnings
     if errors or (opts["strict"] and warnings):
@@ -1026,14 +1286,8 @@ def spec_info(wf, effort, cache):
 
 def spec_goal(lines):
     """First non-empty line under `## What this is for`."""
-    in_fence = in_comment = inside = False
-    for line in lines:
-        line, in_comment = strip_comments(line, in_comment)
-        if FENCE_RE.match(line):
-            in_fence = not in_fence
-            continue
-        if in_fence:
-            continue
+    inside = False
+    for _, line in visible_lines(lines):
         text = line.strip()
         if text.startswith("#"):
             if inside:
@@ -1058,14 +1312,8 @@ def spec_check_ids(wf, effort):
     if effort == "none" or not os.path.isfile(path):
         return set()
     found = set()
-    in_fence = in_comment = inside = False
-    for line in read_lines(path):
-        line, in_comment = strip_comments(line, in_comment)
-        if FENCE_RE.match(line):
-            in_fence = not in_fence
-            continue
-        if in_fence:
-            continue
+    inside = False
+    for _, line in visible_lines(read_lines(path)):
         text = line.strip()
         if text.startswith("#"):
             m = H2_RE.match(text)
@@ -1096,6 +1344,48 @@ def git_out(root, *args):
     return proc.stdout if proc.returncode == 0 else None
 
 
+def git_cat_batch(root, specs, check_only=False):
+    """Run `git cat-file --batch` (or `--batch-check`) once across `specs`.
+
+    Returns `{spec: (oid, obj_type, body_bytes_or_None)}` for existing objects.
+    """
+    if not specs:
+        return {}
+    unique = list(dict.fromkeys(specs))
+    flag = "--batch-check" if check_only else "--batch"
+    payload = ("\n".join(unique) + "\n").encode("utf-8")
+    try:
+        proc = subprocess.run(["git", "-C", root, "cat-file", flag],
+                              input=payload, stdout=subprocess.PIPE,
+                              stderr=subprocess.DEVNULL)
+    except OSError:
+        return {}
+    if proc.returncode != 0:
+        return {}
+    raw = proc.stdout
+    pos = 0
+    out = {}
+    for spec in unique:
+        nl = raw.find(b"\n", pos)
+        if nl < 0:
+            break
+        header = raw[pos:nl].decode("utf-8", "replace")
+        pos = nl + 1
+        parts = header.split()
+        if header.endswith(" missing") and (len(parts) < 3 or not parts[2].isdigit()):
+            continue
+        if len(parts) < 3 or not parts[2].isdigit():
+            continue
+        oid, obj_type, size = parts[0], parts[1], int(parts[2])
+        if check_only:
+            out[spec] = (oid, obj_type, None)
+        else:
+            body = raw[pos:pos + size]
+            pos += size + 1
+            out[spec] = (oid, obj_type, body)
+    return out
+
+
 def strip_remote_prefix(rest, remotes):
     """Strip the remote prefix from refs/remotes/<rest>, supporting multi-slash remotes."""
     for remote in remotes:
@@ -1108,97 +1398,130 @@ def strip_remote_prefix(rest, remotes):
     return parts[1] if len(parts) == 2 else ""
 
 
-def task_branches(root):
-    """{task ref: [(refname, branch), ...]} for <effort>/<NN>-<slug> branches.
-
-    Local branches win over remote ones; among remotes, newer commits win.
-    The checked-out branch is skipped because the working tree already shows its task file."""
+def list_branch_refs(root):
+    """[(refname, branch_name, commit_oid, is_local)] with local branches first, newest first."""
     listing = git_out(root, "for-each-ref", "--sort=-committerdate",
-                      "--format=%(refname)", "refs/heads", "refs/remotes")
-    if not listing:
-        return {}
-    current = (git_out(root, "symbolic-ref", "-q", "--short", "HEAD") or "").strip()
-    raw_remotes = (git_out(root, "remote") or "").splitlines()
-    remotes = sorted((r.strip() for r in raw_remotes if r.strip()), key=len, reverse=True)
-    heads, remote_refs = [], []
-    for refname in listing.split():
-        if refname.startswith("refs/heads/"):
-            heads.append((refname, refname[len("refs/heads/"):]))
-        elif refname.startswith("refs/remotes/"):
-            name = strip_remote_prefix(refname[len("refs/remotes/"):], remotes)
-            if name and name != "HEAD" and not name.endswith("/HEAD"):
-                remote_refs.append((refname, name))
-    found = {}
-    for refname, name in heads + remote_refs:
-        m = TASK_BRANCH_RE.match(name)
-        if not m or name == current:
-            continue
-        ref = task_ref(m.group(1), norm_number(m.group(2)))
-        found.setdefault(ref, []).append((refname, name))
-    return found
-
-
-def all_branch_names(root):
-    """Every local and remote branch name, newest first."""
-    listing = git_out(root, "for-each-ref", "--sort=-committerdate", "--format=%(refname)",
-                      "refs/heads", "refs/remotes")
+                      "--format=%(refname)\t%(objectname)", "refs/heads", "refs/remotes")
     if not listing:
         return []
-    raw_remotes = (git_out(root, "remote") or "").splitlines()
-    remotes = sorted((r.strip() for r in raw_remotes if r.strip()), key=len, reverse=True)
-    names = []
-    for refname in listing.split():
+    remotes = None
+    heads, remote_refs = [], []
+    for row in listing.splitlines():
+        if "\t" not in row:
+            continue
+        refname, oid = row.split("\t", 1)
+        oid = oid.strip()
         if refname.startswith("refs/heads/"):
-            names.append(refname[len("refs/heads/"):])
+            heads.append((refname, refname[len("refs/heads/"):], oid, True))
         elif refname.startswith("refs/remotes/"):
+            if remotes is None:
+                raw_remotes = (git_out(root, "remote") or "").splitlines()
+                remotes = sorted((r.strip() for r in raw_remotes if r.strip()), key=len, reverse=True)
             name = strip_remote_prefix(refname[len("refs/remotes/"):], remotes)
             if name and name != "HEAD" and not name.endswith("/HEAD"):
-                names.append(name)
-    return names
+                remote_refs.append((refname, name, oid, False))
+    return heads + remote_refs
 
 
-def branch_task_status(root, refname, branch):
-    """active | paused | blocked | finished, read from the task file on a branch."""
-    effort, rest = branch.split("/", 1)
-    for rel in (".workflow/tasks/%s/%s.md" % (effort, rest), ".workflow/tasks/%s.md" % rest):
-        text = git_out(root, "show", "%s:%s" % (refname, rel))
-        if text is not None:
-            lines = [line[:-1] if line.endswith("\r") else line for line in text.split("\n")]
-            status = read_fields(rel, lines).get("status").lower()
-            return status if status in ("paused", "blocked") else "active"
-    if git_out(root, "cat-file", "-e", "%s:.workflow/done/%s/%s.md" % (refname, effort, rest)) is not None:
-        return "finished"
-    return "active"
-
-
-def branch_archived_tasks(root, branch, cache):
-    """Set of task refs archived under .workflow/done/ on `branch` (for stacked tasks)."""
-    if branch in cache:
-        return cache[branch]
+def parse_done_tree(root, tree_oid, tree_cache):
+    """Set of archived task refs inside a `.workflow/done` git tree OID."""
+    if tree_oid in tree_cache:
+        return tree_cache[tree_oid]
     found = set()
-    target_ref = None
-    for candidate in (branch, "origin/" + branch):
-        if git_out(root, "rev-parse", "--verify", "--quiet", "--end-of-options", candidate + "^{commit}") is not None:
-            target_ref = candidate
-            break
-    if target_ref:
-        tree = git_out(root, "ls-tree", "-r", "--name-only", target_ref, ".workflow/done")
-        if tree:
-            for rel in tree.splitlines():
-                parts = rel.split("/")
-                if len(parts) >= 4 and parts[0] == ".workflow" and parts[1] == "done":
-                    m = TASK_FILE_RE.match(parts[-1])
-                    if m:
-                        found.add(task_ref(parts[2], norm_number(m.group(1))))
-    cache[branch] = found
+    listing = git_out(root, "ls-tree", "-r", tree_oid)
+    if listing:
+        flat_blobs = {}
+        for line in listing.splitlines():
+            parts = line.split(None, 2)
+            if len(parts) < 3 or parts[1] != "blob":
+                continue
+            rest = parts[2].split("\t", 1)
+            if len(rest) != 2:
+                continue
+            oid, rel = rest[0].strip(), rest[1].strip()
+            path_parts = rel.split("/")
+            if len(path_parts) >= 2:
+                m = TASK_FILE_RE.match(path_parts[-1])
+                if m:
+                    found.add(task_ref(path_parts[0], norm_number(m.group(1))))
+            elif len(path_parts) == 1:
+                m = TASK_FILE_RE.match(path_parts[0])
+                if m:
+                    flat_blobs[oid] = norm_number(m.group(1))
+        if flat_blobs:
+            blobs = git_cat_batch(root, list(flat_blobs.keys()), check_only=False)
+            for oid, number in flat_blobs.items():
+                entry = blobs.get(oid)
+                if entry and entry[2]:
+                    meta = read_fields("", lines=split_text(entry[2].decode("utf-8", "replace")))
+                    effort = meta.get("effort")
+                    if effort and SLUG_RE.match(effort):
+                        found.add(task_ref(effort, number))
+    tree_cache[tree_oid] = found
     return found
+
+
+def batch_done_by_commit(root, oids, done_cache, tree_cache):
+    """Populate `done_cache[oid]` -> archived task refs for a batch of commit OIDs."""
+    missing = [oid for oid in dict.fromkeys(oids) if oid and oid not in done_cache]
+    if not missing:
+        return
+    specs = ["%s:.workflow/done" % oid for oid in missing]
+    checked = git_cat_batch(root, specs, check_only=True)
+    for oid in missing:
+        entry = checked.get("%s:.workflow/done" % oid)
+        if entry and entry[1] == "tree":
+            done_cache[oid] = parse_done_tree(root, entry[0], tree_cache)
+        else:
+            done_cache[oid] = set()
+
+
+def batch_branch_task_statuses(root, candidates, done_cache):
+    """Return `{(task_ref, branch_name): status}` for `(task_ref, branch_name, oid)` items."""
+    if not candidates:
+        return {}
+    specs = []
+    item_paths = []
+    for t_ref, b_name, oid in candidates:
+        effort, rest = b_name.split("/", 1)
+        p1 = "%s:.workflow/tasks/%s/%s.md" % (oid, effort, rest)
+        p2 = "%s:.workflow/tasks/%s.md" % (oid, rest)
+        p_done = "%s:.workflow/done/%s/%s.md" % (oid, effort, rest)
+        specs.extend((p1, p2, p_done))
+        item_paths.append((t_ref, b_name, oid, p1, p2, p_done))
+    blobs = git_cat_batch(root, specs, check_only=False)
+    out = {}
+    for t_ref, b_name, oid, p1, p2, p_done in item_paths:
+        found_task = blobs.get(p1) or blobs.get(p2)
+        if found_task and found_task[1] == "blob":
+            text = found_task[2].decode("utf-8", "replace")
+            lines = [line[:-1] if line.endswith("\r") else line for line in text.split("\n")]
+            status = read_fields(p1, lines).get("status").lower()
+            out[(t_ref, b_name)] = status if status in ("paused", "blocked") else "active"
+        elif p_done in blobs or t_ref in done_cache.get(oid, ()):
+            out[(t_ref, b_name)] = "finished"
+        else:
+            out[(t_ref, b_name)] = "active"
+    return out
+
+
+def is_ancestor_commit(root, ancestor_oid, descendant_oid, cache):
+    """True when `ancestor_oid` is already merged into (or equal to) `descendant_oid`."""
+    if not ancestor_oid or not descendant_oid:
+        return False
+    if ancestor_oid == descendant_oid:
+        return True
+    key = (ancestor_oid, descendant_oid)
+    if key not in cache:
+        ok, _ = git_result(root, "merge-base", "--is-ancestor", ancestor_oid, descendant_oid)
+        cache[key] = ok
+    return cache[key]
 
 
 def current_branch(root):
     """The checked-out branch, or None on a detached HEAD."""
     name = (git_out(root, "symbolic-ref", "-q", "--short", "HEAD") or "").strip()
     return name or None
-
 
 def main_branch(root):
     """`main` if it exists, else `master`, else None."""
@@ -1259,9 +1582,18 @@ def branch_effort_counts(root, ref, effort):
     return counts[0], counts[1]
 
 
+PATH_CONNECTORS = {"and", "or", "plus", "&", "+"}
+FILE_EXT_RE = re.compile(r"^[A-Za-z0-9_.-]+\.[A-Za-z][A-Za-z0-9_+-]*$")
+DOTFILE_RE = re.compile(r"^\.[A-Za-z][A-Za-z0-9._-]*$")
+FILES_NONE_RE = re.compile(r"^(none|n/a|na)$", re.IGNORECASE)
+
+
 def _clean_path_token(root, token):
     token = token.strip().strip("`'\"").strip()
-    if not token or token.lower() == "none" or (token.startswith("<") and token.endswith(">")):
+    if token.endswith((".", ":", ";")) and not token.endswith(".."):
+        token = token.rstrip(".:;").strip("`'\"").strip()
+    if (not token or FILES_NONE_RE.match(token)
+            or (token.startswith("<") and token.endswith(">"))):
         return ""
     if " " in token or "\t" in token or "|" in token:
         return ""
@@ -1271,9 +1603,11 @@ def _clean_path_token(root, token):
         prefix = token.split("*", 1)[0].rstrip("/")
         token = prefix if prefix else token
     token = token.rstrip("/")
-    if not token or token == ".":
+    if not token or token in (".", "..") or token.lower() in PATH_CONNECTORS:
         return ""
-    if "/" in token or "." in token or os.path.exists(os.path.join(root, token)):
+    if "/" in token or DOTFILE_RE.match(token) or FILE_EXT_RE.match(token):
+        return token
+    if os.path.exists(os.path.join(root, token)):
         return token
     return ""
 
@@ -1282,20 +1616,32 @@ def parse_task_files_field(root, raw):
     """Normalized path list extracted from a task's `Files:` field."""
     if not raw or not raw.strip():
         return []
-    cleaned = re.sub(r"\([^)]*\)", " ", raw)
-    if "`" in cleaned:
-        candidates = re.findall(r"`([^`]+)`", cleaned)
-    elif "," in cleaned:
-        candidates = cleaned.split(",")
-    else:
-        parts = cleaned.split()
-        resolved = [_clean_path_token(root, p) for p in parts]
-        return list(dict.fromkeys(p for p in resolved if p)) if parts and all(resolved) else []
+    cleaned = re.sub(r"\([^)`]*\)", " ", raw)
     out = []
-    for item in candidates:
-        norm = _clean_path_token(root, item)
+
+    def add(candidate):
+        norm = _clean_path_token(root, candidate)
         if norm and norm not in out:
             out.append(norm)
+
+    def resolve_segment(segment):
+        parts = [p for p in re.findall(r"`[^`]+`|\S+", segment)
+                 if p.strip("`'\"").lower() not in PATH_CONNECTORS]
+        resolved = [_clean_path_token(root, p) for p in parts]
+        if parts and all(resolved):
+            for norm in resolved:
+                if norm not in out:
+                    out.append(norm)
+        else:
+            for quoted in re.findall(r"`([^`]+)`", segment):
+                add(quoted)
+
+    if "," in cleaned or ";" in cleaned:
+        for chunk in re.split(r"[,;]+", cleaned):
+            if chunk.strip():
+                resolve_segment(chunk)
+        return out
+    resolve_segment(cleaned)
     return out
 
 
@@ -1362,7 +1708,7 @@ def collect_queue(root, wf, target_effort=None):
                 "integrating": [], "duplicates": [], "overlaps": []}
     # Blockers archived under done/ are finished and never block.
     archived = set()
-    for path in task_files(done_dir):
+    for path in task_files(done_dir, root=root):
         m = TASK_FILE_RE.match(os.path.basename(path))
         if not m:
             continue
@@ -1373,16 +1719,45 @@ def collect_queue(root, wf, target_effort=None):
 
     current = tree["branch"]
     main = tree["main"]
+    head_oid = (git_out(root, "rev-parse", "--verify", "--quiet", "HEAD^{commit}") or "").strip() or None
+    all_refs = list_branch_refs(root)
+    oid_by_ref = {}
+    for refname, b_name, oid, is_local in all_refs:
+        oid_by_ref.setdefault(refname, oid)
+        if is_local:
+            oid_by_ref.setdefault(b_name, oid)
+        elif refname.startswith("refs/remotes/"):
+            oid_by_ref.setdefault(refname[len("refs/remotes/"):], oid)
+
+    def ref_oid(name):
+        for candidate in (name, "origin/" + name):
+            if candidate in oid_by_ref:
+                return candidate, oid_by_ref[candidate]
+        resolved = resolve_branch(root, name)
+        if resolved:
+            oid = (git_out(root, "rev-parse", "--verify", "--quiet",
+                           "--end-of-options", resolved + "^{commit}") or "").strip()
+            if oid:
+                oid_by_ref[resolved] = oid
+                return resolved, oid
+        return None, None
+
+    done_cache = {}
+    tree_cache = {}
+    ancestor_cache = {}
+
     landed_main = set()
     if main and current != main:
-        landed_main = branch_archived_tasks(root, main, {})
-        archived |= landed_main
+        _, main_oid = ref_oid(main)
+        if main_oid:
+            batch_done_by_commit(root, [main_oid], done_cache, tree_cache)
+            landed_main = set(done_cache.get(main_oid, ()))
+            archived |= landed_main
 
     hidden_efforts = set()
     integrating = []
     integration_landed = {}
     skip_branches = set()
-    integration_cache = {}
     specs_dir = os.path.join(wf, "specs")
     if os.path.isdir(specs_dir):
         for name in sorted(os.listdir(specs_dir)):
@@ -1395,12 +1770,13 @@ def collect_queue(root, wf, target_effort=None):
             integration = read_fields(path).get("integration branch").strip()
             if not integration or (integration.startswith("<") and integration.endswith(">")):
                 continue
-            ref = resolve_branch(root, integration)
-            if ref is None:
+            ref, int_oid = ref_oid(integration)
+            if ref is None or not int_oid:
                 continue
             match = TASK_BRANCH_RE.match(current) if current else None
             if current == integration or (match is not None and match.group(1) == effort):
-                for carried in branch_archived_tasks(root, ref, integration_cache):
+                batch_done_by_commit(root, [int_oid], done_cache, tree_cache)
+                for carried in done_cache.get(int_oid, ()):
                     if carried.split("/", 1)[0] == effort:
                         archived.add(carried)
                         integration_landed.setdefault(carried, integration)
@@ -1411,37 +1787,11 @@ def collect_queue(root, wf, target_effort=None):
                                     "archived": done_count, "open": open_count})
                 hidden_efforts.add(effort)
 
-    branches = task_branches(root)
-    branch_status_cache = {}
-    finished_branches = {}
-    for b_ref, candidates in branches.items():
-        for b_refname, b_name in candidates:
-            b_status = branch_task_status(root, b_refname, b_name)
-            branch_status_cache[(b_ref, b_name)] = b_status
-            if b_status == "finished" and b_ref not in finished_branches and b_name not in skip_branches:
-                finished_branches[b_ref] = b_name
-
-    union_cache = {}
-    archived_branch = {}
-    branch_names = all_branch_names(root)
-    for b_name in branch_names:
-        if b_name in skip_branches:
-            continue
-        for carried in branch_archived_tasks(root, b_name, union_cache):
-            archived_branch.setdefault(carried, b_name)
-
-    ready, started, stackable = [], [], []
-    block_tasks, block_numbers = {}, {}
-    task_count = blocked_count = waiting = 0
-    specs = {}
-    base_archived_cache = {}
+    # Scan local open task files first so we only inspect git blobs for live open tasks.
+    local_tasks = []
     open_refs = set()
-
-    def record(blocker, ref, number):
-        block_tasks.setdefault(blocker, []).append(ref)
-        block_numbers.setdefault(blocker, []).append(int(number))
-
-    for path in task_files(tasks_dir):
+    base_branches_needed = []
+    for path in task_files(tasks_dir, root=root):
         name = os.path.basename(path)
         m = TASK_FILE_RE.match(name)
         if not m:
@@ -1460,9 +1810,96 @@ def collect_queue(root, wf, target_effort=None):
         status = meta.get("status").lower()
         if status in ("done", "completed", "archived"):
             continue
-        task_count += 1
         ref = task_ref(effort, number)
         open_refs.add(ref)
+        base_branch = meta.get("base branch").strip()
+        if base_branch and not (base_branch.startswith("<") and base_branch.endswith(">")):
+            base_branches_needed.append(base_branch)
+        local_tasks.append((path, name, number, meta, effort, status, ref, base_branch))
+
+    # Collect potential unlanded blocker refs referenced by open tasks (for stackable PRs).
+    blocker_refs_needed = set()
+    for _, _, _, meta, effort, status, ref, _ in local_tasks:
+        if ref in landed_main or ref in integration_landed or status in ("active", "paused", "blocked"):
+            continue
+        raw = meta.get("blocked by")
+        if raw:
+            try:
+                for token, _ in parse_blockers(raw):
+                    target = resolve_ref(token, effort)
+                    if target not in archived:
+                        blocker_refs_needed.add(target)
+            except BlockerError:
+                pass
+
+    relevant_task_refs = (open_refs - landed_main - set(integration_landed)) | blocker_refs_needed
+    branches = {}
+    task_branch_candidates = []
+    other_branch_oids = []
+    for refname, b_name, oid, _ in all_refs:
+        if b_name not in skip_branches:
+            other_branch_oids.append(oid)
+        m = TASK_BRANCH_RE.match(b_name)
+        if not m or b_name == current:
+            continue
+        b_ref = task_ref(m.group(1), norm_number(m.group(2)))
+        if b_ref not in relevant_task_refs:
+            continue
+        branches.setdefault(b_ref, []).append((refname, b_name, oid))
+        task_branch_candidates.append((b_ref, b_name, oid))
+
+    base_oid_by_name = {}
+    for b_name in dict.fromkeys(base_branches_needed):
+        _, b_oid = ref_oid(b_name)
+        if b_oid:
+            base_oid_by_name[b_name] = b_oid
+            other_branch_oids.append(b_oid)
+
+    if local_tasks:
+        batch_done_by_commit(root, other_branch_oids, done_cache, tree_cache)
+
+    branch_status_cache = batch_branch_task_statuses(root, task_branch_candidates, done_cache)
+    finished_branches = {}
+    live_branches = {}
+    for b_ref, candidates in branches.items():
+        kept = []
+        for refname, b_name, oid in candidates:
+            b_status = branch_status_cache[(b_ref, b_name)]
+            if b_status == "finished" and is_ancestor_commit(root, oid, head_oid, ancestor_cache):
+                continue
+            kept.append((refname, b_name, oid))
+            if b_status == "finished" and b_ref not in finished_branches and b_name not in skip_branches:
+                finished_branches[b_ref] = b_name
+        if kept:
+            live_branches[b_ref] = kept
+
+    archived_branch = {}
+    if local_tasks:
+        for _, b_name, oid, _ in all_refs:
+            if b_name in skip_branches:
+                continue
+            carried = done_cache.get(oid, ())
+            if not carried:
+                continue
+            relevant_carried = [c for c in carried if c in open_refs and c not in archived]
+            if not relevant_carried:
+                continue
+            if is_ancestor_commit(root, oid, head_oid, ancestor_cache):
+                continue
+            for c in relevant_carried:
+                archived_branch.setdefault(c, b_name)
+
+    ready, started, stackable = [], [], []
+    block_tasks, block_numbers = {}, {}
+    task_count = len(local_tasks)
+    blocked_count = waiting = 0
+    specs = {}
+
+    def record(blocker, ref, number):
+        block_tasks.setdefault(blocker, []).append(ref)
+        block_numbers.setdefault(blocker, []).append(int(number))
+
+    for path, name, number, meta, effort, status, ref, base_branch in local_tasks:
         title = meta.title or meta.get("task") or "Untitled"
 
         if ref in landed_main:
@@ -1479,8 +1916,8 @@ def collect_queue(root, wf, target_effort=None):
                 status, branch = "finished", finished_branches[ref]
             elif ref in archived_branch:
                 status, branch = "finished", archived_branch[ref]
-            elif ref in branches:
-                branch = branches[ref][0][1]
+            elif ref in live_branches:
+                branch = live_branches[ref][0][1]
                 status = branch_status_cache[(ref, branch)]
         if status in STARTED_ORDER:
             started.append((STARTED_ORDER[status], int(number), ref, title, status, branch, effort))
@@ -1488,10 +1925,9 @@ def collect_queue(root, wf, target_effort=None):
                 blocked_count += 1
             continue
 
-        base_branch = meta.get("base branch").strip()
         stacked_done = set()
-        if base_branch and not (base_branch.startswith("<") and base_branch.endswith(">")):
-            stacked_done = branch_archived_tasks(root, base_branch, base_archived_cache)
+        if base_branch and base_branch in base_oid_by_name:
+            stacked_done = done_cache.get(base_oid_by_name[base_branch], set())
 
         blocked = False
         raw = meta.get("blocked by")
@@ -1532,16 +1968,19 @@ def collect_queue(root, wf, target_effort=None):
     blockers = sorted(block_tasks, key=lambda b: (-len(block_tasks[b]), b.encode("utf-8")))
 
     claims = {}
-    for branch_name in set(branch_names):
-        m = TASK_BRANCH_RE.match(branch_name)
+    for _, b_name, oid, _ in all_refs:
+        m = TASK_BRANCH_RE.match(b_name)
         if not m:
             continue
         ref = task_ref(m.group(1), norm_number(m.group(2)))
         if target_effort and m.group(1) != target_effort:
             continue
-        claims.setdefault(ref, set()).add(branch_name)
-    duplicates = [(ref, sorted(names)) for ref, names in claims.items()
-                  if len(names) >= 2 and ref in open_refs]
+        if ref not in open_refs:
+            continue
+        if b_name != current and branch_status_cache.get((ref, b_name)) == "finished" and is_ancestor_commit(root, oid, head_oid, ancestor_cache):
+            continue
+        claims.setdefault(ref, set()).add(b_name)
+    duplicates = [(ref, sorted(names)) for ref, names in claims.items() if len(names) >= 2]
     duplicates.sort(key=lambda item: (-len(item[1]), item[0]))
     overlaps = compute_file_overlaps([item[4] for item in ready])
     return {"missing_tasks_dir": False, "tree": tree, "open_maps": maps, "ready": ready,
@@ -1706,12 +2145,661 @@ def cmd_next(args):
     return 0
 
 
+TASK_USAGE = """workflow task - manage task lifecycle state transitions
+
+Usage: workflow task start <task>
+       workflow task archive <task>
+       workflow task <subcommand> --help
+
+Subcommands:
+  start    record current HEAD as Base commit, set Status: active,
+           and update matching spec to in progress
+  archive  verify checkboxes and task proof, remove Status,
+           move task to .workflow/done/<effort>/, and validate
+"""
+
+TASK_START_USAGE = """workflow task start - activate a task and record base commit
+
+Usage: workflow task start <task>
+
+Records the current git HEAD as Base commit, sets Status to active,
+and updates the matching spec to 'in progress' if it was proposed or done.
+<task> can be <effort>/<NN>, <effort>/<NN>-<slug>.md, or a task file path.
+A bare <NN> works when unambiguous across efforts.
+"""
+
+TASK_ARCHIVE_USAGE = """workflow task archive - archive a completed task
+
+Usage: workflow task archive <task>
+
+Verifies all checklist items are ticked, verifies required task proof
+(Check after: in ## Progress, or ## Findings for spike tasks),
+removes Status, moves the task to .workflow/done/<effort>/, and validates
+the resulting repository state. Refuses to overwrite existing archives.
+<task> can be <effort>/<NN>, <effort>/<NN>-<slug>.md, or a task file path.
+A bare <NN> works when unambiguous across efforts.
+"""
+
+
+def replace_file_atomically(path, new_content, mode=None):
+    """Write new_content to a temporary file in the same directory and atomically replace path."""
+    abs_path = os.path.abspath(path)
+    dir_name = os.path.dirname(abs_path)
+
+    if mode is None:
+        if os.path.exists(abs_path):
+            try:
+                mode = stat.S_IMODE(os.stat(abs_path).st_mode)
+            except OSError:
+                pass
+        else:
+            try:
+                current_umask = os.umask(0)
+                os.umask(current_umask)
+                mode = 0o666 & ~current_umask
+            except Exception:
+                mode = 0o644
+
+    fd, temp_path = tempfile.mkstemp(prefix=".tmp_wf_", dir=dir_name)
+    try:
+        if mode is not None:
+            if hasattr(os, "fchmod"):
+                try:
+                    os.fchmod(fd, mode)
+                except OSError:
+                    pass
+            elif hasattr(os, "chmod"):
+                try:
+                    os.chmod(temp_path, mode)
+                except OSError:
+                    pass
+
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as fh:
+            fh.write(new_content)
+        os.replace(temp_path, abs_path)
+    except Exception:
+        if os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
+        raise
+
+
+def resolve_task_file(root, arg):
+    """Resolve a user-provided task reference to a path under .workflow/tasks.
+
+    Accepts:
+    - Relative or absolute path to the file
+    - <effort>/<NN> (e.g. core/01 or core/1)
+    - <effort>/<NN>-<slug>.md or <effort>/<NN>-<slug>
+    - bare <NN> (e.g. 01 or 1) when unambiguous across all efforts
+
+    Returns (task_path, effort, number).
+    Raises ValueError with a user-facing error message on failure.
+    """
+    wf = os.path.join(root, ".workflow")
+    tasks_dir = os.path.join(wf, "tasks")
+    done_dir = os.path.join(wf, "done")
+
+    if not os.path.isdir(tasks_dir):
+        raise ValueError("no .workflow/tasks directory found at %s" % root)
+
+    def _validate_task_path_and_effort(target_path, user_ref):
+        if not is_lexical_subpath(target_path, tasks_dir) or not is_subpath(target_path, tasks_dir):
+            raise ValueError("task '%s' resolves outside .workflow/tasks" % user_ref)
+        bn = os.path.basename(target_path)
+        m = TASK_FILE_RE.match(bn)
+        if not m:
+            raise ValueError("file '%s' does not match task filename pattern (e.g. 01-slug.md)" % bn)
+        num = norm_number(m.group(1))
+        eff = dir_effort(tasks_dir, target_path) or read_fields(target_path).get("effort") or ""
+        eff = eff.strip()
+        if not eff or not SLUG_RE.match(eff):
+            raise ValueError("task '%s' has invalid effort slug '%s'" % (user_ref, eff) if eff else "task '%s' has missing effort slug" % user_ref)
+        return target_path, eff, num
+
+    candidate_paths = [
+        arg,
+        os.path.join(root, arg),
+        os.path.join(wf, arg),
+        os.path.join(tasks_dir, arg),
+    ]
+    for cp in candidate_paths:
+        if os.path.isfile(cp):
+            abs_p = os.path.abspath(cp)
+            if not is_safe_path(abs_p, root):
+                raise ValueError("path '%s' escapes project root" % arg)
+            if is_lexical_subpath(abs_p, done_dir) or is_subpath(abs_p, done_dir):
+                raise ValueError("task '%s' is already in .workflow/done (%s)" % (
+                    arg, os.path.relpath(abs_p, root)))
+            if is_lexical_subpath(abs_p, tasks_dir):
+                return _validate_task_path_and_effort(abs_p, arg)
+            if "/" in arg or arg.endswith(".md"):
+                raise ValueError("task '%s' is not under .workflow/tasks" % arg)
+    all_tasks = task_files(tasks_dir, root=root)
+    matches = []
+
+    clean_arg = arg.strip()
+    if clean_arg.endswith("/"):
+        clean_arg = clean_arg[:-1]
+
+    for p in all_tasks:
+        bn = os.path.basename(p)
+        m = TASK_FILE_RE.match(bn)
+        if not m:
+            continue
+        num = norm_number(m.group(1))
+        eff = dir_effort(tasks_dir, p) or read_fields(p).get("effort") or ""
+        base_no_ext = os.path.splitext(bn)[0]
+
+        if "/" in clean_arg:
+            parts = clean_arg.split("/", 1)
+            arg_eff = parts[0]
+            arg_rest = parts[1]
+            if arg_eff == eff:
+                if arg_rest in (bn, base_no_ext):
+                    matches.append((p, eff, num))
+                else:
+                    rest_m = TASK_FILE_RE.match(arg_rest if arg_rest.endswith(".md") else arg_rest + ".md")
+                    if rest_m and norm_number(rest_m.group(1)) == num:
+                        matches.append((p, eff, num))
+                    elif norm_number(arg_rest.split("-")[0].split(".")[0]) == num:
+                        matches.append((p, eff, num))
+        else:
+            if clean_arg in (bn, base_no_ext):
+                matches.append((p, eff, num))
+            else:
+                bare_m = TASK_FILE_RE.match(clean_arg if clean_arg.endswith(".md") else clean_arg + ".md")
+                if bare_m and norm_number(bare_m.group(1)) == num:
+                    matches.append((p, eff, num))
+                elif norm_number(clean_arg.split("-")[0].split(".")[0]) == num:
+                    matches.append((p, eff, num))
+
+    if len(matches) == 1:
+        p, _, _ = matches[0]
+        return _validate_task_path_and_effort(p, arg)
+
+    if len(matches) > 1:
+        refs = [os.path.relpath(p, root) for p, _, _ in matches]
+        raise ValueError("ambiguous task reference '%s': matches multiple tasks (%s)" % (
+            arg, ", ".join(refs)))
+
+    if os.path.isdir(done_dir):
+        done_tasks = task_files(done_dir, root=root)
+        for p in done_tasks:
+            bn = os.path.basename(p)
+            m = TASK_FILE_RE.match(bn)
+            if not m:
+                continue
+            num = norm_number(m.group(1))
+            eff = dir_effort(done_dir, p) or read_fields(p).get("effort") or ""
+            base_no_ext = os.path.splitext(bn)[0]
+            matched_done = False
+            if "/" in clean_arg:
+                parts = clean_arg.split("/", 1)
+                if parts[0] == eff:
+                    if parts[1] in (bn, base_no_ext):
+                        matched_done = True
+                    elif norm_number(parts[1].split("-")[0].split(".")[0]) == num:
+                        matched_done = True
+            else:
+                if clean_arg in (bn, base_no_ext) or norm_number(clean_arg.split("-")[0].split(".")[0]) == num:
+                    matched_done = True
+            if matched_done:
+                raise ValueError("task '%s' is already in .workflow/done (%s)" % (
+                    arg, os.path.relpath(p, root)))
+
+    raise ValueError("task '%s' not found under .workflow/tasks" % arg)
+
+
+def set_task_fields(content, fields_to_set):
+    """Update or insert header fields in markdown content while preserving unrelated lines."""
+    lines = content.splitlines(keepends=True)
+    newline = "\r\n" if lines and lines[0].endswith("\r\n") else "\n"
+
+    fence = None
+    in_comment = False
+
+    field_lines = {}
+    last_top_field_idx = -1
+    title_idx = -1
+    first_h2_idx = -1
+    has_bullet = False
+    has_bold = True
+
+    for idx, line in enumerate(lines):
+        if fence is not None:
+            fence, _ = next_fence_state(fence, line)
+            continue
+        stripped_line, in_comment = strip_comments(line, in_comment)
+        fence, is_delim = next_fence_state(None, stripped_line)
+        if is_delim:
+            continue
+
+        s = stripped_line.strip()
+        if not s:
+            continue
+        if TITLE_RE.match(s) and title_idx == -1:
+            title_idx = idx
+            continue
+        if H2_RE.match(s) or s.startswith("##"):
+            if first_h2_idx == -1:
+                first_h2_idx = idx
+            continue
+
+        clean = s
+        prefix = ""
+        bm = BULLET_RE.match(clean)
+        if bm:
+            prefix = line[:line.find(bm.group(1))]
+            clean = bm.group(1).strip()
+            has_bullet = True
+
+        fm = BOLD_FIELD_RE.match(clean)
+        bold_style = None
+        if fm:
+            key = fm.group(1).lower().rstrip(":").strip()
+            bold_style = "bold_inside" if ":" in fm.group(1) else "bold_outside"
+            has_bold = True
+        else:
+            fm = PLAIN_FIELD_RE.match(clean)
+            if fm:
+                key = fm.group(1).lower().rstrip(":").strip()
+                bold_style = "plain"
+
+        if bold_style is not None:
+            if first_h2_idx == -1:
+                last_top_field_idx = idx
+            field_lines[key] = (idx, prefix, bold_style)
+
+    to_insert = []
+    for name, val in fields_to_set:
+        key = name.lower()
+        if key in field_lines:
+            idx, prefix, bold_style = field_lines[key]
+            if bold_style == "bold_inside":
+                lines[idx] = "%s**%s:** %s%s" % (prefix, name, val, newline)
+            elif bold_style == "bold_outside":
+                lines[idx] = "%s**%s**: %s%s" % (prefix, name, val, newline)
+            elif bold_style == "plain":
+                lines[idx] = "%s%s: %s%s" % (prefix, name, val, newline)
+            else:
+                lines[idx] = "%s**%s:** %s%s" % (prefix, name, val, newline)
+        else:
+            to_insert.append((name, val))
+
+    if to_insert:
+        insert_prefix = "- " if has_bullet else ""
+        formatted_inserts = []
+        for name, val in to_insert:
+            if has_bold:
+                formatted_inserts.append("%s**%s:** %s%s" % (insert_prefix, name, val, newline))
+            else:
+                formatted_inserts.append("%s%s: %s%s" % (insert_prefix, name, val, newline))
+
+        if last_top_field_idx != -1:
+            ins_pos = last_top_field_idx + 1
+            lines[ins_pos:ins_pos] = formatted_inserts
+        elif first_h2_idx != -1:
+            ins_pos = first_h2_idx
+            lines[ins_pos:ins_pos] = formatted_inserts + [newline]
+        elif title_idx != -1:
+            ins_pos = title_idx + 1
+            lines[ins_pos:ins_pos] = [newline] + formatted_inserts
+        else:
+            lines.extend(formatted_inserts)
+
+    return "".join(lines)
+
+
+def remove_field_from_content(content, field_name="status"):
+    """Remove a header field from task content while preserving all other lines."""
+    lines = content.splitlines(keepends=True)
+    fence = None
+    in_comment = False
+    remove_indices = set()
+
+    for idx, line in enumerate(lines):
+        if fence is not None:
+            fence, _ = next_fence_state(fence, line)
+            continue
+        stripped_line, in_comment = strip_comments(line, in_comment)
+        fence, is_delim = next_fence_state(None, stripped_line)
+        if is_delim:
+            continue
+
+        s = stripped_line.strip()
+        if not s:
+            continue
+        if H2_RE.match(s) or s.startswith("##"):
+            break
+
+        clean = s
+        bm = BULLET_RE.match(clean)
+        if bm:
+            clean = bm.group(1).strip()
+
+        fm = BOLD_FIELD_RE.match(clean) or PLAIN_FIELD_RE.match(clean)
+        if fm:
+            key = fm.group(1).lower().rstrip(":").strip()
+            if key == field_name.lower():
+                remove_indices.add(idx)
+                j = idx + 1
+                while j < len(lines):
+                    next_s = lines[j]
+                    if next_s.startswith(("  ", "\t")) and next_s.strip():
+                        remove_indices.add(j)
+                        j += 1
+                    else:
+                        break
+
+    if not remove_indices:
+        return content
+
+    out = []
+    for idx, line in enumerate(lines):
+        if idx in remove_indices:
+            continue
+        if line.strip() == "" and out and out[-1].strip() == "":
+            continue
+        out.append(line)
+
+    return "".join(out)
+
+
+def update_matching_spec_for_start(root, effort):
+    """Advance matching spec to 'in progress' if currently proposed or done."""
+    if not effort:
+        return None, False
+    if not SLUG_RE.match(effort):
+        raise ValueError("invalid effort slug '%s'" % effort)
+
+    wf = os.path.join(root, ".workflow")
+    specs_dir = os.path.join(wf, "specs")
+    if os.path.exists(specs_dir) and not is_subpath(specs_dir, wf):
+        raise ValueError("specs directory resolves outside .workflow")
+
+    spec_path = os.path.join(specs_dir, "%s.md" % effort)
+    if not os.path.lexists(spec_path):
+        return None, False
+
+    if not is_lexical_subpath(spec_path, specs_dir) or not is_subpath(spec_path, specs_dir):
+        raise ValueError("spec file '%s.md' resolves outside .workflow/specs" % effort)
+
+    if not os.path.isfile(spec_path):
+        return None, False
+
+    meta = read_fields(spec_path)
+    cur_status = meta.get("status", "").strip().lower()
+    if cur_status in ("proposed", "done"):
+        with open(spec_path, "r", encoding="utf-8", newline="") as fh:
+            content = fh.read()
+        new_content = set_task_fields(content, [("Status", "in progress")])
+        replace_file_atomically(spec_path, new_content)
+        return spec_path, True
+    return spec_path, False
+
+
+def task_start(task_arg):
+    root = project_root()
+    wf = os.path.join(root, ".workflow")
+    if not os.path.isdir(wf):
+        sys.stderr.write("Error: no .workflow directory at %s; run 'workflow init' first\n" % root)
+        return 1
+
+    ready, out = git_result(root, "rev-parse", "--verify", "HEAD")
+    if not ready or not out.strip():
+        sys.stderr.write("Error: cannot determine HEAD commit (no git commits found)\n")
+        sys.stderr.write("  Fix: Make an initial commit before starting tasks.\n")
+        return 1
+    head_sha = out.strip()
+
+    try:
+        task_path, effort, number = resolve_task_file(root, task_arg)
+    except ValueError as e:
+        sys.stderr.write("Error: %s\n" % str(e))
+        return 1
+
+    if not effort or not SLUG_RE.match(effort):
+        sys.stderr.write("Error: invalid effort slug '%s'\n" % effort)
+        return 1
+
+    specs_dir = os.path.join(wf, "specs")
+    if os.path.exists(specs_dir) and not is_subpath(specs_dir, wf):
+        sys.stderr.write("Error: specs directory resolves outside .workflow\n")
+        return 1
+
+    spec_path = os.path.join(specs_dir, "%s.md" % effort)
+    if os.path.lexists(spec_path):
+        if not is_lexical_subpath(spec_path, specs_dir) or not is_subpath(spec_path, specs_dir):
+            sys.stderr.write("Error: spec '%s.md' resolves outside .workflow/specs\n" % effort)
+            return 1
+
+    try:
+        with open(task_path, "r", encoding="utf-8", newline="") as fh:
+            original_content = fh.read()
+    except OSError as e:
+        sys.stderr.write("Error: failed to read task file: %s\n" % str(e))
+        return 1
+
+    new_content = set_task_fields(original_content, [
+        ("Base commit", head_sha),
+        ("Status", "active"),
+    ])
+
+    try:
+        replace_file_atomically(task_path, new_content)
+    except OSError as e:
+        sys.stderr.write("Error: failed to update task file: %s\n" % str(e))
+        return 1
+
+    try:
+        spec_path, spec_updated = update_matching_spec_for_start(root, effort)
+    except Exception as e:
+        try:
+            replace_file_atomically(task_path, original_content)
+        except OSError:
+            pass
+        sys.stderr.write("Error: failed to update spec '%s.md': %s\n" % (effort, str(e)))
+        return 1
+
+    ref = task_ref(effort, number)
+    extra = ", spec: in progress" if spec_updated else ""
+    sys.stdout.write("Started task %s (Base commit: %s, Status: active%s)\n" % (
+        ref, head_sha[:10], extra))
+    return 0
+
+
+def task_archive(task_arg):
+    root = project_root()
+    wf = os.path.join(root, ".workflow")
+    if not os.path.isdir(wf):
+        sys.stderr.write("Error: no .workflow directory at %s; run 'workflow init' first\n" % root)
+        return 1
+
+    try:
+        task_path, effort, number = resolve_task_file(root, task_arg)
+    except ValueError as e:
+        sys.stderr.write("Error: %s\n" % str(e))
+        return 1
+
+    if not effort or not SLUG_RE.match(effort):
+        sys.stderr.write("Error: invalid effort slug '%s'\n" % effort)
+        return 1
+
+    try:
+        with open(task_path, "r", encoding="utf-8", newline="") as fh:
+            original_content = fh.read()
+    except OSError as e:
+        sys.stderr.write("Error: failed to read task file: %s\n" % str(e))
+        return 1
+
+    try:
+        source_mode = stat.S_IMODE(os.stat(task_path).st_mode)
+    except OSError:
+        source_mode = None
+
+    lines = original_content.splitlines()
+    shown = visible_lines(lines)
+
+    for lineno, line in shown:
+        m = UNTICKED_RE.match(line.strip())
+        if m:
+            item = m.group(1).strip()
+            if len(item) > 60:
+                item = item[:57] + "..."
+            sys.stderr.write("Error: task has unticked checkbox at line %d: %s\n" % (lineno, item))
+            sys.stderr.write("  Fix: Tick it with '- [x]' if done, or remove it before archiving.\n")
+            return 1
+
+    meta = read_fields(task_path, lines=lines)
+    is_spike = meta.get("task type").strip().lower() == "spike"
+    if is_spike:
+        if not section_has_content(shown, "findings"):
+            sys.stderr.write("Error: spike task missing ## Findings section\n")
+            sys.stderr.write("  Fix: Record what the spike found under ## Findings before archiving.\n")
+            return 1
+    else:
+        if not check_after_in_progress(shown):
+            sys.stderr.write("Error: task missing 'Check after:' in ## Progress\n")
+            sys.stderr.write("  Fix: Run the Check on the final code and record `Check after:` in ## Progress before archiving.\n")
+            return 1
+
+    done_dir = os.path.join(wf, "done")
+    if os.path.exists(done_dir) and not is_subpath(done_dir, wf):
+        sys.stderr.write("Error: .workflow/done resolves outside .workflow\n")
+        return 1
+
+    dest_dir = os.path.join(done_dir, effort)
+    if not is_lexical_subpath(dest_dir, done_dir):
+        sys.stderr.write("Error: destination directory '%s' is not under .workflow/done\n" % os.path.relpath(dest_dir, root))
+        return 1
+
+    if os.path.exists(dest_dir) or os.path.islink(dest_dir):
+        if not is_subpath(dest_dir, done_dir):
+            sys.stderr.write("Error: destination directory '%s' resolves outside .workflow/done\n" % os.path.relpath(dest_dir, root))
+            return 1
+
+    dest_path = os.path.join(dest_dir, os.path.basename(task_path))
+    if not is_lexical_subpath(dest_path, done_dir):
+        sys.stderr.write("Error: destination path '%s' is not under .workflow/done\n" % os.path.relpath(dest_path, root))
+        return 1
+
+    if os.path.exists(dest_path) or os.path.islink(dest_path):
+        if not is_subpath(dest_path, done_dir):
+            sys.stderr.write("Error: destination path '%s' resolves outside .workflow/done\n" % os.path.relpath(dest_path, root))
+            return 1
+        sys.stderr.write("Error: destination file already exists: %s\n" % os.path.relpath(dest_path, root))
+        sys.stderr.write("  Fix: Remove or rename the existing archive before archiving this task.\n")
+        return 1
+
+    updated_content = remove_field_from_content(original_content, "status")
+    try:
+        os.makedirs(dest_dir, exist_ok=True)
+    except OSError as e:
+        sys.stderr.write("Error: cannot create archive directory '%s': %s\n" % (os.path.relpath(dest_dir, root), str(e)))
+        return 1
+
+    if not is_subpath(dest_dir, done_dir):
+        sys.stderr.write("Error: destination directory '%s' resolves outside .workflow/done\n" % os.path.relpath(dest_dir, root))
+        return 1
+
+    try:
+        replace_file_atomically(dest_path, updated_content, mode=source_mode)
+    except OSError as e:
+        sys.stderr.write("Error: failed to write archive destination '%s': %s\n" % (os.path.relpath(dest_path, root), str(e)))
+        return 1
+
+    try:
+        os.remove(task_path)
+    except OSError as e:
+        if os.path.exists(dest_path):
+            try:
+                os.remove(dest_path)
+            except OSError:
+                pass
+        sys.stderr.write("Error: failed to remove original task file: %s\n" % str(e))
+        return 1
+
+    validator = Validator(root)
+    validator.run()
+
+    dest_rel = os.path.relpath(dest_path, root).replace(os.sep, "/")
+    new_archive_issues = [i for i in validator.issues if i["file"] == dest_rel]
+    if validator.errors > 0 or new_archive_issues:
+        try:
+            if os.path.exists(dest_path):
+                os.remove(dest_path)
+        except OSError:
+            pass
+        try:
+            replace_file_atomically(task_path, original_content, mode=source_mode)
+        except OSError:
+            pass
+
+        all_fail_issues = [i for i in validator.issues if i["severity"] == "ERROR" or i["file"] == dest_rel]
+        sys.stderr.write("Error: validation failed after archiving task (%d error(s)):\n" % len(all_fail_issues))
+        for item in all_fail_issues:
+            sys.stderr.write("  %s:%d: %s\n    Fix: %s\n" % (
+                item["file"], item["line"], item["message"], item["suggestion"]))
+        return 1
+
+    ref = task_ref(effort, number)
+    sys.stdout.write("Archived task %s to %s\n" % (ref, os.path.relpath(dest_path, root)))
+    return 0
+
+
+def cmd_task(args):
+    if not args or args[0] in ("-h", "--help"):
+        (sys.stdout if args else sys.stderr).write(TASK_USAGE)
+        return 0 if args else 2
+
+    subcommand = args[0]
+    sub_args = args[1:]
+
+    if subcommand in ("-h", "--help"):
+        sys.stdout.write(TASK_USAGE)
+        return 0
+
+    if subcommand == "start":
+        if not sub_args:
+            sys.stderr.write("Error: missing task argument\n")
+            sys.stderr.write(TASK_START_USAGE)
+            return 2
+        if sub_args[0] in ("-h", "--help"):
+            sys.stdout.write(TASK_START_USAGE)
+            return 0
+        if len(sub_args) > 1:
+            sys.stderr.write("Error: unexpected extra argument: %s\n" % sub_args[1])
+            return 2
+        return task_start(sub_args[0])
+
+    if subcommand == "archive":
+        if not sub_args:
+            sys.stderr.write("Error: missing task argument\n")
+            sys.stderr.write(TASK_ARCHIVE_USAGE)
+            return 2
+        if sub_args[0] in ("-h", "--help"):
+            sys.stdout.write(TASK_ARCHIVE_USAGE)
+            return 0
+        if len(sub_args) > 1:
+            sys.stderr.write("Error: unexpected extra argument: %s\n" % sub_args[1])
+            return 2
+        return task_archive(sub_args[0])
+
+    sys.stderr.write("Error: unknown task subcommand: %s\n" % subcommand)
+    sys.stderr.write(TASK_USAGE)
+    return 2
+
 # ------------------------------------------------------------------- main
 
-MAIN_USAGE = """workflow-core.py %s - validate and next for the workflow toolkit
+MAIN_USAGE = """workflow-core.py %s - validate, queue and task lifecycle for the workflow toolkit
 
-Usage: workflow-core.py validate [--strict] [--format text|json] [--no-color]
+Usage: workflow-core.py validate [--strict] [--audit] [--staged] [--format text|json] [--no-color]
        workflow-core.py next [--effort SLUG] [--all] [--brief] [--format text|json] [--no-color]
+       workflow-core.py task start <task>
+       workflow-core.py task archive <task>
        workflow-core.py <command> --help
 """ % VERSION
 
@@ -1725,6 +2813,8 @@ def main(argv):
         return cmd_validate(args)
     if command == "next":
         return cmd_next(args)
+    if command == "task":
+        return cmd_task(args)
     if command == "pulse":
         sys.stderr.write("workflow pulse was removed: run 'workflow next --brief'\n")
         return 2

@@ -13,6 +13,16 @@ failed=0
 
 pass() { printf '✓ %s\n' "$1"; passed=$((passed + 1)); }
 fail() { printf '✗ %s\n' "$1"; failed=$((failed + 1)); }
+portable_sed() {
+  local expression="$1" file="$2" tmp="${2}.workflow-tmp.$$"
+  if sed "$expression" "$file" > "$tmp"; then
+    cat "$tmp" > "$file"
+    rm -f "$tmp"
+  else
+    rm -f "$tmp"
+    return 1
+  fi
+}
 
 # Helper to initialize a clean git repo with workflow
 setup_repo() {
@@ -26,7 +36,7 @@ setup_repo() {
   git -C "$dir" commit -q -m "initial"
   (cd "$dir" && "$WORKFLOW" init >/dev/null 2>&1)
   # Fill template placeholders in standards.md so standards.md passes doctor
-  sed -i 's/<[^>]*>/placeholder/g' "$dir/.workflow/standards.md"
+  portable_sed 's/<[^>]*>/placeholder/g' "$dir/.workflow/standards.md"
 }
 
 # --- Scenario 1: draft placeholder accepted & doctor exit 0 ---
@@ -635,7 +645,8 @@ test_agents_block_edit_preserved() {
   setup_repo "$repo"
 
   # Add line inside workflow block
-  sed -i '/<!-- workflow:start -->/a - Custom user workflow rule' "$repo/AGENTS.md"
+  portable_sed '/<!-- workflow:start -->/a\
+- Custom user workflow rule' "$repo/AGENTS.md"
 
   # Run update without --force
   local update_out
@@ -662,7 +673,8 @@ test_agents_block_force_overwrites() {
   local repo="$TMPDIR/repo_agents_block_preserve"
   if [ ! -d "$repo" ]; then
     setup_repo "$repo"
-    sed -i '/<!-- workflow:start -->/a - Custom user workflow rule' "$repo/AGENTS.md"
+    portable_sed '/<!-- workflow:start -->/a\
+- Custom user workflow rule' "$repo/AGENTS.md"
   fi
 
   # Run update with --force
@@ -838,7 +850,8 @@ test_uninstall_edited_agents_block_retained() {
   setup_repo "$repo"
 
   # Edit inside workflow block
-  sed -i '/<!-- workflow:start -->/a - Custom local rule that must stay' "$repo/AGENTS.md"
+  portable_sed '/<!-- workflow:start -->/a\
+- Custom local rule that must stay' "$repo/AGENTS.md"
 
   local out
   out="$(cd "$repo" && "$WORKFLOW" uninstall 2>&1 || true)"
@@ -856,10 +869,12 @@ test_uninstall_edited_agents_block_retained() {
     fail "edited content inside AGENTS.md was lost during uninstall"
   fi
 
-  if [ -f "$repo/.workflow/.agents-block.workflow-managed" ]; then
-    pass "ownership marker retained when edited AGENTS.md block preserved"
+  if [ -z "$(find "$repo" -name '*workflow-managed*' 2>/dev/null)" ] &&
+     (cd "$repo" && "$WORKFLOW" init >/dev/null 2>&1) &&
+     grep -q -- "- Custom local rule that must stay" "$repo/AGENTS.md"; then
+    pass "no dotfile clutter left and subsequent init still preserves edited AGENTS.md block"
   else
-    fail "ownership marker should be retained for edited AGENTS.md block"
+    fail "edited AGENTS.md block should stay protected without scattered marker dotfiles"
   fi
 
   if [[ "$out" == *"kept AGENTS.md: workflow block was edited locally"* ]]; then
@@ -908,10 +923,11 @@ EOF
     fail "workflow block was not removed from AGENTS.md"
   fi
 
-  if [ ! -f "$repo/.workflow/.agents-block.workflow-managed" ]; then
-    pass "agents block marker removed when block successfully uninstalled"
+  if [ ! -f "$repo/.workflow/.workflow-version" ] &&
+     [ -z "$(find "$repo" -name '*workflow-managed*' 2>/dev/null)" ]; then
+    pass "manifest and ownership metadata removed when uninstalled"
   else
-    fail "agents block marker should be removed after block uninstalled"
+    fail "manifest and ownership metadata should be removed after uninstall"
   fi
 }
 
@@ -974,7 +990,7 @@ test_uninstall_markerless_legacy_agents_block() {
   setup_repo "$repo"
 
   # Subtest A: unmodified block without marker file is removed
-  rm -f "$repo/.workflow/.agents-block.workflow-managed"
+  rm -f "$repo/.workflow/.workflow-version" "$repo/.workflow/.agents-block.workflow-managed"
   (cd "$repo" && "$WORKFLOW" uninstall >/dev/null 2>&1)
   if [ -f "$repo/AGENTS.md" ]; then
     fail "markerless legacy unmodified AGENTS.md should have been removed"
@@ -985,8 +1001,9 @@ test_uninstall_markerless_legacy_agents_block() {
   # Subtest B: edited block without marker file is preserved
   repo="$TMPDIR/repo_uninstall_legacy_edited"
   setup_repo "$repo"
-  rm -f "$repo/.workflow/.agents-block.workflow-managed"
-  sed -i '/<!-- workflow:start -->/a - Legacy edit that must be kept' "$repo/AGENTS.md"
+  rm -f "$repo/.workflow/.workflow-version" "$repo/.workflow/.agents-block.workflow-managed"
+portable_sed '/<!-- workflow:start -->/a\
+- Legacy edit that must be kept' "$repo/AGENTS.md"
 
   local out
   out="$(cd "$repo" && "$WORKFLOW" uninstall 2>&1 || true)"
@@ -1254,11 +1271,20 @@ test_symlink_boundaries_rejected() {
   status_un=0
   (cd "$repo_mk" && "$WORKFLOW" uninstall >/dev/null 2>&1) || status_un=$?
 
+  local repo_vf="$TMPDIR/repo_symlink_manifest"
+  setup_repo "$repo_vf"
+  rm -f "$repo_vf/.workflow/.workflow-version"
+  ln -s "$mk_outside" "$repo_vf/.workflow/.workflow-version"
+  local status_vf_up=0 status_vf_un=0
+  (cd "$repo_vf" && "$WORKFLOW" update >/dev/null 2>&1) || status_vf_up=$?
+  (cd "$repo_vf" && "$WORKFLOW" uninstall >/dev/null 2>&1) || status_vf_un=$?
+
   if [ "$status_init" -ne 0 ] && [ "$status_up" -ne 0 ] && [ "$status_un" -ne 0 ] && \
+     [ "$status_vf_up" -ne 0 ] && [ "$status_vf_un" -ne 0 ] && \
      [ -f "$mk_outside" ] && [ "$(cat "$mk_outside")" = "MARKER_SENTINEL_CONTENT" ]; then
-    pass "managed marker symlink rejected on init/update/uninstall with outside target intact"
+    pass "managed marker and manifest symlinks rejected on init/update/uninstall with outside target intact"
   else
-    fail "managed marker symlink should reject init/update/uninstall and protect outside target"
+    fail "managed marker or manifest symlink should reject init/update/uninstall and protect outside target"
   fi
 
   # Subtest F: AGENTS.md is a symlink pointing outside
@@ -1412,7 +1438,7 @@ EOF
   printf '%s\n' "$paired_content" > "$repo/AGENTS.md"
   (cd "$repo" && "$WORKFLOW" init --force >/dev/null 2>&1 || true)
   # Ensure standards placeholder filled
-  sed -i 's/<[^>]*>/placeholder/g' "$repo/.workflow/standards.md"
+  portable_sed 's/<[^>]*>/placeholder/g' "$repo/.workflow/standards.md"
 
   local status_paired=0
   (cd "$repo" && "$WORKFLOW" doctor >/dev/null 2>&1) || status_paired=$?
@@ -1435,7 +1461,9 @@ test_vendored_cli() {
   local repo="$TMPDIR/repo_vendored"
   setup_repo "$repo"
   local cli="$repo/.workflow/bin/workflow"
-  if [ -x "$cli" ] && [ -f "$repo/.workflow/bin/workflow-core.py" ] && [ -f "$repo/.workflow/bin/.workflow-managed" ]; then
+  if [ -x "$cli" ] && [ -f "$repo/.workflow/bin/workflow-core.py" ] &&
+     grep -q ' \.workflow/bin/workflow$' "$repo/.workflow/.workflow-version" &&
+     [ -z "$(find "$repo" -name '*workflow-managed*' 2>/dev/null)" ]; then
     pass "init copies the CLI into .workflow/bin"
   else
     fail "init should copy an executable CLI into .workflow/bin"
@@ -1535,6 +1563,43 @@ EOF
 EOF
   git -C "$repo" add -A
   if git -C "$repo" commit -q -m bad >/dev/null 2>&1; then fail "hook should block a commit with validate errors"; else pass "hook blocks a commit with validate errors"; fi
+  git -C "$repo" rm --cached -q "$repo/.workflow/tasks/core/02-bad.md"
+  # Partially staged metadata: valid staged content passes commit even if worktree has unstaged errors
+  cat > "$repo/.workflow/tasks/core/03-staged.md" <<'EOF'
+# 03: Valid
+**Effort:** core
+**Check:** `true` passes
+**Blocked by:** None
+EOF
+  git -C "$repo" add "$repo/.workflow/tasks/core/03-staged.md"
+  cat > "$repo/.workflow/tasks/core/03-staged.md" <<'EOF'
+# 03: Valid
+**Effort:** core
+**Blocked by:** None
+EOF
+  if git -C "$repo" commit -q -m "staged valid passes" >/dev/null 2>&1; then
+    pass "hook validates staged index and allows commit when worktree has unstaged error"
+  else
+    fail "hook should validate staged index and allow commit when staged is valid"
+  fi
+
+  # Conversely: invalid staged content blocks commit even if worktree was fixed
+  git -C "$repo" add "$repo/.workflow/tasks/core/03-staged.md"
+  cat > "$repo/.workflow/tasks/core/03-staged.md" <<'EOF'
+# 03: Valid
+**Effort:** core
+**Check:** `true` passes
+**Blocked by:** None
+EOF
+  if git -C "$repo" commit -q -m "staged invalid blocks" >/dev/null 2>&1; then
+    fail "hook should block commit when staged index has validate errors even if worktree is fixed"
+  else
+    pass "hook blocks commit when staged index has validate errors"
+  fi
+  git -C "$repo" checkout HEAD -- "$repo/.workflow/tasks/core/03-staged.md" >/dev/null 2>&1 || true
+  rm -f "$repo/.workflow/tasks/core/03-staged.md"
+  git -C "$repo" rm -qf "$repo/.workflow/tasks/core/03-staged.md" >/dev/null 2>&1 || true
+  git -C "$repo" commit --allow-empty -q -m "clean staged fixture" >/dev/null 2>&1 || true
   rm -f "$repo/.workflow/tasks/core/02-bad.md"; git -C "$repo" add -A
   local no_python="$TMPDIR/hook_no_python" tool
   mkdir -p "$no_python"
@@ -1601,7 +1666,7 @@ EOF
     fail "next should read nested tasks: $next"
   fi
   if (cd "$repo" && "$WORKFLOW" validate --no-color >/dev/null 2>&1 || [ $? -eq 1 ]); then pass "same file name in two effort directories is valid"; else fail "two efforts may both have 01-setup.md"; fi
-  sed -i 's/^\*\*Effort:\*\* web$/**Effort:** api/' "$repo/.workflow/tasks/web/01-setup.md"
+  portable_sed 's/^\*\*Effort:\*\* web$/**Effort:** api/' "$repo/.workflow/tasks/web/01-setup.md"
   local out; out="$(cd "$repo" && "$WORKFLOW" validate --no-color 2>&1 || true)"
   if [[ "$out" == *"task is under web/ but its Effort is 'api'"* ]]; then pass "validate rejects an Effort that disagrees with its directory"; else fail "validate should reject a directory/Effort mismatch: $out"; fi
   out="$(cd "$repo" && "$WORKFLOW" doctor 2>&1 || true)"
@@ -1661,7 +1726,7 @@ test_doctor_branch_version_drift() {
   local current
   current="$(sed -n 's/^version: //p' "$repo/.workflow/.workflow-version")"
   git -C "$repo" checkout -q -b feature
-  sed -i 's/^version: .*/version: 2.6.0/' "$repo/.workflow/.workflow-version"
+  portable_sed 's/^version: .*/version: 2.6.0/' "$repo/.workflow/.workflow-version"
   git -C "$repo" commit -qam "stale workflow"
   status=0
   out="$(cd "$repo" && "$WORKFLOW" doctor 2>&1)" || status=$?
@@ -1678,7 +1743,7 @@ test_doctor_uncommitted_update() {
   git -C "$repo" branch -M main
   git -C "$repo" add -A
   git -C "$repo" commit -q -m "workflow install"
-  sed -i 's/^version: .*/version: 99.0.0/' "$repo/.workflow/.workflow-version"
+  portable_sed 's/^version: .*/version: 99.0.0/' "$repo/.workflow/.workflow-version"
   status=0
   out="$(cd "$repo" && "$WORKFLOW" doctor 2>&1)" || status=$?
   if [ "$status" -ne 0 ] && [[ "$out" == *"the last 'workflow update' is not committed: commit it on main; other branches and worktrees keep the old rules until they merge it"* ]]; then
@@ -1833,6 +1898,224 @@ EOF
   fi
 }
 
+# --- Consolidated manifest in .workflow-version & legacy .workflow-managed migration ---
+test_single_manifest_and_legacy_marker_migration() {
+  local repo="$TMPDIR/repo_manifest_migration" out status=0
+  mkdir -p "$repo"
+  git -C "$repo" init -q
+  git -C "$repo" config user.email "test@example.com"
+  git -C "$repo" config user.name "Test User"
+  echo "root" > "$repo/README.md"
+  git -C "$repo" add README.md
+  git -C "$repo" commit -q -m "initial"
+  (cd "$repo" && "$WORKFLOW" init --claude >/dev/null 2>&1)
+  portable_sed 's/<[^>]*>/placeholder/g' "$repo/.workflow/standards.md"
+
+  if [ -z "$(find "$repo" -name '*workflow-managed*' 2>/dev/null)" ] &&
+     grep -qx 'managed:' "$repo/.workflow/.workflow-version" &&
+     grep -q ' AGENTS\.md#workflow-block$' "$repo/.workflow/.workflow-version" &&
+     grep -q ' CLAUDE\.md#workflow-block$' "$repo/.workflow/.workflow-version"; then
+    pass "init --claude records all checksums in .workflow-version with zero .workflow-managed dotfiles"
+  else
+    fail "init --claude should write single manifest without .workflow-managed dotfiles"
+  fi
+
+  # Simulate a pre-consolidation repo with legacy .workflow-managed files and no managed: section
+  awk '/^managed:$/ { exit } { print }' "$repo/.workflow/.workflow-version" > "$repo/.workflow/.workflow-version.tmp"
+  mv "$repo/.workflow/.workflow-version.tmp" "$repo/.workflow/.workflow-version"
+  local s_dir
+  for s_dir in "$repo/.agents/skills"/*/ "$repo/.claude/skills"/*/; do
+    cksum < "${s_dir}SKILL.md" | cut -d' ' -f1 > "${s_dir}.workflow-managed"
+  done
+  local a_file a_base
+  for a_file in "$repo/.agents/agents"/*.md "$repo/.claude/agents"/*.md; do
+    a_base="$(basename "$a_file" .md)"
+    cksum < "$a_file" | cut -d' ' -f1 > "$(dirname "$a_file")/.${a_base}.workflow-managed"
+  done
+  cksum < "$repo/.workflow/CONVENTIONS.md" | cut -d' ' -f1 > "$repo/.workflow/.CONVENTIONS.workflow-managed"
+  cksum < "$repo/.workflow/STYLE.md" | cut -d' ' -f1 > "$repo/.workflow/.STYLE.workflow-managed"
+  cksum < "$KIT/templates/project/AGENTS.md" | cut -d' ' -f1 > "$repo/.workflow/.agents-block.workflow-managed"
+  cksum < "$KIT/templates/project/CLAUDE.md" | cut -d' ' -f1 > "$repo/.workflow/.claude-block.workflow-managed"
+  printf '%s workflow\n%s workflow-core.py\n' \
+    "$(cksum < "$repo/.workflow/bin/workflow" | cut -d' ' -f1)" \
+    "$(cksum < "$repo/.workflow/bin/workflow-core.py" | cut -d' ' -f1)" > "$repo/.workflow/bin/.workflow-managed"
+
+  # Edit one skill locally before migrating
+  printf '\n<!-- local skill customization -->\n' >> "$repo/.agents/skills/flow-grill/SKILL.md"
+
+  out="$(cd "$repo" && "$WORKFLOW" update 2>&1)"
+  if [ -z "$(find "$repo" -name '*workflow-managed*' 2>/dev/null)" ] &&
+     grep -qx 'managed:' "$repo/.workflow/.workflow-version" &&
+     grep -q 'local skill customization' "$repo/.agents/skills/flow-grill/SKILL.md" &&
+     [[ "$out" == *"skipped skill flow-grill"* ]]; then
+    pass "update migrates and removes all legacy .workflow-managed dotfiles while preserving local edits"
+  else
+    fail "update failed to migrate legacy .workflow-managed files cleanly: $out"
+  fi
+
+  status=0
+  out="$(cd "$repo" && "$WORKFLOW" doctor 2>&1)" || status=$?
+  if [ "$status" -ne 0 ] && [[ "$out" == *"skill flow-grill edited"* ]]; then
+    pass "doctor still detects pre-migration local skill edit from consolidated manifest"
+  else
+    fail "doctor should detect preserved local skill edit after migration (exit $status): $out"
+  fi
+}
+
+test_bash_temp_files_cleanup() {
+  local repo="$TMPDIR/repo_tmp_cleanup"
+  setup_repo "$repo"
+  local tmp_before tmp_after
+  tmp_before="$(find "$TMPDIR" -name 'tmp.*' 2>/dev/null | wc -l)"
+  (cd "$repo" && "$WORKFLOW" update >/dev/null 2>&1)
+  (cd "$repo" && "$WORKFLOW" doctor >/dev/null 2>&1 || true)
+  tmp_after="$(find "$TMPDIR" -name 'tmp.*' 2>/dev/null | wc -l)"
+  if [ "$tmp_after" -le "$tmp_before" ]; then
+    pass "workflow traps clean up temp files on exit and signals"
+  else
+    fail "workflow left temporary files behind: before=$tmp_before after=$tmp_after"
+  fi
+}
+
+test_task_lifecycle_cli() {
+  local repo="$TMPDIR/repo_task_lifecycle"
+  setup_repo "$repo"
+  local cli="$repo/.workflow/bin/workflow"
+
+  # Initial commit so git HEAD is valid
+  git -C "$repo" commit --allow-empty -q -m "initial commit"
+  local head_sha
+  head_sha="$(git -C "$repo" rev-parse HEAD)"
+
+  mkdir -p "$repo/.workflow/specs" "$repo/.workflow/tasks/core"
+  cat > "$repo/.workflow/specs/core.md" <<'EOF'
+# Spec: core
+
+**Status:** proposed
+**Priority:** normal
+
+## What this is for
+Core spec goal.
+
+## How we will know it is done
+- **W1.** Spec passes.
+EOF
+
+  cat > "$repo/.workflow/tasks/core/01-init.md" <<'EOF'
+# 01: Init core
+
+**Effort:** core
+**Blocked by:** None
+**Check:** echo ok
+
+<!-- preserved comment -->
+## Context
+Preserved task body text.
+EOF
+
+  # 1. Project CLI starts task
+  local out status=0
+  out="$(cd "$repo" && "$cli" task start core/01 2>&1)" || status=$?
+  if [ "$status" -eq 0 ] && [[ "$out" == *"Started task core/01"* ]]; then
+    pass "cli task start succeeds and outputs confirmation"
+  else
+    fail "cli task start failed (exit $status): $out"
+  fi
+
+  if grep -qF "**Base commit:** $head_sha" "$repo/.workflow/tasks/core/01-init.md" && \
+     grep -qF "**Status:** active" "$repo/.workflow/tasks/core/01-init.md" && \
+     grep -q "Preserved task body text." "$repo/.workflow/tasks/core/01-init.md"; then
+    pass "cli task start records Base commit, sets Status active, and preserves task body"
+  else
+    fail "cli task start did not correctly update task file: $(cat "$repo/.workflow/tasks/core/01-init.md")"
+  fi
+
+  if grep -qF "**Status:** in progress" "$repo/.workflow/specs/core.md"; then
+    pass "cli task start advances matching spec to in progress"
+  else
+    fail "cli task start should advance spec to in progress: $(cat "$repo/.workflow/specs/core.md")"
+  fi
+
+  # 2. Global wrapper works as well
+  status=0
+  out="$(cd "$repo" && "$WORKFLOW" task start core/01 2>&1)" || status=$?
+  if [ "$status" -eq 0 ]; then
+    pass "global workflow task start succeeds idempotently"
+  else
+    fail "global workflow task start failed (exit $status): $out"
+  fi
+
+  # 3. Task archive refuses unticked checkboxes
+  cat >> "$repo/.workflow/tasks/core/01-init.md" <<'EOF'
+
+- [ ] unticked checklist item
+
+## Progress
+
+Check after: verified
+EOF
+
+  status=0
+  out="$(cd "$repo" && "$cli" task archive core/01 2>&1)" || status=$?
+  if [ "$status" -ne 0 ] && [[ "$out" == *"unticked checkbox"* ]] && [ -f "$repo/.workflow/tasks/core/01-init.md" ]; then
+    pass "cli task archive refuses task with unticked checkboxes and retains source"
+  else
+    fail "cli task archive should refuse unticked checkbox (exit $status): $out"
+  fi
+
+  # 4. Task archive refuses missing Check after proof
+  portable_sed 's/- \[ \]/- [x]/' "$repo/.workflow/tasks/core/01-init.md"
+  portable_sed '/Check after:/d' "$repo/.workflow/tasks/core/01-init.md"
+
+  status=0
+  out="$(cd "$repo" && "$cli" task archive core/01 2>&1)" || status=$?
+  if [ "$status" -ne 0 ] && [[ "$out" == *"missing 'Check after:' in ## Progress"* ]] && [ -f "$repo/.workflow/tasks/core/01-init.md" ]; then
+    pass "cli task archive refuses missing Check after proof"
+  else
+    fail "cli task archive should refuse missing Check after (exit $status): $out"
+  fi
+
+  # 5. Task archive refuses to clobber existing destination
+  printf '\nCheck after: verified\n' >> "$repo/.workflow/tasks/core/01-init.md"
+  mkdir -p "$repo/.workflow/done/core"
+  printf 'EXISTING_ARCHIVE_CONTENT\n' > "$repo/.workflow/done/core/01-init.md"
+
+  status=0
+  out="$(cd "$repo" && "$cli" task archive core/01 2>&1)" || status=$?
+  if [ "$status" -ne 0 ] && [[ "$out" == *"destination file already exists"* ]] && \
+     grep -q 'EXISTING_ARCHIVE_CONTENT' "$repo/.workflow/done/core/01-init.md"; then
+    pass "cli task archive refuses to overwrite existing destination"
+  else
+    fail "cli task archive should not overwrite existing destination (exit $status): $out"
+  fi
+
+  # 6. Task archive succeeds after clearing collision
+  rm -f "$repo/.workflow/done/core/01-init.md"
+  status=0
+  out="$(cd "$repo" && "$cli" task archive core/01 2>&1)" || status=$?
+  if [ "$status" -eq 0 ] && [[ "$out" == *"Archived task core/01"* ]]; then
+    pass "cli task archive succeeds"
+  else
+    fail "cli task archive failed (exit $status): $out"
+  fi
+
+  if [ ! -e "$repo/.workflow/tasks/core/01-init.md" ] && \
+     [ -f "$repo/.workflow/done/core/01-init.md" ] && \
+     ! grep -q 'Status:' "$repo/.workflow/done/core/01-init.md" && \
+     grep -q 'Preserved task body text.' "$repo/.workflow/done/core/01-init.md" && \
+     grep -q 'Check after: verified' "$repo/.workflow/done/core/01-init.md"; then
+    pass "cli task archive moved file to done/, removed Status, and preserved body"
+  else
+    fail "cli task archive file state incorrect: $(cat "$repo/.workflow/done/core/01-init.md" 2>/dev/null || true)"
+  fi
+
+  if (cd "$repo" && "$cli" validate --no-color >/dev/null 2>&1); then
+    pass "validate passes after task archive"
+  else
+    fail "validate failed after task archive: $(cd "$repo" && "$cli" validate --no-color 2>&1 || true)"
+  fi
+}
+
 test_draft_placeholder_accepted
 test_invalid_concrete_sha_rejected
 test_invalid_dependencies_rejected
@@ -1874,6 +2157,9 @@ test_update_branch_guidance
 test_removed_commands_and_stale_copies
 test_next_flags_cli
 test_standards_placeholder_precision
+test_single_manifest_and_legacy_marker_migration
+test_bash_temp_files_cleanup
+test_task_lifecycle_cli
 
 printf '\nResults: %d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" -eq 0 ]

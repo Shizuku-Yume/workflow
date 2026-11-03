@@ -29,6 +29,6 @@ Real path: <TODO: how to exercise the app or CLI end to end>
 
 Landing: <TODO: direct | local-merge | pr>
 - `direct`: commit on the current branch (solo work).
-- `local-merge`: merge task branches locally (parallel worktrees).
+- `local-merge`: merge task branches locally (parallel worktrees in `.workflow/worktrees/<effort>-<NN>`).
 - `pr`: land through pull requests (shared remote).
 See CONVENTIONS §7. Name the main branch here if it is not `main` or `master`.

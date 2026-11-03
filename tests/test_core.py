@@ -8,6 +8,7 @@ Each test builds its project in a temporary git repository.
 import json
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -283,16 +284,127 @@ class ValidateTests(Base):
             - **Supersedes:** 2026-01-02 - Use Python for the core
             <!-- a note -->
 
-            ## 2026-06-01 - Minimal three-field entry with legacy Mine line
+            ## 2026-06-01 - Append-only Supersedes without mutating older entry
 
             - **Decided:** Keep SQLite for local queue state.
             - **Instead of:** Adding Redis.
             - **Because:** Single-host CLI needs zero daemon setup.
+            - **Supersedes:** 2026-05-01T10:00:00+08:00 - Use Go
             - **Mine:** yes
             """))
         code, data = self.p.validate()
         self.assertEqual((code, data["issues"]), (0, []))
 
+        # Empty, duplicate, or outside-entry Supersedes fields are rejected.
+        self.p.write(".workflow/decisions.md", textwrap.dedent("""\
+            # Decisions
+
+            ## Entries
+
+            - **Supersedes:** orphan
+
+            ## 2026-07-01 - Broken Supersedes
+
+            - **Decided:** x
+            - **Instead of:** y
+            - **Because:** z
+            - **Supersedes:** a
+            - **Supersedes:**
+            """))
+        code, data = self.p.validate()
+        self.assertEqual(code, 2)
+        self.assertIssue(data, "decision field outside an entry")
+        self.assertIssue(data, "duplicate decision field Supersedes")
+        self.assertIssue(data, "missing or empty decision field Supersedes")
+
+    def test_nested_and_tilde_code_fences(self):
+        self.p.write(".workflow/specs/core.md", textwrap.dedent("""\
+            # Spec: core
+
+            **Status:** in progress
+            **Priority:** high
+
+            ## What this is for
+
+            ````markdown
+            ```
+            Fake goal inside nested fence.
+            ```
+            ````
+            Real goal after nested fence.
+
+            ## How we will know it works
+
+            - **W1.** Real check.
+            ~~~~markdown
+            ```
+            - **W99.** Fake check inside tilde fence.
+            ```
+            ~~~~
+            """))
+        self.p.write(".workflow/decisions.md", VALID_DECISIONS + textwrap.dedent("""\
+            ````markdown
+            ```
+            ## 2026-02-30 - Fake malformed decision inside 4-backtick fence
+            ```
+            ````
+            """))
+        self.p.write(".workflow/tasks/core/01-fenced.md", textwrap.dedent("""\
+            # 01: Fenced examples
+
+            **Effort:** core
+            **Blocked by:** None
+            **Covers:** W1
+            **Check:** Run ```` ```inline``` ```` check.
+
+            ````markdown
+            ```sh
+            **Effort:** wrong_slug
+            **Blocked by:** 99
+            <!-- unclosed HTML comment inside code fence
+            - [ ] Unticked example item inside nested fence
+            ```
+            ````
+
+            - [x] Real checklist item
+
+            ## Progress
+
+            Check after: passed
+            """))
+        self.commit_all("plan")
+        os.makedirs(os.path.join(self.p.root, ".workflow/done/core"), exist_ok=True)
+        self.git("mv", ".workflow/tasks/core/01-fenced.md", ".workflow/done/core/01-fenced.md")
+        self.p.write(".workflow/tasks/core/02-open.md",
+                     task("02", "Open", "core", extra="**Covers:** W99\n"))
+        code, data = self.p.validate()
+        self.assertEqual(code, 2)
+        self.assertEqual(len(data["issues"]), 1, data["issues"])
+        self.assertIssue(data, "Covers names 'W99', which specs/core.md does not define")
+        self.p.write(".workflow/tasks/core/02-open.md",
+                     task("02", "Open", "core", extra="**Covers:** W1\n"))
+        code, data = self.p.validate()
+        self.assertEqual((code, data["issues"]), (0, []))
+        nxt = self.p.next()
+        self.assertEqual(nxt["ready_tasks"][0]["goal"], "Real goal after nested fence.")
+
+    def test_files_field_warning_in_validate(self):
+        self.p.write(".workflow/tasks/core/01-bad.md",
+                     task("01", "Prose files", "core", extra="**Files:** touch whatever needs changing.\n"))
+        self.p.write(".workflow/tasks/core/02-spike.md",
+                     task("02", "Spike prose", "core",
+                          extra="**Task type:** spike\n**Files:** throwaway prototype branch\n"))
+        self.p.write(".workflow/tasks/core/03-none.md",
+                     task("03", "Explicit none", "core", extra="**Files:** None\n"))
+        self.p.write(".workflow/tasks/core/04-placeholder.md",
+                     task("04", "Draft", "core", extra="**Files:** <where work happens>\n"))
+        self.p.write(".workflow/done/core/00-old.md",
+                     task("00", "Archived prose", "core",
+                          extra="**Files:** legacy prose\n\n## Progress\n\nCheck after: ok\n"))
+        code, data = self.p.validate()
+        self.assertEqual((code, data["errors"], data["warnings"]), (1, 0, 1), data["issues"])
+        self.assertIssue(data, "Files field lists no recognizable paths", "WARNING")
+        self.assertEqual(data["issues"][0]["file"], ".workflow/tasks/core/01-bad.md")
     def test_crlf_files_are_accepted(self):
         # Windows checkouts may use CRLF; the reader strips CR, so nothing is reported.
         crlf = lambda text: text.replace("\n", "\r\n")
@@ -460,6 +572,156 @@ class ValidateTests(Base):
         os.remove(os.path.join(self.p.root, closeout))
         code, data = self.p.validate()
         self.assertNotIn("without a recorded acceptance", " ".join(self.messages(data)))
+
+    def test_check_after_real_field_vs_misleading(self):
+        self.p.write(".workflow/tasks/core/01-a.md", task("01", "A", "core"))
+        self.commit_all("plan")
+        os.remove(os.path.join(self.p.root, ".workflow/tasks/core/01-a.md"))
+
+        base_body = "# 01: A\n\n**Effort:** core\n**Check:** Run.\n**Blocked by:** None\n"
+
+        # Misleading: substring in prose
+        self.p.write(".workflow/done/core/01-a.md",
+                     base_body + "\n## Progress\n\nWe will check after deployment.\n")
+        code, data = self.p.validate()
+        self.assertEqual(code, 2)
+        self.assertIssue(data, "archived without a Check after record")
+
+        # Misleading: substring in another field
+        self.p.write(".workflow/done/core/01-a.md",
+                     base_body + "\n## Progress\n\nNotes: check after deploy\n")
+        code, data = self.p.validate()
+        self.assertEqual(code, 2)
+        self.assertIssue(data, "archived without a Check after record")
+
+        # Misleading: Check after outside ## Progress
+        self.p.write(".workflow/done/core/01-a.md",
+                     base_body + "\n## Notes\n\nCheck after: ran tests\n")
+        code, data = self.p.validate()
+        self.assertEqual(code, 2)
+        self.assertIssue(data, "archived without a Check after record")
+
+        # Misleading: empty Check after without continuation
+        self.p.write(".workflow/done/core/01-a.md",
+                     base_body + "\n## Progress\n\nCheck after:\n\nOther: field\n")
+        code, data = self.p.validate()
+        self.assertEqual(code, 2)
+        self.assertIssue(data, "archived without a Check after record")
+
+        # Valid: plain field
+        self.p.write(".workflow/done/core/01-a.md",
+                     base_body + "\n## Progress\n\nCheck after: `true` passes\n")
+        code, data = self.p.validate()
+        self.assertEqual((code, data["issues"]), (0, []))
+
+        # Valid: bold field
+        self.p.write(".workflow/done/core/01-a.md",
+                     base_body + "\n## Progress\n\n**Check after:** ran tests\n")
+        code, data = self.p.validate()
+        self.assertEqual((code, data["issues"]), (0, []))
+
+        # Valid: bulleted bold field
+        self.p.write(".workflow/done/core/01-a.md",
+                     base_body + "\n## Progress\n\n- **Check after:** ran tests\n")
+        code, data = self.p.validate()
+        self.assertEqual((code, data["issues"]), (0, []))
+
+        # Valid: multiline continuation
+        self.p.write(".workflow/done/core/01-a.md",
+                     base_body + "\n## Progress\n\nCheck after:\n  ran test suite on final code\n")
+        code, data = self.p.validate()
+        self.assertEqual((code, data["issues"]), (0, []))
+
+    def test_historical_audit_mode(self):
+        self.git("symbolic-ref", "HEAD", "refs/heads/main")
+        self.p.write(".workflow/specs/core.md", "# Spec: core\n\n**Status:** done\n")
+        self.p.write(".workflow/done/core/00-old.md",
+                     "# 00: Old\n\n**Effort:** core\n**Check:** Run.\n"
+                     "**Blocked by:** None\n\n## Progress\n\n- [ ] unfinished\nCheck after: ok\n")
+        self.commit_all("legacy-history")
+
+        # Normal validate ignores committed historical archives and already-done specs
+        code, data = self.p.validate()
+        self.assertEqual((code, data["issues"]), (0, []))
+
+        # Strict validate alone does not break old repositories
+        strict_code, strict_data = self.p.validate("--strict")
+        self.assertEqual((strict_code, strict_data["issues"]), (0, []))
+
+        # Audit mode catches historical archive unticked items and missing spec acceptance
+        audit_code, audit_data = self.p.validate("--audit")
+        self.assertEqual(audit_code, 2)
+        self.assertIssue(audit_data, "archived with an unticked item: unfinished")
+        self.assertIssue(audit_data, "specs/core.md is marked done without a recorded acceptance")
+
+    def test_partially_staged_metadata(self):
+        self.git("symbolic-ref", "HEAD", "refs/heads/main")
+        self.git("add", ".workflow/decisions.md")
+        # Stage a valid task file
+        valid_content = task("01", "Start", "core", check="pytest", blocked="None")
+        self.p.write(".workflow/tasks/core/01-task.md", valid_content)
+        self.git("add", ".workflow/tasks/core/01-task.md")
+
+        # Dirty worktree: corrupt the task file without staging
+        corrupt_content = "# 01: Start\n\n**Effort:** core\n**Blocked by:** None\n"
+        with open(os.path.join(self.p.root, ".workflow/tasks/core/01-task.md"), "w") as fh:
+            fh.write(corrupt_content)
+
+        # Worktree validation catches the missing Check field
+        wt_code, wt_data = self.p.validate()
+        self.assertEqual(wt_code, 2)
+        self.assertIssue(wt_data, "missing or empty required Check field")
+
+        # Staged validation verifies index content and passes
+        staged_code, staged_data = self.p.validate("--staged")
+        self.assertEqual((staged_code, staged_data["issues"]), (0, []))
+
+        # Now stage the corrupt file, but fix it in the dirty worktree
+        self.git("add", ".workflow/tasks/core/01-task.md")
+        with open(os.path.join(self.p.root, ".workflow/tasks/core/01-task.md"), "w") as fh:
+            fh.write(valid_content)
+
+        # Worktree sees the fix, but staged validation catches the staged error
+        wt_code2, wt_data2 = self.p.validate()
+        self.assertEqual((wt_code2, wt_data2["issues"]), (0, []))
+
+        staged_code2, staged_data2 = self.p.validate("--staged")
+        self.assertEqual(staged_code2, 2)
+        self.assertIssue(staged_data2, "missing or empty required Check field")
+
+    def test_standards_placeholder_warning(self):
+        self.p.write(".workflow/standards.md",
+                     "# Standards\n\n<TODO: install command>\n<direct | local-merge | pr>\n")
+        code, data = self.p.validate()
+        self.assertEqual(code, 1)
+        self.assertIssue(data, "standards.md contains unfilled placeholder", "WARNING")
+
+        strict_code, _ = self.p.validate("--strict")
+        self.assertEqual(strict_code, 2)
+
+        # After removing placeholders, no warning
+        self.p.write(".workflow/standards.md",
+                     "# Standards\n\nRun: npm test\nLanding: direct\n")
+        clean_code, clean_data = self.p.validate()
+        self.assertEqual((clean_code, clean_data["issues"]), (0, []))
+
+    def test_symlink_outside_root_ignored(self):
+        outside_dir = tempfile.mkdtemp(prefix="wf-outside-")
+        try:
+            outside_task = os.path.join(outside_dir, "99-outside.md")
+            with open(outside_task, "w") as fh:
+                fh.write(task("99", "Outside", "core"))
+            symlink_path = os.path.join(self.p.root, ".workflow", "tasks", "core", "99-outside.md")
+            os.makedirs(os.path.dirname(symlink_path), exist_ok=True)
+            os.symlink(outside_task, symlink_path)
+
+            self.p.write(".workflow/tasks/core/01-inside.md", task("01", "Inside", "core"))
+
+            code, data = self.p.validate()
+            self.assertEqual(data["tasks"], 1)
+            self.assertEqual([i["file"] for i in data["issues"]], [])
+        finally:
+            shutil.rmtree(outside_dir, ignore_errors=True)
 
 
 class NextTests(Base):
@@ -821,7 +1083,13 @@ class NextTests(Base):
                      task("03", "DB file", "core", extra="- **Files:** src/db/schema.sql\n  README.md\n"))
         self.p.write(".workflow/tasks/core/04-prose.md",
                      task("04", "Spike prose", "core",
-                          extra="**Files:** throwaway gateway on a spike branch\n"))
+                          extra="**Files:** throwaway gateway on a spike branch.\n"))
+        self.p.write(".workflow/tasks/core/05-mixed.md",
+                     task("05", "Mixed formats", "core",
+                          extra="**Files:** `src/api/auth.py`, src/db/pool.py and .gitignore\n"))
+        self.p.write(".workflow/tasks/core/06-prose-backtick.md",
+                     task("06", "Quoted in prose", "core",
+                          extra="**Files:** Update `src/db/pool.py` plus `README.md` for pooling\n"))
         data = json.loads(self.p.run("next", "--all", "--format", "json").stdout)
         by_ref = {t["task"]: t for t in data["ready_tasks"]}
         self.assertEqual(by_ref["core/01"]["path"], ".workflow/tasks/core/01-api-dir.md")
@@ -830,15 +1098,51 @@ class NextTests(Base):
         self.assertEqual(by_ref["core/02"]["files"], ["src/api/users.py", "src/db"])
         self.assertEqual(by_ref["core/03"]["files"], ["src/db/schema.sql", "README.md"])
         self.assertEqual(by_ref["core/04"]["files"], [])
+        self.assertEqual(by_ref["core/05"]["files"], ["src/api/auth.py", "src/db/pool.py", ".gitignore"])
+        self.assertEqual(by_ref["core/06"]["files"], ["src/db/pool.py", "README.md"])
         self.assertEqual(data["file_overlaps"], [
-            {"path": "README.md", "tasks": ["core/01", "core/03"]},
-            {"path": "src/api", "tasks": ["core/01", "core/02"]},
-            {"path": "src/db", "tasks": ["core/02", "core/03"]},
+            {"path": "src/db", "tasks": ["core/02", "core/03", "core/05", "core/06"]},
+            {"path": "README.md", "tasks": ["core/01", "core/03", "core/06"]},
+            {"path": "src/api", "tasks": ["core/01", "core/02", "core/05"]},
+            {"path": "src/db/pool.py", "tasks": ["core/05", "core/06"]},
         ])
         text = self.p.run("next", "--no-color").stdout
         self.assertIn("Shared files across ready tasks (serialize or coordinate): "
-                      "README.md (core/01, core/03)", text)
+                      "src/db (core/02, core/03, core/05, core/06)", text)
 
+    def test_reopened_task_ignores_merged_ancestor_branches_and_utf8_blobs(self):
+        self.git("symbolic-ref", "HEAD", "refs/heads/main")
+        self.p.write(".workflow/tasks/core/01-a.md", task("01", "初始任务", "core"))
+        self.commit_all("plan")
+        # Complete and archive core/01 on a task branch, keep remote & release refs, merge to main.
+        self.git("checkout", "-q", "-b", "core/01-a")
+        os.makedirs(os.path.join(self.p.root, ".workflow/done/core"), exist_ok=True)
+        self.git("mv", ".workflow/tasks/core/01-a.md", ".workflow/done/core/01-a.md")
+        self.commit_all("archive 01")
+        self.git("update-ref", "refs/remotes/origin/core/01-a", "HEAD")
+        self.git("branch", "release/v1", "HEAD")
+        self.git("checkout", "-q", "main")
+        self.git("merge", "-q", "--ff-only", "core/01-a")
+        self.git("branch", "-D", "core/01-a")
+        # Later reopen core/01 on main while stale origin/core/01-a and release/v1 still point to the old archive.
+        os.makedirs(os.path.join(self.p.root, ".workflow/tasks/core"), exist_ok=True)
+        self.git("mv", ".workflow/done/core/01-a.md", ".workflow/tasks/core/01-a.md")
+        self.commit_all("reopen 01")
+
+        # Also create a live UTF-8 paused branch for core/02 to verify binary cat-file --batch decoding.
+        self.p.write(".workflow/tasks/core/02-utf8.md", task("02", "中文多字节标题", "core"))
+        self.commit_all("add 02")
+        self.git("checkout", "-q", "-b", "core/02-utf8")
+        self.p.write(".workflow/tasks/core/02-utf8.md",
+                     task("02", "中文多字节标题 — 暂停备注", "core", extra="**Status:** paused\n"))
+        self.commit_all("pause 02 with utf8")
+        self.git("checkout", "-q", "main")
+
+        data = self.p.next()
+        self.assertEqual([t["task"] for t in data["ready_tasks"]], ["core/01"])
+        self.assertEqual([(t["task"], t["status"], t["branch"]) for t in data["in_progress"]],
+                         [("core/02", "paused", "core/02-utf8")])
+        self.assertEqual(data["duplicate_claims"], [])
     def test_next_brief_idle_handoff_and_active(self):
         idle = self.p.run("next", "--brief")
         self.assertEqual((idle.returncode, idle.stdout), (0, ""))
@@ -875,6 +1179,584 @@ class NextTests(Base):
         self.assertIn(".workflow/maps/auth-flow.md — Auth flow", next_text)
         brief_maps = self.p.run("next", "--brief", "--no-color").stdout
         self.assertIn("Maps: .workflow/maps/auth-flow.md (continue with flow-grill)", brief_maps)
+
+    def test_flat_done_tree_git_parsing(self):
+        self.git("symbolic-ref", "HEAD", "refs/heads/main")
+        self.p.write(".workflow/done/01-done.md", task("01", "Done", "core"))
+        self.commit_all("commit flat done")
+
+        self.git("checkout", "-b", "feature")
+        self.p.write(".workflow/tasks/core/02-next.md", task("02", "Next", "core", blocked="01"))
+
+        data = self.p.next()
+        self.assertEqual([t["number"] for t in data["ready_tasks"]], [2])
+        self.assertEqual(data["ready_count"], 1)
+
+    def test_brief_format_json_rejected(self):
+        proc = self.p.run("next", "--brief", "--format", "json")
+        self.assertEqual(proc.returncode, 2)
+        self.assertIn("Error: --brief cannot be combined with --format json", proc.stderr)
+        self.assertEqual(proc.stdout, "")
+
+        proc2 = self.p.run("next", "--format=json", "--brief")
+        self.assertEqual(proc2.returncode, 2)
+        self.assertIn("Error: --brief cannot be combined with --format json", proc2.stderr)
+
+
+class TaskLifecycleTests(Base):
+    def test_task_start_success(self):
+        self.commit_all("initial commit")
+        head = subprocess.run(["git", "-C", self.p.root, "rev-parse", "HEAD"],
+                              stdout=subprocess.PIPE, universal_newlines=True).stdout.strip()
+
+        task_body = (
+            "# 01: Start work\n\n"
+            "**Effort:** core\n"
+            "**Blocked by:** None\n"
+            "**Check:** pytest\n\n"
+            "<!-- custom comment -->\n"
+            "## Context\n\n"
+            "Preserved text body.\n"
+        )
+        self.p.write(".workflow/tasks/core/01-start.md", task_body)
+        self.p.write(".workflow/specs/core.md",
+                     "# Spec: core\n\n**Status:** proposed\n**Priority:** normal\n\n## What this is for\n\nGoal.\n")
+
+        proc = self.p.run("task", "start", "core/01")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("Started task core/01", proc.stdout)
+
+        with open(os.path.join(self.p.root, ".workflow/tasks/core/01-start.md"), "r") as fh:
+            content = fh.read()
+        self.assertIn("**Base commit:** %s" % head, content)
+        self.assertIn("**Status:** active", content)
+        self.assertIn("<!-- custom comment -->", content)
+        self.assertIn("Preserved text body.", content)
+
+        with open(os.path.join(self.p.root, ".workflow/specs/core.md"), "r") as fh:
+            spec_content = fh.read()
+        self.assertIn("**Status:** in progress", spec_content)
+
+        # Idempotent second run
+        proc2 = self.p.run("task", "start", "core/01")
+        self.assertEqual(proc2.returncode, 0)
+        with open(os.path.join(self.p.root, ".workflow/tasks/core/01-start.md"), "r") as fh:
+            content2 = fh.read()
+        self.assertEqual(content2.count("Status:"), 1)
+        self.assertEqual(content2.count("Base commit:"), 1)
+
+    def test_task_start_no_head_error(self):
+        # Brand new repo with no commits
+        self.p.write(".workflow/tasks/core/01-start.md",
+                     "# 01: Start work\n\n**Effort:** core\n**Blocked by:** None\n**Check:** pytest\n")
+        proc = self.p.run("task", "start", "core/01")
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("Error: cannot determine HEAD commit", proc.stderr)
+        with open(os.path.join(self.p.root, ".workflow/tasks/core/01-start.md"), "r") as fh:
+            content = fh.read()
+        self.assertNotIn("Base commit:", content)
+        self.assertNotIn("Status:", content)
+
+    def test_task_start_resolution_variants_and_errors(self):
+        self.commit_all("initial")
+        self.p.write(".workflow/tasks/core/01-start.md",
+                     "# 01: Start work\n\n**Effort:** core\n**Blocked by:** None\n**Check:** pytest\n")
+
+        # By normalized number
+        proc = self.p.run("task", "start", "core/1")
+        self.assertEqual(proc.returncode, 0)
+
+        # Nonexistent task
+        proc_bad = self.p.run("task", "start", "core/99")
+        self.assertEqual(proc_bad.returncode, 1)
+        self.assertIn("task 'core/99' not found under .workflow/tasks", proc_bad.stderr)
+
+        # Ambiguous bare number
+        self.p.write(".workflow/tasks/api/01-api.md",
+                     "# 01: Api work\n\n**Effort:** api\n**Blocked by:** None\n**Check:** pytest\n")
+        proc_amb = self.p.run("task", "start", "01")
+        self.assertEqual(proc_amb.returncode, 1)
+        self.assertIn("ambiguous task reference '01'", proc_amb.stderr)
+
+    def test_task_archive_success(self):
+        self.commit_all("initial")
+        task_body = (
+            "# 01: Start work\n\n"
+            "**Effort:** core\n"
+            "**Blocked by:** None\n"
+            "**Check:** echo ok\n"
+            "**Base commit:** " + self.head_short() + "\n"
+            "**Status:** active\n\n"
+            "- [x] completed work item\n\n"
+            "## Progress\n\n"
+            "Check after: tests passed on live machine\n"
+        )
+        self.p.write(".workflow/tasks/core/01-start.md", task_body)
+
+        proc = self.p.run("task", "archive", "core/01")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("Archived task core/01 to .workflow/done/core/01-start.md", proc.stdout)
+
+        # Task file moved and status removed
+        self.assertFalse(os.path.exists(os.path.join(self.p.root, ".workflow/tasks/core/01-start.md")))
+        dest = os.path.join(self.p.root, ".workflow/done/core/01-start.md")
+        self.assertTrue(os.path.isfile(dest))
+        with open(dest, "r") as fh:
+            content = fh.read()
+        self.assertNotIn("Status:", content)
+        self.assertIn("**Base commit:** " + self.head_short(), content)
+        self.assertIn("- [x] completed work item", content)
+        self.assertIn("Check after: tests passed on live machine", content)
+
+        code, data = self.p.validate()
+        self.assertEqual(code, 0)
+
+    def test_task_archive_refuses_unticked_checkbox(self):
+        self.commit_all("initial")
+        task_body = (
+            "# 01: Start work\n\n"
+            "**Effort:** core\n"
+            "**Blocked by:** None\n"
+            "**Check:** echo ok\n"
+            "**Status:** active\n\n"
+            "- [ ] pending item\n\n"
+            "## Progress\n\n"
+            "Check after: ok\n"
+        )
+        src = self.p.write(".workflow/tasks/core/01-start.md", task_body)
+        proc = self.p.run("task", "archive", "core/01")
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("unticked checkbox", proc.stderr)
+        self.assertTrue(os.path.isfile(src))
+        self.assertFalse(os.path.exists(os.path.join(self.p.root, ".workflow/done/core/01-start.md")))
+
+    def test_task_archive_refuses_missing_check_after(self):
+        self.commit_all("initial")
+        task_body = (
+            "# 01: Start work\n\n"
+            "**Effort:** core\n"
+            "**Blocked by:** None\n"
+            "**Check:** echo ok\n"
+            "**Status:** active\n\n"
+            "- [x] item\n\n"
+            "## Progress\n\n"
+            "Notes: ran manually\n"
+        )
+        src = self.p.write(".workflow/tasks/core/01-start.md", task_body)
+        proc = self.p.run("task", "archive", "core/01")
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("task missing 'Check after:' in ## Progress", proc.stderr)
+        self.assertTrue(os.path.isfile(src))
+        self.assertFalse(os.path.exists(os.path.join(self.p.root, ".workflow/done/core/01-start.md")))
+
+    def test_task_archive_spike_requires_findings(self):
+        self.commit_all("initial")
+        task_body = (
+            "# 01: Spike work\n\n"
+            "**Effort:** core\n"
+            "**Task type:** spike\n"
+            "**Blocked by:** None\n"
+            "**Check:** echo ok\n"
+            "**Status:** active\n\n"
+            "- [x] explore options\n"
+        )
+        src = self.p.write(".workflow/tasks/core/01-spike.md", task_body)
+        proc = self.p.run("task", "archive", "core/01")
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("spike task missing ## Findings section", proc.stderr)
+
+        # Adding Findings allows archive to succeed
+        with open(src, "a") as fh:
+            fh.write("\n## Findings\n\nApproach B is viable.\n")
+        proc2 = self.p.run("task", "archive", "core/01")
+        self.assertEqual(proc2.returncode, 0, proc2.stderr)
+        self.assertTrue(os.path.isfile(os.path.join(self.p.root, ".workflow/done/core/01-spike.md")))
+
+    def test_task_archive_no_overwrite_existing_destination(self):
+        self.commit_all("initial")
+        dest = self.p.write(".workflow/done/core/01-start.md", "EXISTING_ARCHIVE_DATA\n")
+        task_body = (
+            "# 01: Start work\n\n"
+            "**Effort:** core\n"
+            "**Blocked by:** None\n"
+            "**Check:** echo ok\n"
+            "**Status:** active\n\n"
+            "- [x] item\n\n"
+            "## Progress\n\n"
+            "Check after: ok\n"
+        )
+        src = self.p.write(".workflow/tasks/core/01-start.md", task_body)
+        proc = self.p.run("task", "archive", "core/01")
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("destination file already exists", proc.stderr)
+
+        with open(dest, "r") as fh:
+            self.assertEqual(fh.read(), "EXISTING_ARCHIVE_DATA\n")
+        self.assertTrue(os.path.isfile(src))
+
+    def test_task_archive_atomic_rollback_on_validate_failure(self):
+        self.commit_all("initial")
+        self.p.write(".workflow/specs/core.md", "# Spec: core\n\n**Status:** done\n**Priority:** normal\n")
+        # Duplicate Check metadata must make validation fail after the move.
+        task_body = (
+            "# 01: Start work\n\n"
+            "**Effort:** core\n"
+            "**Blocked by:** None\n"
+            "**Check:** echo ok\n"
+            "**Check:** duplicate command\n"
+            "**Status:** active\n\n"
+            "- [x] item\n\n"
+            "## Progress\n\n"
+            "Check after: ok\n"
+        )
+        src = self.p.write(".workflow/tasks/core/01-start.md", task_body)
+        proc = self.p.run("task", "archive", "core/01")
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("validation failed after archiving task", proc.stderr)
+
+        # Source file restored, destination cleaned up
+        self.assertTrue(os.path.isfile(src))
+        self.assertFalse(os.path.exists(os.path.join(self.p.root, ".workflow/done/mismatch/01-start.md")))
+        self.assertFalse(os.path.exists(os.path.join(self.p.root, ".workflow/done/core/01-start.md")))
+
+    def test_task_preserves_unrelated_content_and_metadata(self):
+        self.commit_all("initial")
+        complex_task = (
+            "# 01: Complex task\n\n"
+            "- **Effort:** core\n"
+            "- **Blocked by:** None\n"
+            "- **Check:** pytest\n"
+            "- **Files:** src/core.py\n"
+            "- **Read first:** docs/arch.md\n\n"
+            "<!-- preserved HTML comment -->\n"
+            "```python\n"
+            "# Code fence that shouldn't be touched\n"
+            "def foo():\n"
+            "    Status = 'fake'\n"
+            "```\n\n"
+            "- [x] done check\n\n"
+            "## Context\n\n"
+            "Details about this complex task.\n\n"
+            "## Progress\n\n"
+            "Check after: passes 100%\n"
+        )
+        src = self.p.write(".workflow/tasks/core/01-complex.md", complex_task)
+        proc = self.p.run("task", "start", "core/01")
+        self.assertEqual(proc.returncode, 0)
+        with open(src, "r") as fh:
+            started = fh.read()
+        self.assertIn("- **Base commit:**", started)
+        self.assertIn("- **Status:** active", started)
+        self.assertIn("- **Files:** src/core.py", started)
+        self.assertIn("- **Read first:** docs/arch.md", started)
+        self.assertIn("<!-- preserved HTML comment -->", started)
+        self.assertIn("Status = 'fake'", started)
+        self.assertIn("Details about this complex task.", started)
+
+        proc_arch = self.p.run("task", "archive", "core/01")
+        self.assertEqual(proc_arch.returncode, 0, proc_arch.stderr)
+        dest = os.path.join(self.p.root, ".workflow/done/core/01-complex.md")
+        with open(dest, "r") as fh:
+            archived = fh.read()
+        self.assertNotIn("- **Status:**", archived)
+        self.assertIn("- **Base commit:**", archived)
+        self.assertIn("<!-- preserved HTML comment -->", archived)
+        self.assertIn("Status = 'fake'", archived)
+        self.assertIn("Details about this complex task.", archived)
+        self.assertIn("Check after: passes 100%", archived)
+
+    def test_task_rejects_tasks_backup_and_symlink_escape(self):
+        self.commit_all("initial")
+        backup_content = (
+            "# 01: Backup task\n\n"
+            "**Effort:** core\n"
+            "**Blocked by:** None\n"
+            "**Check:** echo ok\n"
+        )
+        backup_path = self.p.write(".workflow/tasks-backup/01-backup.md", backup_content)
+
+        # Direct path to tasks-backup must be rejected
+        proc = self.p.run("task", "start", ".workflow/tasks-backup/01-backup.md")
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("not under .workflow/tasks", proc.stderr)
+        with open(backup_path, "r") as fh:
+            self.assertEqual(fh.read(), backup_content)
+
+        # Relative path variant
+        proc_rel = self.p.run("task", "start", "tasks-backup/01-backup.md")
+        self.assertEqual(proc_rel.returncode, 1)
+        with open(backup_path, "r") as fh:
+            self.assertEqual(fh.read(), backup_content)
+
+        # Symlink inside tasks pointing outside tasks tree must be rejected
+        outside_file = os.path.join(self.p.root, "outside.md")
+        with open(outside_file, "w") as fh:
+            fh.write(backup_content)
+        symlink_path = os.path.join(self.p.root, ".workflow", "tasks", "core", "01-symlink.md")
+        os.makedirs(os.path.dirname(symlink_path), exist_ok=True)
+        os.symlink(outside_file, symlink_path)
+
+        proc_sym = self.p.run("task", "start", "core/01")
+        self.assertEqual(proc_sym.returncode, 1)
+        self.assertIn("resolves outside .workflow/tasks", proc_sym.stderr)
+        with open(outside_file, "r") as fh:
+            self.assertEqual(fh.read(), backup_content)
+
+    def test_task_rejects_flat_effort_traversal(self):
+        self.commit_all("initial")
+        outside_file = os.path.join(self.p.root, "outside.md")
+        with open(outside_file, "w") as fh:
+            fh.write("**Status:** proposed\n")
+
+        escape_content = (
+            "# 01: Escape task\n\n"
+            "**Effort:** ../../../outside\n"
+            "**Blocked by:** None\n"
+            "**Check:** echo ok\n"
+        )
+        task_path = self.p.write(".workflow/tasks/01-escape.md", escape_content)
+
+        proc_start = self.p.run("task", "start", "01")
+        self.assertEqual(proc_start.returncode, 1)
+        self.assertIn("invalid effort slug", proc_start.stderr)
+
+        # Neither the target outside file nor the task file was mutated
+        with open(outside_file, "r") as fh:
+            self.assertEqual(fh.read(), "**Status:** proposed\n")
+        with open(task_path, "r") as fh:
+            self.assertEqual(fh.read(), escape_content)
+
+        # Archive also rejects traversal without mutating or moving
+        proc_arch = self.p.run("task", "archive", "01")
+        self.assertEqual(proc_arch.returncode, 1)
+        self.assertIn("invalid effort slug", proc_arch.stderr)
+        self.assertTrue(os.path.isfile(task_path))
+        with open(outside_file, "r") as fh:
+            self.assertEqual(fh.read(), "**Status:** proposed\n")
+
+        os.remove(task_path)
+        # Flat task with a valid effort works normally
+        valid_flat = (
+            "# 02: Valid flat task\n\n"
+            "**Effort:** core\n"
+            "**Blocked by:** None\n"
+            "**Check:** echo ok\n"
+            "- [x] item\n\n"
+            "## Progress\n\n"
+            "Check after: passed\n"
+        )
+        self.p.write(".workflow/tasks/02-valid.md", valid_flat)
+        self.p.write(".workflow/specs/core.md",
+                     "# Spec: core\n\n**Status:** proposed\n**Priority:** normal\n\n## What this is for\nGoal.\n")
+
+        proc_ok = self.p.run("task", "start", "02")
+        self.assertEqual(proc_ok.returncode, 0, proc_ok.stderr)
+        with open(os.path.join(self.p.root, ".workflow/specs/core.md"), "r") as fh:
+            self.assertIn("**Status:** in progress", fh.read())
+
+        proc_arch_ok = self.p.run("task", "archive", "02")
+        self.assertEqual(proc_arch_ok.returncode, 0, proc_arch_ok.stderr)
+        self.assertTrue(os.path.isfile(os.path.join(self.p.root, ".workflow/done/core/02-valid.md")))
+
+    def test_task_start_rejects_specs_symlink_escape_without_task_mutation(self):
+        self.commit_all("initial")
+        outside_spec = os.path.join(self.p.root, "outside_spec.md")
+        with open(outside_spec, "w") as fh:
+            fh.write("**Status:** proposed\n")
+
+        task_content = (
+            "# 01: Start work\n\n"
+            "**Effort:** core\n"
+            "**Blocked by:** None\n"
+            "**Check:** echo ok\n"
+        )
+        task_path = self.p.write(".workflow/tasks/core/01-start.md", task_content)
+
+        # 1. Spec file is a symlink resolving outside .workflow/specs
+        spec_symlink = os.path.join(self.p.root, ".workflow", "specs", "core.md")
+        os.makedirs(os.path.dirname(spec_symlink), exist_ok=True)
+        os.symlink(outside_spec, spec_symlink)
+
+        proc = self.p.run("task", "start", "core/01")
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("resolves outside .workflow/specs", proc.stderr)
+
+        # Outside spec untouched and task untouched
+        with open(outside_spec, "r") as fh:
+            self.assertEqual(fh.read(), "**Status:** proposed\n")
+        with open(task_path, "r") as fh:
+            self.assertEqual(fh.read(), task_content)
+
+        # 2. .workflow/specs directory itself is a symlink resolving outside
+        os.remove(spec_symlink)
+        os.rmdir(os.path.dirname(spec_symlink))
+        outside_specs_dir = os.path.join(self.p.root, "outside_specs")
+        os.makedirs(outside_specs_dir, exist_ok=True)
+        with open(os.path.join(outside_specs_dir, "core.md"), "w") as fh:
+            fh.write("**Status:** proposed\n")
+        os.symlink(outside_specs_dir, os.path.join(self.p.root, ".workflow", "specs"))
+
+        proc2 = self.p.run("task", "start", "core/01")
+        self.assertEqual(proc2.returncode, 1)
+        self.assertIn("resolves outside .workflow", proc2.stderr)
+        with open(os.path.join(outside_specs_dir, "core.md"), "r") as fh:
+            self.assertEqual(fh.read(), "**Status:** proposed\n")
+        with open(task_path, "r") as fh:
+            self.assertEqual(fh.read(), task_content)
+
+    def test_task_archive_rejects_done_symlink_escape_without_source_move(self):
+        self.commit_all("initial")
+        task_content = (
+            "# 01: Done work\n\n"
+            "**Effort:** core\n"
+            "**Blocked by:** None\n"
+            "**Check:** echo ok\n"
+            "**Base commit:** " + self.head_short() + "\n"
+            "**Status:** active\n\n"
+            "- [x] completed\n\n"
+            "## Progress\n\n"
+            "Check after: ok\n"
+        )
+        task_path = self.p.write(".workflow/tasks/core/01-done.md", task_content)
+
+        outside_done = os.path.join(self.p.root, "outside_done")
+        os.makedirs(outside_done, exist_ok=True)
+        done_core = os.path.join(self.p.root, ".workflow", "done", "core")
+        os.makedirs(os.path.dirname(done_core), exist_ok=True)
+        os.symlink(outside_done, done_core)
+
+        proc = self.p.run("task", "archive", "core/01")
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("resolves outside .workflow/done", proc.stderr)
+
+        # Source task preserved, no outside file created
+        self.assertTrue(os.path.isfile(task_path))
+        with open(task_path, "r") as fh:
+            self.assertEqual(fh.read(), task_content)
+        self.assertEqual(os.listdir(outside_done), [])
+
+    def test_task_start_rollback_on_spec_update_failure(self):
+        self.commit_all("initial")
+        task_content = (
+            "# 01: Start work\n\n"
+            "**Effort:** core\n"
+            "**Blocked by:** None\n"
+            "**Check:** echo ok\n"
+        )
+        task_path = self.p.write(".workflow/tasks/core/01-start.md", task_content)
+        spec_content = (
+            "# Spec: core\n\n"
+            "**Status:** proposed\n"
+            "**Priority:** normal\n\n"
+            "## What this is for\n\n"
+            "Goal.\n"
+        )
+        spec_path = self.p.write(".workflow/specs/core.md", spec_content)
+
+        # Make .workflow/specs directory read-only so atomic temp file replacement fails
+        specs_dir = os.path.dirname(spec_path)
+        os.chmod(specs_dir, 0o555)
+        try:
+            proc = self.p.run("task", "start", "core/01")
+            self.assertEqual(proc.returncode, 1)
+            self.assertIn("failed to update spec", proc.stderr)
+
+            # Task must be rolled back to original content, not left partially active
+            with open(task_path, "r") as fh:
+                self.assertEqual(fh.read(), task_content)
+            # Spec retains its old proposed status
+            with open(spec_path, "r") as fh:
+                self.assertEqual(fh.read(), spec_content)
+        finally:
+            os.chmod(specs_dir, 0o755)
+
+    def test_task_archive_rejects_malformed_metadata_on_new_file_only(self):
+        self.commit_all("initial")
+        # Older archive in .workflow/done lacking required Check field (WARNING in validate)
+        old_archive = (
+            "# 00: Old archive\n\n"
+            "**Effort:** core\n"
+            "**Blocked by:** None\n"
+            "- [x] legacy item\n\n"
+            "## Progress\n\n"
+            "Check after: ok\n"
+        )
+        self.p.write(".workflow/done/core/00-old.md", old_archive)
+
+        # 1. Valid new task archives successfully despite warning on older archive
+        valid_content = (
+            "# 01: Valid task\n\n"
+            "**Effort:** core\n"
+            "**Blocked by:** None\n"
+            "**Check:** echo ok\n"
+            "**Status:** active\n\n"
+            "- [x] item\n\n"
+            "## Progress\n\n"
+            "Check after: ok\n"
+        )
+        self.p.write(".workflow/tasks/core/01-valid.md", valid_content)
+        proc_ok = self.p.run("task", "archive", "core/01")
+        self.assertEqual(proc_ok.returncode, 0, proc_ok.stderr)
+        self.assertTrue(os.path.isfile(os.path.join(self.p.root, ".workflow/done/core/01-valid.md")))
+
+        # 2. Newly archived task lacking required Check field must be rejected
+        bad_content = (
+            "# 02: Bad task\n\n"
+            "**Effort:** core\n"
+            "**Blocked by:** None\n"
+            "**Status:** active\n\n"
+            "- [x] item\n\n"
+            "## Progress\n\n"
+            "Check after: ok\n"
+        )
+        bad_path = self.p.write(".workflow/tasks/core/02-bad.md", bad_content)
+        proc_bad = self.p.run("task", "archive", "core/02")
+        self.assertEqual(proc_bad.returncode, 1)
+        self.assertIn("validation failed after archiving task", proc_bad.stderr)
+        self.assertIn("missing or empty required Check field", proc_bad.stderr)
+
+        # Rollback: destination removed, source preserved
+        self.assertTrue(os.path.isfile(bad_path))
+        self.assertFalse(os.path.exists(os.path.join(self.p.root, ".workflow/done/core/02-bad.md")))
+
+    def test_task_lifecycle_preserves_file_permissions(self):
+        self.commit_all("initial")
+        task_content = (
+            "# 01: Perms task\n\n"
+            "**Effort:** core\n"
+            "**Blocked by:** None\n"
+            "**Check:** echo ok\n"
+            "- [x] done\n\n"
+            "## Progress\n\n"
+            "Check after: ok\n"
+        )
+        task_path = self.p.write(".workflow/tasks/core/01-perms.md", task_content)
+        spec_content = (
+            "# Spec: core\n\n"
+            "**Status:** proposed\n"
+            "**Priority:** normal\n\n"
+            "## What this is for\n\n"
+            "Goal.\n"
+        )
+        spec_path = self.p.write(".workflow/specs/core.md", spec_content)
+
+        # Set 0644 mode explicitly
+        os.chmod(task_path, 0o644)
+        os.chmod(spec_path, 0o644)
+
+        # Start task: both task file and spec file must retain 0644 (not drop to 0600)
+        proc_start = self.p.run("task", "start", "core/01")
+        self.assertEqual(proc_start.returncode, 0, proc_start.stderr)
+        self.assertEqual(stat.S_IMODE(os.stat(task_path).st_mode), 0o644)
+        self.assertEqual(stat.S_IMODE(os.stat(spec_path).st_mode), 0o644)
+
+        # Archive task: archive destination must preserve source mode 0644
+        proc_arch = self.p.run("task", "archive", "core/01")
+        self.assertEqual(proc_arch.returncode, 0, proc_arch.stderr)
+        dest_path = os.path.join(self.p.root, ".workflow/done/core/01-perms.md")
+        self.assertEqual(stat.S_IMODE(os.stat(dest_path).st_mode), 0o644)
+
+
 class PerformanceTests(Base):
     def test_large_project_is_fast(self):
         for effort_index in range(4):
@@ -894,6 +1776,25 @@ class PerformanceTests(Base):
             self.assertLess(elapsed, 5.0, "%s took %.2fs" % (cmd, elapsed))
         self.assertEqual(json.loads(self.p.run("validate", "--format", "json").stdout)["tasks"], 120)
         self.assertEqual(json.loads(self.p.run("next", "--format", "json").stdout)["ready_count"], 4)
+
+    def test_many_branches_batch_fast(self):
+        self.git("symbolic-ref", "HEAD", "refs/heads/main")
+        self.p.write(".workflow/done/core/01-done.md", task("01", "Done", "core"))
+        self.p.write(".workflow/tasks/core/02-ready.md", task("02", "Ready", "core", blocked="01"))
+        self.commit_all("seed")
+        head = subprocess.run(["git", "-C", self.p.root, "rev-parse", "HEAD"],
+                              stdout=subprocess.PIPE, universal_newlines=True).stdout.strip()
+        refs_input = "".join(
+            "create refs/remotes/origin/stale-feature-%03d %s\n" % (i, head) for i in range(200)
+        )
+        subprocess.run(["git", "-C", self.p.root, "update-ref", "--stdin"],
+                       input=refs_input, universal_newlines=True, check=True)
+        start = time.time()
+        proc = self.p.run("next", "--format", "json")
+        elapsed = time.time() - start
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertLess(elapsed, 2.0, "next with 200 branches took %.2fs" % elapsed)
+        self.assertEqual([t["task"] for t in json.loads(proc.stdout)["ready_tasks"]], ["core/02"])
 
 
 if __name__ == "__main__":

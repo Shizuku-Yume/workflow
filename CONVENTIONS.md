@@ -28,6 +28,7 @@ AGENTS.md                        workflow block points here
   tasks/<effort>/<NN>-<slug>.md  open task files
   maps/<slug>.md                 notes on unknowns that span sessions
   done/<effort>/                 archived tasks and closeout.md
+  worktrees/<effort>-<NN>/       parallel task worktrees (gitignored)
 ```
 
 - Run `.workflow/bin/workflow <command>` from the repo root. Keep `standards.md` under one screen.
@@ -86,6 +87,7 @@ Never review a change in the context that wrote it. `flow-verify` runs the revie
 - `workflow-reviewer` checks requirements and code quality. One fresh subagent per change; split into two only for large cross-module diffs.
 - `security-reviewer` runs only when the change touches auth, secrets, untrusted external input, network exposure, or permissions.
 - Findings are `blocking` or `nonblocking`. Only the user can waive a `blocking` finding, recorded in `decisions.md` with `Decided by: user`.
+- **Review-fix cap:** cap review-fix cycles at 2 rounds. If blocking findings remain after two rounds, stop: do not continue looping. Escalate to the user with the findings and evidence. The user decides whether to waive the finding (recorded in `decisions.md` with `Decided by: user`), provide direction, or mark the task blocked/paused for replanning.
 
 ## 6. Fixing bugs
 
@@ -106,7 +108,7 @@ Rules for every mode:
 - Commit planning docs on the landing branch before cutting task branches.
 - Before landing, check whether the landing branch moved (`git merge-base <landing branch> HEAD`). If it did, rebase and rerun the checks.
 - **Integration branch:** when tasks cannot land on main one at a time, the spec sets `**Integration branch:** <effort>/integration`. Tasks branch from and merge into it; `flow-close` lands it on main.
-- **Parallel tasks:** one worktree per task (`git worktree add ../<repo>-<effort>-<NN> -b <effort>/<NN>-<slug> <landing branch>`). Never share a worktree, ports, or test databases. Subagents run `Check` before returning; the main session confirms `Check`, the real-path run, and `flow-verify` before landing. Remove the worktree after landing.
+- **Parallel tasks:** one worktree per task (`git worktree add .workflow/worktrees/<effort>-<NN> -b <effort>/<NN>-<slug> <landing branch>`). The `.workflow/worktrees/` directory is ignored by Git (via `.workflow/.gitignore`). Never share a worktree, ports, or test databases. Subagents run `Check` before returning; the main session confirms `Check`, the real-path run, and `flow-verify` before landing. Remove the worktree (`git worktree remove .workflow/worktrees/<effort>-<NN>`) after landing.
 
 ## 8. Keep implementations lean
 

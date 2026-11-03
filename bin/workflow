@@ -12,9 +12,10 @@
 #   workflow hook        install a pre-commit hook that runs workflow validate
 #   workflow validate    check task files and the decision log (bin/workflow-core.py)
 #   workflow next        list ready tasks (bin/workflow-core.py)
+#   workflow task        manage task lifecycle state transitions (bin/workflow-core.py)
 #
-# Runs on Bash 3.2 (stock macOS) with BSD or GNU awk and sed; validate and next
-# need python3.
+# Runs on Bash 3.2 (stock macOS) with BSD or GNU awk and sed; validate, next
+# and task need python3.
 #
 # Skills are copied, not linked, so a project keeps working if this toolkit is
 # moved or deleted. Use `workflow update` to pull in newer versions.
@@ -24,7 +25,7 @@
 # need no checkout of this toolkit and nothing on PATH.
 set -euo pipefail
 
-VERSION="2.9.0"
+VERSION="2.10.0"
 BIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 KIT="$(cd "$BIN_DIR/.." && pwd)"
 
@@ -42,9 +43,7 @@ MARKER_END="<!-- workflow:end -->"
 
 # Regexes live in variables: Bash 3.2 can't parse ( | ) in a literal =~ pattern.
 RE_DIGITS='^[0-9]+$'
-RE_VALIDATE_SUMMARY='^([0-9]+) error\(s\), ([0-9]+) warning\(s\)\.$'
 RE_STANDARDS_PLACEHOLDER='<TODO:[^>]+>|<(install|run|test|typecheck|lint) command>|<direct \| local-merge \| pr>'
-
 GA_START="# workflow:start"
 GA_END="# workflow:end"
 
@@ -62,8 +61,24 @@ say()  { printf '%s\n' "$*" >&2; }
 ok()   { printf '%s✓%s %s\n' "$C_OK" "$C_OFF" "$*" >&2; }
 skip() { printf '%s·%s %s\n' "$C_DIM" "$C_OFF" "$*" >&2; }
 warn() { printf '%s!%s %s\n' "$C_WARN" "$C_OFF" "$*" >&2; }
-die()  { printf '%s✗%s %s\n' "$C_ERR" "$C_OFF" "$*" >&2; exit 1; }
+die()  { rm -f "${MANIFEST_STAGE:-}"; printf '%s✗%s %s\n' "$C_ERR" "$C_OFF" "$*" >&2; exit 1; }
 
+WORKFLOW_TMP_FILES=()
+cleanup_tmp_files() {
+  local f
+  for f in "${WORKFLOW_TMP_FILES[@]}"; do
+    rm -rf "$f" 2>/dev/null || true
+  done
+  [ -n "${MANIFEST_STAGE:-}" ] && rm -f "$MANIFEST_STAGE" 2>/dev/null || true
+}
+trap cleanup_tmp_files EXIT HUP INT TERM
+
+wf_mktemp() {
+  local tmp
+  tmp="$(mktemp "$@")"
+  WORKFLOW_TMP_FILES[${#WORKFLOW_TMP_FILES[@]}]="$tmp"
+  printf '%s\n' "$tmp"
+}
 # ---------------------------------------------------------------- helpers
 
 # bump VAR [N] - add N (default 1) to the caller's counter named VAR.
@@ -151,15 +166,31 @@ expected_skills() {
 
 # Review agents the project should have, by name.
 expected_agents() {
-  local f
+  local f from_manifest=""
   if [ -d "$KIT/templates/project/.agents/agents" ]; then
     for f in "$KIT"/templates/project/.agents/agents/*.md; do [ -f "$f" ] && basename "$f" .md; done
-  else
-    for f in "$1"/.agents/agents/*.md; do
-      [ -f "$f" ] || continue
-      [ -f "$1/.agents/agents/.$(basename "$f" .md).workflow-managed" ] && basename "$f" .md
-    done
+    return 0
   fi
+  if [ -f "$1/.workflow/.workflow-version" ]; then
+    from_manifest="$(awk '
+      /^managed:$/ { in_m = 1; next }
+      in_m && /^[^ ]/ { in_m = 0 }
+      in_m && $2 ~ /^\.agents\/agents\/[^/]+\.md$/ {
+        k = $2
+        sub(/^\.agents\/agents\//, "", k)
+        sub(/\.md$/, "", k)
+        print k
+      }
+    ' "$1/.workflow/.workflow-version")"
+  fi
+  if [ -n "$from_manifest" ]; then
+    printf '%s\n' "$from_manifest"
+    return 0
+  fi
+  for f in "$1"/.agents/agents/*.md; do
+    [ -f "$f" ] || continue
+    [ -f "$1/.agents/agents/.$(basename "$f" .md).workflow-managed" ] && basename "$f" .md
+  done
   return 0
 }
 
@@ -365,29 +396,118 @@ parse_agents_marker_state() {
   ' "$file"
 }
 
-# Copy the skills into <root>/.agents/skills and the review agents into
-# <root>/.agents/agents, both under the same ownership rule: a file is ours to
-# replace only if it carries a managed marker AND still matches what we wrote
-# last time (the marker holds that checksum). Edit a skill and it becomes yours;
-# `--force` takes it back.
-#
-# A marker written by 2.0 is empty — it recorded ownership but not content. Treat
-# one as ours only while the file still matches the toolkit's current copy, so an
-# upgrade keeps working without ever overwriting an edit.
+# Ownership checksums live under `managed:` in .workflow/.workflow-version
+# ("  <cksum> <key>"). Earlier installs wrote per-file .workflow-managed
+# dotfiles (empty in 2.0, checksum in 2.1–2.9.0); lookup_managed reads the
+# manifest first and falls back to legacy dotfiles until `update` migrates them.
+MANIFEST_STAGE=""
 
-managed_ok() {
-  local target="$1" marker="$2" upstream="$3"
-  [ -f "$marker" ] || return 1
-  local recorded; recorded="$(cat "$marker")"
-  if [ -z "$recorded" ]; then
-    [ -n "$upstream" ] && cmp -s "$target" "$upstream"
-    return
-  fi
-  [ "$recorded" = "$(cksum < "$target" | cut -d' ' -f1)" ]
+file_cksum() {
+  cksum < "$1" | cut -d' ' -f1
 }
 
-mark_managed() {
-  cksum < "$1" | cut -d' ' -f1 > "$2"
+manifest_lookup_raw() {
+  local vf="$1/.workflow/.workflow-version" key="$2"
+  [ -f "$vf" ] || return 0
+  awk -v k="$key" '
+    /^managed:$/ { in_m = 1; next }
+    in_m && /^[^ ]/ { in_m = 0 }
+    in_m && $2 == k { print $1; exit }
+  ' "$vf"
+}
+
+# Print sum:<digits> | empty | corrupt | none for KEY in ROOT, falling back to LEGACY_MARKER.
+lookup_managed() {
+  local root="$1" key="$2" legacy="${3:-}" recorded=""
+  recorded="$(manifest_lookup_raw "$root" "$key")"
+  if [ -n "$recorded" ]; then
+    if [[ "$recorded" =~ $RE_DIGITS ]]; then printf 'sum:%s\n' "$recorded"; else printf 'corrupt\n'; fi
+    return 0
+  fi
+  if [[ "$key" == .workflow/bin/* ]] && [ -f "$root/.workflow/bin/.workflow-managed" ]; then
+    local bname="${key#.workflow/bin/}"
+    recorded="$(awk -v n="$bname" '$2 == n { print $1; exit }' "$root/.workflow/bin/.workflow-managed")"
+    if [ -n "$recorded" ]; then
+      if [[ "$recorded" =~ $RE_DIGITS ]]; then printf 'sum:%s\n' "$recorded"; else printf 'corrupt\n'; fi
+      return 0
+    fi
+  fi
+  if [ -n "$legacy" ] && [ -f "$legacy" ]; then
+    recorded="$(cat "$legacy" 2>/dev/null || true)"
+    if [ -z "$recorded" ]; then
+      printf 'empty\n'
+    elif [[ "$recorded" =~ $RE_DIGITS ]]; then
+      printf 'sum:%s\n' "$recorded"
+    else
+      printf 'corrupt\n'
+    fi
+    return 0
+  fi
+  printf 'none\n'
+}
+
+has_managed_ownership() {
+  local state
+  state="$(lookup_managed "$1" "$2" "${3:-}")"
+  [ "$state" != "none" ]
+}
+
+managed_ok_key() {
+  local root="$1" target="$2" key="$3" upstream="$4" legacy="${5:-}"
+  [ -f "$target" ] || return 1
+  local state
+  state="$(lookup_managed "$root" "$key" "$legacy")"
+  case "$state" in
+    sum:*) [ "${state#sum:}" = "$(file_cksum "$target")" ] ;;
+    empty) [ -n "$upstream" ] && [ -f "$upstream" ] && cmp -s "$target" "$upstream" ;;
+    *) return 1 ;;
+  esac
+}
+
+stage_managed_raw() {
+  [ -n "${MANIFEST_STAGE:-}" ] || return 0
+  printf '%s %s\n' "$1" "$2" >> "$MANIFEST_STAGE"
+}
+
+record_managed() {
+  [ -n "${MANIFEST_STAGE:-}" ] || return 0
+  printf '%s %s\n' "$(file_cksum "$1")" "$2" >> "$MANIFEST_STAGE"
+}
+
+preserve_managed() {
+  [ -n "${MANIFEST_STAGE:-}" ] || return 0
+  local state
+  state="$(lookup_managed "$1" "$2" "${3:-}")"
+  case "$state" in
+    sum:*) printf '%s %s\n' "${state#sum:}" "$2" >> "$MANIFEST_STAGE" ;;
+  esac
+}
+
+# Print "<cksum> <basename>" for every managed file in .workflow/bin/.
+cli_manifest_entries() {
+  local root="$1" vf="$1/.workflow/.workflow-version" from_vf=""
+  if [ -f "$vf" ]; then
+    from_vf="$(awk '
+      /^managed:$/ { in_m = 1; next }
+      in_m && /^[^ ]/ { in_m = 0 }
+      in_m && $2 ~ /^\.workflow\/bin\/[^/]+$/ {
+        k = $2; sub(/^\.workflow\/bin\//, "", k)
+        print $1, k
+      }
+    ' "$vf")"
+  fi
+  if [ -n "$from_vf" ]; then
+    {
+      printf '%s\n' "$from_vf"
+      if [ -f "$root/.workflow/bin/.workflow-managed" ]; then
+        awk '$2 != "" { print $1, $2 }' "$root/.workflow/bin/.workflow-managed"
+      fi
+    } | awk '!seen[$2]++'
+    return 0
+  fi
+  if [ -f "$root/.workflow/bin/.workflow-managed" ]; then
+    awk '$2 != "" { print $1, $2 }' "$root/.workflow/bin/.workflow-managed"
+  fi
 }
 
 install_rulebooks() {
@@ -396,34 +516,44 @@ install_rulebooks() {
   if [ "$mode" = "0" ]; then mode="init"; fi
   mkdir -p "$root/.workflow"
   for f in CONVENTIONS.md STYLE.md; do
-    local src="$KIT/$f" target="$root/.workflow/$f"
+    local src="$KIT/$f" target="$root/.workflow/$f" key=".workflow/$f"
     local marker="$root/.workflow/.${f%.md}.workflow-managed"
     if [ ! -e "$target" ]; then
       cp "$src" "$target"
-      mark_managed "$target" "$marker"
+      record_managed "$target" "$key"
+      rm -f "$marker"
       ok "$f"
     elif [ "$mode" = "force" ]; then
       cp "$src" "$target"
-      mark_managed "$target" "$marker"
+      record_managed "$target" "$key"
+      rm -f "$marker"
       ok "$f"
-    elif [ -f "$marker" ] && managed_ok "$target" "$marker" "$src"; then
+    elif has_managed_ownership "$root" "$key" "$marker" && managed_ok_key "$root" "$target" "$key" "$src" "$marker"; then
       if [ "$mode" = "update" ]; then
         cp "$src" "$target"
-        mark_managed "$target" "$marker"
+        record_managed "$target" "$key"
+        rm -f "$marker"
         ok "$f"
       else
+        preserve_managed "$root" "$key" "$marker"
+        rm -f "$marker"
         skip "$f (already exists, left alone)"
       fi
-    elif [ ! -f "$marker" ] && cmp -s "$target" "$src"; then
-      mark_managed "$target" "$marker"
+    elif ! has_managed_ownership "$root" "$key" "$marker" && cmp -s "$target" "$src"; then
+      record_managed "$target" "$key"
+      rm -f "$marker"
       if [ "$mode" = "update" ]; then
         ok "$f"
       else
         skip "$f (already exists, left alone)"
       fi
     elif [ "$mode" = "init" ]; then
+      preserve_managed "$root" "$key" "$marker"
+      rm -f "$marker"
       warn "skipped $f: $target was edited locally and is yours to keep (use --force)"
     else
+      preserve_managed "$root" "$key" "$marker"
+      rm -f "$marker"
       warn "skipped $f: $target was edited locally and is yours to keep"
     fi
   done
@@ -433,24 +563,22 @@ install_rulebooks() {
 }
 
 check_managed_file() {
-  local label="$1" target="$2" marker="$3" upstream="$4"
+  local root="$1" label="$2" target="$3" key="$4" marker="$5" upstream="$6"
   if [ ! -f "$target" ]; then
     warn "$label missing"
     return 1
   fi
 
-  local recorded=""
-  if [ -f "$marker" ]; then
-    recorded="$(cat "$marker" 2>/dev/null || true)"
-  fi
+  local state
+  state="$(lookup_managed "$root" "$key" "$marker")"
 
-  if [ ! -s "$target" ] || ( [ -f "$marker" ] && [ -n "$recorded" ] && ! [[ "$recorded" =~ $RE_DIGITS ]] ); then
+  if [ ! -s "$target" ] || [ "$state" = "corrupt" ]; then
     warn "$label corrupt"
     return 1
   fi
 
-  if [ -f "$marker" ]; then
-    if managed_ok "$target" "$marker" "$upstream"; then
+  if [ "$state" != "none" ]; then
+    if managed_ok_key "$root" "$target" "$key" "$upstream" "$marker"; then
       ok "$label"
       return 0
     else
@@ -479,14 +607,23 @@ install_skills() {
 
   for name in $(skill_names); do
     local src="$KIT/skills/$name" target="$dest/$name"
-    local file="$target/SKILL.md" marker="$target/.workflow-managed"
-    if [ -e "$file" ] && ! managed_ok "$file" "$marker" "$src/SKILL.md" && [ "$force" != 1 ]; then
+    local file="$target/SKILL.md" key="$dest_rel/$name/SKILL.md" marker="$target/.workflow-managed"
+    if [ -e "$file" ] && ! managed_ok_key "$root" "$file" "$key" "$src/SKILL.md" "$marker" && [ "$force" != 1 ]; then
+      if ! has_managed_ownership "$root" "$key" "$marker" && cmp -s "$file" "$src/SKILL.md"; then
+        record_managed "$file" "$key"
+        rm -f "$marker"
+        ok "$label $name"
+        continue
+      fi
+      preserve_managed "$root" "$key" "$marker"
+      rm -f "$marker"
       warn "skipped $label $name: $file was edited here and is yours to keep (use --force)"
       continue
     fi
     mkdir -p "$target"
     cp "$src/SKILL.md" "$file"
-    mark_managed "$file" "$marker"
+    record_managed "$file" "$key"
+    rm -f "$marker"
     ok "$label $name"
   done
 }
@@ -515,70 +652,84 @@ claude_agent() {
 # .claude/agents with Claude Code tool names.
 install_agents() {
   local root="$1" force="$2" flavor="${3:-}"
-  local dest="$root/.agents/agents" label="agent"
-  if [ "$flavor" = claude ]; then dest="$root/.claude/agents"; label=".claude agent"; fi
+  local dest_rel=".agents/agents" label="agent"
+  if [ "$flavor" = claude ]; then dest_rel=".claude/agents"; label=".claude agent"; fi
+  local dest="$root/$dest_rel"
   mkdir -p "$dest"
-  local staged; staged="$(mktemp)"
+  local staged; staged="$(wf_mktemp)"
   for src in "$KIT"/templates/project/.agents/agents/*.md; do
     [ -f "$src" ] || continue
-    local name target marker upstream="$src"
+    local name base target key marker upstream="$src"
+    base="$(basename "$src")"
     name="$(basename "$src" .md)"
-    target="$dest/$(basename "$src")"
+    target="$dest/$base"
+    key="$dest_rel/$base"
     marker="$dest/.$name.workflow-managed"
     if [ "$flavor" = claude ]; then claude_agent "$src" > "$staged"; upstream="$staged"; fi
-    if [ -e "$target" ] && ! managed_ok "$target" "$marker" "$upstream" && [ "$force" != 1 ]; then
+    if [ -e "$target" ] && ! managed_ok_key "$root" "$target" "$key" "$upstream" "$marker" && [ "$force" != 1 ]; then
+      if ! has_managed_ownership "$root" "$key" "$marker" && cmp -s "$target" "$upstream"; then
+        record_managed "$target" "$key"
+        rm -f "$marker"
+        ok "$label $name"
+        continue
+      fi
+      preserve_managed "$root" "$key" "$marker"
+      rm -f "$marker"
       warn "skipped $label $name: $target was edited here and is yours to keep (use --force)"
       continue
     fi
     cp "$upstream" "$target"
-    mark_managed "$target" "$marker"
+    record_managed "$target" "$key"
+    rm -f "$marker"
     ok "$label $name"
   done
   rm -f "$staged"
 }
 
 # Copy the CLI into .workflow/bin so every clone of the project can run it.
-# One manifest (.workflow/bin/.workflow-managed, "<cksum> <file>" per line)
-# records what was written; a file edited since is left alone unless --force.
+# Checksums are recorded under `managed:` in .workflow/.workflow-version;
+# a file edited since install is left alone unless --force.
 install_cli() {
   local root="$1" force="$2"
-  local dest="$root/.workflow/bin" manifest="$root/.workflow/bin/.workflow-managed"
-  local name target recorded current new_manifest
+  local dest="$root/.workflow/bin" legacy_manifest="$root/.workflow/bin/.workflow-managed"
+  local name target key state recorded current prev_entries
   mkdir -p "$dest"
-  new_manifest="$(mktemp)"
+  prev_entries="$(cli_manifest_entries "$root")"
   for name in $(cli_files); do
     target="$dest/$name"
+    key=".workflow/bin/$name"
+    state="$(lookup_managed "$root" "$key")"
     recorded=""
-    [ -f "$manifest" ] && recorded="$(awk -v n="$name" '$2 == n { print $1; exit }' "$manifest")"
+    case "$state" in sum:*) recorded="${state#sum:}" ;; esac
     if [ -e "$target" ] && [ "$force" != 1 ] && ! cmp -s "$target" "$KIT/bin/$name"; then
-      current="$(cksum < "$target" | cut -d' ' -f1)"
+      current="$(file_cksum "$target")"
       if [ "$current" != "$recorded" ]; then
         warn "skipped .workflow/bin/$name: edited here and yours to keep (use --force)"
-        [ -z "$recorded" ] || printf '%s %s\n' "$recorded" "$name" >> "$new_manifest"
+        [ -z "$recorded" ] || stage_managed_raw "$recorded" "$key"
         continue
       fi
     fi
     cp "$KIT/bin/$name" "$target"
     case "$name" in *.bash|*.awk) chmod 644 "$target" ;; *) chmod 755 "$target" ;; esac
-    printf '%s %s\n' "$(cksum < "$target" | cut -d' ' -f1)" "$name" >> "$new_manifest"
+    record_managed "$target" "$key"
   done
   # Drop files a previous version shipped and this one does not, if unedited.
-  if [ -f "$manifest" ]; then
+  if [ -n "$prev_entries" ]; then
     while read -r recorded name; do
       [ -n "$name" ] || continue
       grep -qx "$name" < <(cli_files) && continue
       target="$dest/$name"
       [ -f "$target" ] || continue
-      if [ "$(cksum < "$target" | cut -d' ' -f1)" = "$recorded" ]; then
+      if [ "$(file_cksum "$target")" = "$recorded" ]; then
         rm -f "$target"
         ok "removed .workflow/bin/$name (no longer in the toolkit)"
       else
+        stage_managed_raw "$recorded" ".workflow/bin/$name"
         warn "kept .workflow/bin/$name: no longer in the toolkit, but edited locally and yours to keep"
       fi
-    done < "$manifest"
+    done <<< "$prev_entries"
   fi
-  mv "$new_manifest" "$manifest"
-  chmod 644 "$manifest"
+  rm -f "$legacy_manifest"
   ok "CLI in .workflow/bin ($VERSION)"
 }
 
@@ -609,7 +760,7 @@ install_agents_block() {
 # that carries a workflow:start/end block (AGENTS.md, CLAUDE.md).
 install_marked_block() {
   local root="$1" name="$2" source="$3" marker="$4" force="${5:-0}" prepend="${6:-0}"
-  local file="$root/$name"
+  local file="$root/$name" key="$name#workflow-block"
   assert_symlink_safety "$root" "$file"
   assert_symlink_safety "$root" "$marker"
   local block marker_state starts ends malformed tmp output_state
@@ -619,7 +770,8 @@ install_marked_block() {
 
   if [ ! -f "$file" ]; then
     printf '%s\n' "$block" > "$file"
-    mark_managed "$source" "$marker"
+    record_managed "$source" "$key"
+    rm -f "$marker"
     ok "$name (created)"
     return 0
   fi
@@ -629,17 +781,19 @@ install_marked_block() {
 
   if [ "$starts" -eq 0 ] && [ "$ends" -eq 0 ] && [ "$malformed" -eq 0 ]; then
     if [ "$prepend" = 1 ]; then
-      tmp="$(mktemp)"
+      tmp="$(wf_mktemp)"
       if ! { printf '%s\n\n' "$block"; cat "$file"; } > "$tmp"; then
         rm -f "$tmp"
         die "could not prepare the $name workflow block"
       fi
       mv "$tmp" "$file"
-      mark_managed "$source" "$marker"
+      record_managed "$source" "$key"
+      rm -f "$marker"
       ok "$name (workflow block prepended)"
     else
       printf '\n%s\n' "$block" >> "$file"
-      mark_managed "$source" "$marker"
+      record_managed "$source" "$key"
+      rm -f "$marker"
       ok "$name (workflow block appended)"
     fi
     return 0
@@ -649,16 +803,18 @@ install_marked_block() {
   fi
 
   if [ "$force" != 1 ]; then
-    local current_block; current_block="$(mktemp)"
+    local current_block; current_block="$(wf_mktemp)"
     awk -v s="$MARKER_START" -v e="$MARKER_END" '
       $0 == s { inside = 1 }
       inside { print }
       $0 == e { inside = 0 }
     ' "$file" > "$current_block"
 
-    if [ -f "$marker" ]; then
-      if ! managed_ok "$current_block" "$marker" "$source"; then
+    if has_managed_ownership "$root" "$key" "$marker"; then
+      if ! managed_ok_key "$root" "$current_block" "$key" "$source" "$marker"; then
         rm -f "$current_block"
+        preserve_managed "$root" "$key" "$marker"
+        rm -f "$marker"
         warn "skipped $name: workflow block was edited locally and is yours to keep (use --force)"
         return 0
       fi
@@ -672,7 +828,7 @@ install_marked_block() {
     rm -f "$current_block"
   fi
 
-  tmp="$(mktemp)"
+  tmp="$(wf_mktemp)"
   # The block goes in through the environment: BSD awk (macOS) rejects a -v
   # value that contains newlines.
   if ! WF_BLOCK="$block" awk -v s="$MARKER_START" -v e="$MARKER_END" '
@@ -696,7 +852,8 @@ install_marked_block() {
   fi
 
   mv "$tmp" "$file"
-  mark_managed "$source" "$marker"
+  record_managed "$source" "$key"
+  rm -f "$marker"
   ok "$name (workflow block updated)"
 }
 
@@ -725,7 +882,7 @@ install_gitattributes() {
     return 0
   fi
   state="$(gitattributes_state "$file")"
-  tmp="$(mktemp)"
+  tmp="$(wf_mktemp)"
   case "$state" in
     "0 0")
       cat "$file" > "$tmp"
@@ -760,7 +917,7 @@ remove_gitattributes() {
   local root="$1" file="$1/.gitattributes" tmp
   [ -f "$file" ] || return 0
   [ "$(gitattributes_state "$file")" = "1 1" ] || return 0
-  tmp="$(mktemp)"
+  tmp="$(wf_mktemp)"
   awk -v s="$GA_START" -v e="$GA_END" '
     $0 == s { skipping = 1; next }
     $0 == e { skipping = 0; next }
@@ -791,75 +948,98 @@ install_file() {
 write_manifest() {
   local root="$1" claude="${2:-no}"
   mkdir -p "$root/.workflow"
+  local tmp; tmp="$(wf_mktemp)"
   {
     printf 'version: %s\n' "$VERSION"
     printf 'installed: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     printf 'claude: %s\n' "$claude"
     printf 'skills:\n'
     for name in $(skill_names); do printf '  - %s\n' "$name"; done
-  } > "$root/.workflow/.workflow-version"
+    if [ -n "${MANIFEST_STAGE:-}" ] && [ -s "$MANIFEST_STAGE" ]; then
+      printf 'managed:\n'
+      LC_ALL=C sort -k2,2 -u "$MANIFEST_STAGE" | sed 's/^/  /'
+    fi
+  } > "$tmp"
+  mv "$tmp" "$root/.workflow/.workflow-version"
 }
 
 # Remove managed skills and agents the toolkit no longer ships. Files without
-# our marker are left alone: they belong to the project.
+# our ownership entry are left alone: they belong to the project.
 prune_stale_files() {
-  local root="$1" dest dir file name marker skills_expected
+  local root="$1" dest dest_rel dir file name key marker skills_expected
   skills_expected=" $(skill_names | tr '\n' ' ') "
-  for dest in "$root/.agents/skills" "$root/.claude/skills"; do
-  if [ -d "$dest" ]; then
-    for dir in "$dest"/*/; do
-      [ -d "$dir" ] || continue
-      name="$(basename "$dir")"
-      case "$skills_expected" in *" $name "*) continue ;; esac
-      marker="$dir/.workflow-managed"
-      [ -f "$marker" ] || continue
-      file="$dir/SKILL.md"
-      if managed_ok "$file" "$marker" ""; then
-        rm -f "$file" "$marker"
-        rmdir "$dir" 2>/dev/null || true
-        ok "removed skill $name (no longer in the toolkit)"
-      else
-        warn "kept skill $name: edited locally, yours to keep"
-      fi
-    done
-  fi
+  for dest_rel in ".agents/skills" ".claude/skills"; do
+    dest="$root/$dest_rel"
+    if [ -d "$dest" ]; then
+      for dir in "$dest"/*/; do
+        [ -d "$dir" ] || continue
+        name="$(basename "$dir")"
+        case "$skills_expected" in *" $name "*) continue ;; esac
+        file="$dir/SKILL.md"
+        key="$dest_rel/$name/SKILL.md"
+        marker="$dir/.workflow-managed"
+        has_managed_ownership "$root" "$key" "$marker" || continue
+        if [ ! -f "$file" ]; then
+          rm -f "$marker"
+          rmdir "$dir" 2>/dev/null || true
+        elif managed_ok_key "$root" "$file" "$key" "" "$marker"; then
+          rm -f "$file" "$marker"
+          rmdir "$dir" 2>/dev/null || true
+          ok "removed skill $name (no longer in the toolkit)"
+        else
+          preserve_managed "$root" "$key" "$marker"
+          rm -f "$marker"
+          warn "kept skill $name: edited locally, yours to keep"
+        fi
+      done
+    fi
   done
   local agents_expected=" "
   for file in "$KIT"/templates/project/.agents/agents/*.md; do
     [ -f "$file" ] || continue
     agents_expected="$agents_expected$(basename "$file" .md) "
   done
-  for dest in "$root/.agents/agents" "$root/.claude/agents"; do
-  if [ -d "$dest" ]; then
-    for file in "$dest"/*.md; do
-      [ -f "$file" ] || continue
-      name="$(basename "$file" .md)"
-      case "$agents_expected" in *" $name "*) continue ;; esac
-      marker="$dest/.$name.workflow-managed"
-      [ -f "$marker" ] || continue
-      if managed_ok "$file" "$marker" ""; then
-        rm -f "$file" "$marker"
-        ok "removed agent $name (no longer in the toolkit)"
-      else
-        warn "kept agent $name: edited locally, yours to keep"
-      fi
-    done
-  fi
+  for dest_rel in ".agents/agents" ".claude/agents"; do
+    dest="$root/$dest_rel"
+    if [ -d "$dest" ]; then
+      for file in "$dest"/*.md; do
+        [ -f "$file" ] || continue
+        name="$(basename "$file" .md)"
+        case "$agents_expected" in *" $name "*) continue ;; esac
+        key="$dest_rel/$(basename "$file")"
+        marker="$dest/.$name.workflow-managed"
+        has_managed_ownership "$root" "$key" "$marker" || continue
+        if managed_ok_key "$root" "$file" "$key" "" "$marker"; then
+          rm -f "$file" "$marker"
+          ok "removed agent $name (no longer in the toolkit)"
+        else
+          preserve_managed "$root" "$key" "$marker"
+          rm -f "$marker"
+          warn "kept agent $name: edited locally, yours to keep"
+        fi
+      done
+    fi
   done
   # Framework files the toolkit no longer ships (thinking.md since 2.5).
-  local f target
+  local f target src
   for f in $RETIRED_FRAMEWORK; do
     [ -f "$KIT/templates/project/.workflow/$f" ] && continue
     target="$root/.workflow/$f"
+    key=".workflow/$f"
     marker="$root/.workflow/.${f%.md}.workflow-managed"
-    [ -f "$marker" ] || continue
-    if [ ! -f "$target" ]; then
-      rm -f "$marker"
-    elif managed_ok "$target" "$marker" ""; then
-      rm -f "$target" "$marker"
-      ok "removed .workflow/$f (no longer in the toolkit)"
-    else
-      warn "kept .workflow/$f: no longer in the toolkit, but edited locally and yours to keep"
+    src=""
+    [ -f "$KIT/templates/project/.workflow/$f" ] && src="$KIT/templates/project/.workflow/$f"
+    if has_managed_ownership "$root" "$key" "$marker"; then
+      if [ ! -f "$target" ]; then
+        rm -f "$marker"
+      elif managed_ok_key "$root" "$target" "$key" "$src" "$marker"; then
+        rm -f "$target" "$marker"
+        ok "removed .workflow/$f (no longer in the toolkit)"
+      else
+        preserve_managed "$root" "$key" "$marker"
+        rm -f "$marker"
+        warn "kept .workflow/$f: no longer in the toolkit, but edited locally and yours to keep"
+      fi
     fi
   done
   # Effort definitions are gone (2.5); drop the directory if it is empty.
@@ -893,6 +1073,7 @@ cmd_init() {
 
   mkdir -p "$root/.workflow/specs" "$root/.workflow/tasks" \
            "$root/.workflow/maps" "$root/.workflow/done"
+  MANIFEST_STAGE="$(wf_mktemp)"
 
   install_skills "$root" "$force"
   install_agents "$root" "$force"
@@ -910,7 +1091,7 @@ cmd_init() {
     install_claude "$root" "$force"; claude=yes; commit_paths=".workflow/, .agents/, AGENTS.md, .gitattributes, .claude/ and CLAUDE.md"
   fi
   write_manifest "$root" "$claude"
-
+  rm -f "$MANIFEST_STAGE"; MANIFEST_STAGE=""
   cat >&2 <<EOF
 
 ${C_OK}Done.${C_OFF} Next step:
@@ -933,6 +1114,7 @@ cmd_update() {
   assert_symlink_safety "$root"
   say "Updating the workflow in $root"
   mkdir -p "$root/.workflow"
+  MANIFEST_STAGE="$(wf_mktemp)"
   install_skills "$root" "$force"
   install_agents "$root" "$force"
   local rulebooks_mode="update"
@@ -945,6 +1127,7 @@ cmd_update() {
   if claude_enabled "$root" "$CLAUDE_CHOICE"; then install_claude "$root" "$force"; claude=yes; fi
   prune_stale_files "$root"
   write_manifest "$root" "$claude"
+  rm -f "$MANIFEST_STAGE"; MANIFEST_STAGE=""
   ok "updated to $VERSION"
   say "Commit these files on the main branch; other branches and worktrees keep the old rules until they merge or rebase onto it."
   if git -C "$root" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
@@ -964,22 +1147,40 @@ cmd_update() {
 # rules, and counts its errors. Validate warnings (an archived file, say) are
 # shown but are not install problems.
 run_validate_for_doctor() {
-  local root="$1" v_var="$2" out status=0 errors=0 warnings=0 summary
+  local root="$1" v_var="$2" out status=0
   if [ ! -f "$BIN_DIR/workflow-core.py" ]; then
     warn "workflow validate: $BIN_DIR/workflow-core.py missing; run 'workflow update'"
     bump "$v_var"; return 0
   fi
   have_python || { skip "workflow validate: skipped, python3 not found"; return 0; }
-  out="$(cd "$root" && python3 "$BIN_DIR/workflow-core.py" validate --no-color 2>&1)" || status=$?
-  summary="$(printf '%s\n' "$out" | tail -n 1)"
-  if [[ "$summary" =~ $RE_VALIDATE_SUMMARY ]]; then
-    errors="${BASH_REMATCH[1]}"; warnings="${BASH_REMATCH[2]}"
-  fi
+  out="$(cd "$root" && python3 "$BIN_DIR/workflow-core.py" validate --format json --no-color 2>&1)" || status=$?
   if [ "$status" -eq 0 ]; then
     ok "workflow validate: tasks and decisions are valid"
     return 0
   fi
-  printf '%s\n' "$out" | sed '$d' | sed 's/^/  /' >&2
+
+  local counts
+  counts="$(python3 -c '
+import sys, json
+try:
+    data = json.loads(sys.argv[1])
+    for issue in data.get("issues", []):
+        sev = issue.get("severity", "ERROR")
+        label = "Warning" if sev == "WARNING" else "Error"
+        sys.stderr.write("  %s: %s:%s: %s\n    Fix: %s\n" % (
+            label, issue.get("file", ""), issue.get("line", 1),
+            issue.get("message", ""), issue.get("suggestion", "")))
+    print("%d %d" % (data.get("errors", 0), data.get("warnings", 0)))
+except Exception:
+    sys.exit(1)
+' "$out")" || {
+    printf '%s\n' "$out" | sed 's/^/  /' >&2
+    warn "workflow validate failed to run"
+    bump "$v_var"
+    return 0
+  }
+  local errors=0 warnings=0
+  read -r errors warnings <<< "$counts"
   if [ "$status" -ge 2 ]; then
     warn "workflow validate: $errors error(s), $warnings warning(s)"
     bump "$v_var" "$((errors > 0 ? errors : 1))"
@@ -989,23 +1190,24 @@ run_validate_for_doctor() {
 }
 
 check_cli() {
-  local root="$1" dest="$1/.workflow/bin" manifest="$1/.workflow/bin/.workflow-managed" c_var="$2"
-  local name recorded installed=""
+  local root="$1" dest="$1/.workflow/bin" c_var="$2"
+  local name recorded installed="" entries
   if [ ! -f "$dest/workflow" ]; then
     warn ".workflow/bin/workflow missing; run 'workflow update' from a toolkit checkout"
     bump "$c_var"; return 0
   fi
   installed="$(sed -n 's/^VERSION="\(.*\)"$/\1/p' "$dest/workflow" | head -n 1)"
   local edited=0
-  if [ -f "$manifest" ]; then
+  entries="$(cli_manifest_entries "$root")"
+  if [ -n "$entries" ]; then
     while read -r recorded name; do
       [ -n "$name" ] || continue
       if [ ! -f "$dest/$name" ]; then
         warn ".workflow/bin/$name missing"; bump "$c_var"
-      elif [ "$(cksum < "$dest/$name" | cut -d' ' -f1)" != "$recorded" ]; then
+      elif [ "$(file_cksum "$dest/$name")" != "$recorded" ]; then
         warn ".workflow/bin/$name edited"; edited=1; bump "$c_var"
       fi
-    done < "$manifest"
+    done <<< "$entries"
   fi
   if [ "$VENDORED" = 0 ] && [ "$installed" != "$VERSION" ]; then
     warn ".workflow/bin is version ${installed:-unknown}, toolkit is $VERSION; run 'workflow update'"
@@ -1058,8 +1260,9 @@ cmd_doctor() {
   local skills_expected name
   skills_expected=" $(expected_skills "$root" | tr '\n' ' ') "
   for name in $skills_expected; do
-    check_managed_file "skill $name" "$root/.agents/skills/$name/SKILL.md" \
-      "$root/.agents/skills/$name/.workflow-managed" "$(kit_file "$KIT/skills/$name/SKILL.md")" || problems=$((problems + 1))
+    check_managed_file "$root" "skill $name" "$root/.agents/skills/$name/SKILL.md" \
+      ".agents/skills/$name/SKILL.md" "$root/.agents/skills/$name/.workflow-managed" \
+      "$(kit_file "$KIT/skills/$name/SKILL.md")" || problems=$((problems + 1))
   done
 
   local stale_dir stale_name
@@ -1067,7 +1270,7 @@ cmd_doctor() {
     [ -d "$stale_dir" ] || continue
     stale_name="$(basename "$stale_dir")"
     case "$skills_expected" in *" $stale_name "*) continue ;; esac
-    if [ -f "$stale_dir/.workflow-managed" ]; then
+    if has_managed_ownership "$root" ".agents/skills/$stale_name/SKILL.md" "$stale_dir/.workflow-managed"; then
       warn "skill $stale_name is no longer in the toolkit; run 'workflow update'"
       problems=$((problems + 1))
     fi
@@ -1076,8 +1279,8 @@ cmd_doctor() {
   local agents_expected
   agents_expected=" $(expected_agents "$root" | tr '\n' ' ') "
   for name in $agents_expected; do
-    check_managed_file "agent $name" "$root/.agents/agents/$name.md" \
-      "$root/.agents/agents/.$name.workflow-managed" \
+    check_managed_file "$root" "agent $name" "$root/.agents/agents/$name.md" \
+      ".agents/agents/$name.md" "$root/.agents/agents/.$name.workflow-managed" \
       "$(kit_file "$KIT/templates/project/.agents/agents/$name.md")" || problems=$((problems + 1))
   done
 
@@ -1086,7 +1289,7 @@ cmd_doctor() {
     [ -f "$stale_agent" ] || continue
     stale_agent_name="$(basename "$stale_agent" .md)"
     case "$agents_expected" in *" $stale_agent_name "*) continue ;; esac
-    if [ -f "$root/.agents/agents/.$stale_agent_name.workflow-managed" ]; then
+    if has_managed_ownership "$root" ".agents/agents/$stale_agent_name.md" "$root/.agents/agents/.$stale_agent_name.workflow-managed"; then
       warn "agent $stale_agent_name is no longer in the toolkit; run 'workflow update'"
       problems=$((problems + 1))
     fi
@@ -1107,12 +1310,13 @@ cmd_doctor() {
 
   if claude_enabled "$root" ""; then
     for name in $skills_expected; do
-      check_managed_file ".claude skill $name" "$root/.claude/skills/$name/SKILL.md" \
-        "$root/.claude/skills/$name/.workflow-managed" "$(kit_file "$KIT/skills/$name/SKILL.md")" || problems=$((problems + 1))
+      check_managed_file "$root" ".claude skill $name" "$root/.claude/skills/$name/SKILL.md" \
+        ".claude/skills/$name/SKILL.md" "$root/.claude/skills/$name/.workflow-managed" \
+        "$(kit_file "$KIT/skills/$name/SKILL.md")" || problems=$((problems + 1))
     done
     for name in $agents_expected; do
-      check_managed_file ".claude agent $name" "$root/.claude/agents/$name.md" \
-        "$root/.claude/agents/.$name.workflow-managed" "" || problems=$((problems + 1))
+      check_managed_file "$root" ".claude agent $name" "$root/.claude/agents/$name.md" \
+        ".claude/agents/$name.md" "$root/.claude/agents/.$name.workflow-managed" "" || problems=$((problems + 1))
     done
     marker_state="$(parse_agents_marker_state "$root/CLAUDE.md")"
     read -r starts ends malformed <<< "$marker_state"
@@ -1143,8 +1347,8 @@ cmd_doctor() {
   check_cli "$root" problems
 
   for f in CONVENTIONS.md STYLE.md; do
-    check_managed_file ".workflow/$f" "$root/.workflow/$f" "$root/.workflow/.${f%.md}.workflow-managed" \
-      "$(kit_file "$KIT/$f")" || problems=$((problems + 1))
+    check_managed_file "$root" ".workflow/$f" "$root/.workflow/$f" ".workflow/$f" \
+      "$root/.workflow/.${f%.md}.workflow-managed" "$(kit_file "$KIT/$f")" || problems=$((problems + 1))
   done
 
   for f in standards.md glossary.md decisions.md technical-debt.md; do
@@ -1178,7 +1382,7 @@ cmd_doctor() {
 # out of AGENTS.md or CLAUDE.md if it is unedited; keep the rest of the file.
 remove_marked_block() {
   local root="$1" name="$2" agents_src="$3" agents_marker="$4"
-  local agents_file="$root/$name"
+  local agents_file="$root/$name" key="$name#workflow-block"
 
   if [ -f "$agents_file" ]; then
     local agents_preexisting_empty=0
@@ -1196,7 +1400,7 @@ remove_marked_block() {
       elif [ "$starts" -ne 1 ] || [ "$ends" -ne 1 ] || [ "$malformed" -ne 0 ]; then
         warn "kept $name: ambiguous or malformed workflow block, yours to keep"
       else
-        local current_block; current_block="$(mktemp)"
+        local current_block; current_block="$(wf_mktemp)"
         awk -v s="$MARKER_START" -v e="$MARKER_END" '
           $0 == s { inside = 1 }
           inside { print }
@@ -1204,8 +1408,8 @@ remove_marked_block() {
         ' "$agents_file" > "$current_block"
 
         local block_unmodified=0
-        if [ -f "$agents_marker" ]; then
-          if managed_ok "$current_block" "$agents_marker" "$agents_src"; then
+        if has_managed_ownership "$root" "$key" "$agents_marker"; then
+          if managed_ok_key "$root" "$current_block" "$key" "$agents_src" "$agents_marker"; then
             block_unmodified=1
           fi
         else
@@ -1216,7 +1420,7 @@ remove_marked_block() {
         rm -f "$current_block"
 
         if [ "$block_unmodified" -eq 1 ]; then
-          local tmp; tmp="$(mktemp)"
+          local tmp; tmp="$(wf_mktemp)"
           awk -v s="$MARKER_START" -v e="$MARKER_END" '
             $0 == s { skipping = 1; next }
             $0 == e { skipping = 0; next }
@@ -1232,6 +1436,7 @@ remove_marked_block() {
             ok "removed the empty $name"
           fi
         else
+          rm -f "$agents_marker"
           warn "kept $name: workflow block was edited locally, yours to keep"
         fi
       fi
@@ -1239,22 +1444,25 @@ remove_marked_block() {
   else
     rm -f "$agents_marker"
   fi
-
 }
 
 # Remove the copied CLI, keeping files edited since install.
 remove_cli() {
-  local root="$1" dest="$1/.workflow/bin" manifest="$1/.workflow/bin/.workflow-managed" recorded name
-  [ -f "$manifest" ] || return 0
-  while read -r recorded name; do
-    [ -n "$name" ] && [ -f "$dest/$name" ] || continue
-    if [ "$(cksum < "$dest/$name" | cut -d' ' -f1)" = "$recorded" ]; then
-      rm -f "$dest/$name"
-    else
-      warn "kept .workflow/bin/$name: edited locally, yours to keep"
-    fi
-  done < "$manifest"
-  rm -f "$manifest"
+  local root="$1" dest="$1/.workflow/bin" legacy_manifest="$1/.workflow/bin/.workflow-managed"
+  local entries recorded name
+  entries="$(cli_manifest_entries "$root")"
+  [ -n "$entries" ] || [ -f "$legacy_manifest" ] || return 0
+  if [ -n "$entries" ]; then
+    while read -r recorded name; do
+      [ -n "$name" ] && [ -f "$dest/$name" ] || continue
+      if [ "$(file_cksum "$dest/$name")" = "$recorded" ]; then
+        rm -f "$dest/$name"
+      else
+        warn "kept .workflow/bin/$name: edited locally, yours to keep"
+      fi
+    done <<< "$entries"
+  fi
+  rm -f "$legacy_manifest"
   rmdir "$dest" 2>/dev/null || true
   ok "removed .workflow/bin"
 }
@@ -1270,48 +1478,54 @@ cmd_uninstall() {
 
   for name in $(skill_names); do
     local target="$root/.agents/skills/$name"
-    local file="$target/SKILL.md" marker="$target/.workflow-managed"
-    if managed_ok "$file" "$marker" "$KIT/skills/$name/SKILL.md"; then
-      rm "$file" "$marker"; rmdir "$target" 2>/dev/null || true
+    local file="$target/SKILL.md" key=".agents/skills/$name/SKILL.md" marker="$target/.workflow-managed"
+    if managed_ok_key "$root" "$file" "$key" "$KIT/skills/$name/SKILL.md" "$marker"; then
+      rm -f "$file" "$marker"; rmdir "$target" 2>/dev/null || true
       ok "removed skill $name"; removed=$((removed + 1))
     elif [ -f "$file" ]; then
+      rm -f "$marker"
       warn "kept .agents/skills/$name/SKILL.md: edited locally, yours to keep"
     fi
   done
 
-
   for src in "$KIT"/templates/project/.agents/agents/*.md; do
     [ -f "$src" ] || continue
-    local name a marker
+    local name base a key marker
+    base="$(basename "$src")"
     name="$(basename "$src" .md)"
-    a="$root/.agents/agents/$(basename "$src")"
+    a="$root/.agents/agents/$base"
+    key=".agents/agents/$base"
     marker="$root/.agents/agents/.$name.workflow-managed"
-    if managed_ok "$a" "$marker" "$src"; then
-      rm "$a" "$marker"; ok "removed agent $name"; removed=$((removed + 1))
+    if managed_ok_key "$root" "$a" "$key" "$src" "$marker"; then
+      rm -f "$a" "$marker"; ok "removed agent $name"; removed=$((removed + 1))
     elif [ -f "$a" ]; then
-      warn "kept .agents/agents/$(basename "$src"): edited locally, yours to keep"
+      rm -f "$marker"
+      warn "kept .agents/agents/$base: edited locally, yours to keep"
     fi
   done
   # Claude Code copies: same ownership rule, keyed on the recorded checksum.
   for name in $(skill_names); do
     local target="$root/.claude/skills/$name"
-    local file="$target/SKILL.md" marker="$target/.workflow-managed"
-    if [ -f "$marker" ] && managed_ok "$file" "$marker" "$KIT/skills/$name/SKILL.md"; then
+    local file="$target/SKILL.md" key=".claude/skills/$name/SKILL.md" marker="$target/.workflow-managed"
+    if has_managed_ownership "$root" "$key" "$marker" && managed_ok_key "$root" "$file" "$key" "$KIT/skills/$name/SKILL.md" "$marker"; then
       rm -f "$file" "$marker"; rmdir "$target" 2>/dev/null || true
       ok "removed .claude skill $name"; removed=$((removed + 1))
-    elif [ -f "$file" ] && [ -f "$marker" ]; then
+    elif [ -f "$file" ] && has_managed_ownership "$root" "$key" "$marker"; then
+      rm -f "$marker"
       warn "kept .claude/skills/$name/SKILL.md: edited locally, yours to keep"
     fi
   done
   for src in "$KIT"/templates/project/.agents/agents/*.md; do
     [ -f "$src" ] || continue
-    local name a marker
+    local name a key marker
     name="$(basename "$src" .md)"
     a="$root/.claude/agents/$name.md"
+    key=".claude/agents/$name.md"
     marker="$root/.claude/agents/.$name.workflow-managed"
-    if [ -f "$marker" ] && managed_ok "$a" "$marker" ""; then
+    if has_managed_ownership "$root" "$key" "$marker" && managed_ok_key "$root" "$a" "$key" "" "$marker"; then
       rm -f "$a" "$marker"; ok "removed .claude agent $name"; removed=$((removed + 1))
-    elif [ -f "$a" ] && [ -f "$marker" ]; then
+    elif [ -f "$a" ] && has_managed_ownership "$root" "$key" "$marker"; then
+      rm -f "$marker"
       warn "kept .claude/agents/$name.md: edited locally, yours to keep"
     fi
   done
@@ -1323,19 +1537,18 @@ cmd_uninstall() {
   rmdir "$root/.claude/skills" 2>/dev/null || true
   rmdir "$root/.claude" 2>/dev/null || true
 
-  # Rulebooks and retired managed framework guides: remove if unedited, keep if edited.
-  for f in CONVENTIONS.md STYLE.md $RETIRED_FRAMEWORK; do
-    local target="$root/.workflow/$f"
+  # Rulebooks: remove if unedited, keep if edited.
+  for f in CONVENTIONS.md STYLE.md; do
+    local target="$root/.workflow/$f" key=".workflow/$f"
     local marker="$root/.workflow/.${f%.md}.workflow-managed"
-    [ -e "$target" ] || [ -e "$marker" ] || continue
+    [ -e "$target" ] || [ -e "$marker" ] || has_managed_ownership "$root" "$key" "$marker" || continue
     local src=""
     [ -f "$KIT/$f" ] && src="$KIT/$f"
-    [ -z "$src" ] && [ -f "$KIT/templates/project/.workflow/$f" ] && src="$KIT/templates/project/.workflow/$f"
-    if [ -f "$marker" ] && managed_ok "$target" "$marker" "$src"; then
+    if has_managed_ownership "$root" "$key" "$marker" && managed_ok_key "$root" "$target" "$key" "$src" "$marker"; then
       rm -f "$target" "$marker"
       ok "removed .workflow/$f"
       removed=$((removed + 1))
-    elif [ ! -f "$marker" ] && [ -f "$target" ] && [ -n "$src" ] && cmp -s "$target" "$src"; then
+    elif ! has_managed_ownership "$root" "$key" "$marker" && [ -f "$target" ] && [ -n "$src" ] && cmp -s "$target" "$src"; then
       rm -f "$target"
       ok "removed .workflow/$f"
       removed=$((removed + 1))
@@ -1346,28 +1559,27 @@ cmd_uninstall() {
       fi
     fi
   done
-  if [ -f "$root/.workflow/.workflow-version" ]; then
-    rm "$root/.workflow/.workflow-version"
-    ok "removed .workflow/.workflow-version"
-    removed=$((removed + 1))
-  fi
   for d in specs tasks maps done; do
     rmdir "$root/.workflow/$d" 2>/dev/null || true
   done
 
   remove_marked_block "$root" AGENTS.md "$KIT/templates/project/AGENTS.md" \
     "$root/.workflow/.agents-block.workflow-managed" removed
-  if [ -f "$root/CLAUDE.md" ] || [ -f "$root/.workflow/.claude-block.workflow-managed" ]; then
+  if [ -f "$root/CLAUDE.md" ] || has_managed_ownership "$root" "CLAUDE.md#workflow-block" "$root/.workflow/.claude-block.workflow-managed"; then
     remove_marked_block "$root" CLAUDE.md "$KIT/templates/project/CLAUDE.md" \
       "$root/.workflow/.claude-block.workflow-managed" removed
   fi
   remove_cli "$root" removed
+  if [ -f "$root/.workflow/.workflow-version" ]; then
+    rm -f "$root/.workflow/.workflow-version"
+    ok "removed .workflow/.workflow-version"
+    removed=$((removed + 1))
+  fi
   remove_gitattributes "$root"
   local hook; hook="$(hook_path "$root" 2>/dev/null || true)"
   if [ -n "$hook" ] && [ -f "$hook" ] && grep -qF "$HOOK_MARKER" "$hook"; then
     remove_hook_file_or_block "$hook"
   fi
-
   say ""
   say "Removed $removed file(s)."
   say "Your own files are untouched: .workflow/standards.md, glossary.md,"
@@ -1395,7 +1607,7 @@ if [ ! -f "$cli" ]; then
   echo "workflow validate unavailable: missing $cli. Restore it or run 'workflow hook uninstall' from a toolkit checkout." >&2
   exit 1
 fi
-bash "$cli" validate --no-color
+bash "$cli" validate --staged --no-color
 if [ $? -ge 2 ]; then
   echo "workflow validate found errors or could not run. Fix them, or commit with --no-verify to skip." >&2
   exit 1
@@ -1422,8 +1634,8 @@ hook_block() {
 
 append_hook_block() {
   local hook="$1" tmp block_file
-  tmp="$(mktemp)"
-  block_file="$(mktemp)"
+  tmp="$(wf_mktemp)"
+  block_file="$(wf_mktemp)"
   hook_block > "$block_file"
   if grep -qxF "$HOOK_BLOCK_START" "$hook" && grep -qxF "$HOOK_BLOCK_END" "$hook"; then
     awk -v s="$HOOK_BLOCK_START" -v e="$HOOK_BLOCK_END" -v bf="$block_file" '
@@ -1468,7 +1680,7 @@ append_hook_block() {
 remove_hook_file_or_block() {
   local hook="$1"
   if grep -qxF "$HOOK_BLOCK_START" "$hook" && grep -qxF "$HOOK_BLOCK_END" "$hook"; then
-    local tmp; tmp="$(mktemp)"
+    local tmp; tmp="$(wf_mktemp)"
     awk -v s="$HOOK_BLOCK_START" -v e="$HOOK_BLOCK_END" '
       $0 == s { skipping = 1; next }
       $0 == e { skipping = 0; next }
@@ -1545,12 +1757,14 @@ Anywhere, including the project's own copy, .workflow/bin/workflow:
   workflow doctor              report what is installed and what is missing
   workflow hook install|uninstall|status [--force|--append]
                                pre-commit hook that blocks on validate errors
-  workflow validate [--strict] [--format text|json]
+  workflow validate [--strict] [--audit] [--staged] [--format text|json]
                                check task files and the decision log
   workflow next [--effort SLUG] [--all] [--brief] [--format text|json]
                                ready tasks by priority, then paused and blocked
+  workflow task start <task>   activate a task, record Base commit and update spec
+  workflow task archive <task> verify proof and move a finished task to done/
   workflow version             print the version
-Commands support --help. validate and next need python3 (3.8+).
+Commands support --help. validate, next and task need python3 (3.8+).
 
 Installs into the nearest git repository above the current directory, or the
 current directory if there is no git repository. Nothing is written outside that
@@ -1563,7 +1777,7 @@ the project already has CLAUDE.md or .claude/. A block in .gitattributes gives
 EOF
 }
 
-# validate and next live in workflow-core.py beside this script.
+# validate, next and task live in workflow-core.py beside this script.
 run_core() {
   local core="$BIN_DIR/workflow-core.py"
   [ -f "$core" ] || {
@@ -1605,7 +1819,7 @@ case "${1:-}" in
   hook) shift; cmd_hook "$@" ;;
   version|--version|-v) printf '%s\n' "$VERSION" ;;
   ""|-h|--help|help) usage ;;
-  validate|next) run_core "$@" ;;
+  validate|next|task) run_core "$@" ;;
   pulse|tasks|deps|decisions|effort|debt|hotfix-review) removed_command "$1" ;;
   *) die "unknown command: $1 (try 'workflow help')" ;;
 esac

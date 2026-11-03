@@ -15,8 +15,8 @@ Add `## <YYYY-MM-DD> - <title>` entries under `## Entries` (newest last). Cite a
 - **Because:** why it lost here
 
 Optional: **Decided by** (`user` or `agent`), **Revisit when**
-(condition to reconsider), and **Supersedes** (`<old heading>`,
-adding `**Superseded by:** <new heading>` to the old entry).
+(condition to reconsider), and **Supersedes** (`<YYYY-MM-DD> - <old title>`;
+leave the older entry untouched so the file stays strictly append-only).
 
 ```markdown
 ## 2026-01-31 - Retries capped at 3, no backoff

@@ -13,7 +13,7 @@
 - **真实路径验证**：每个任务附带可执行的 `Check` 验证命令。修复 Bug 先复现失败，交付前在真实 CLI 或服务入口跑通验证。
 - **克制实现**：优先复用现有代码与标准库；处理真实可达的问题，不写臆想场景的防御逻辑、空封装或未要求的兼容开关。
 - **独立上下文审查**：由独立上下文的 `workflow-reviewer` 检查需求落实与代码质量；涉及鉴权、外部输入等安全边界时运行 `security-reviewer`。
-- **并行隔离与决策留痕**：`workflow next` 调度任务并提示文件冲突；并行任务在独立 Git worktree 中执行；难以回退的技术决定记入 `.workflow/decisions.md`，项目术语维护在 `glossary.md`。
+- **并行隔离与决策留痕**：`workflow next` 调度任务并提示文件冲突；并行任务在独立 Git worktree（`.workflow/worktrees/<effort>-<NN>`）中执行；难以回退的技术决定记入 `.workflow/decisions.md`，项目术语维护在 `glossary.md`。
 
 ---
 
@@ -97,6 +97,10 @@ workflow hook install
 
 - `workflow next [--effort SLUG] [--all] [--brief] [--format text|json]`
   按优先级列出可开工任务、进行中/暂停/阻塞任务，并提示共用文件冲突；`--brief` 输出精简简报，空闲时不输出。
+- `workflow task start <task>`
+  激活任务，以当前 HEAD 记录 `Base commit`，设置 `Status: active`，并在需要时将对应 spec 推进为 `in progress`。
+- `workflow task archive <task>`
+  核验清单已勾选与完成证据（非 spike 任务的 `Check after:` 或 spike 的 `## Findings`），移除 `Status`，归档至 `.workflow/done/<effort>/` 并校验全库状态。
 - `workflow validate [--strict] [--format text|json]`
   检查 `tasks/`、`done/`、`specs/` 与 `decisions.md` 的字段格式和依赖完整性。
 - `workflow doctor`

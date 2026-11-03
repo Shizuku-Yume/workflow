@@ -18,6 +18,11 @@ WORKFLOW = ROOT / 'bin/workflow'
 CONVENTIONS = ROOT / 'CONVENTIONS.md'
 FLOW_PATH = ROOT / 'skills/flow-break/SKILL.md'
 DECISION_PATH = ROOT / 'templates/project/.workflow/decisions.md'
+SPEC_PATH = ROOT / 'skills/flow-spec/SKILL.md'
+CLOSE_PATH = ROOT / 'skills/flow-close/SKILL.md'
+
+SPEC_CHECK_RE = re.compile(r"^[-*]\s+\*\*([A-Za-z][A-Za-z0-9_-]*[0-9])\.\*\*")
+ACCEPTED_RE = re.compile(r"^\s*(?:[-*]\s+)?(?:\*\*Accepted:\*\*|Accepted:|\*\*Accepted\*\*:)[ \t]+\S")
 
 # Things removed from the toolkit that the shipped prose must not mention (CHANGELOG is exempt).
 REMOVED = ['workflow tasks', 'workflow deps', 'workflow decisions', 'workflow effort',
@@ -250,6 +255,100 @@ def check_skill_listing():
         ok(f'all {len(skills)} skills appear in READMEs and CONVENTIONS.md §3')
 
 
+def check_spec_template_syntax():
+    """Verify flow-spec SKILL.md template defines valid W-check syntax and required sections."""
+    spec = example(SPEC_PATH, re.compile(r'^#\s*<Title>'))
+    if spec is None:
+        return
+    initial = failed
+    inside_how = False
+    w_checks = []
+    has_status = False
+    has_priority = False
+    for line_no, text in spec:
+        stripped = text.strip()
+        if re.match(r'^\*?\*?Status:\*?\*?\s*\S', stripped, re.IGNORECASE):
+            has_status = True
+        if re.match(r'^\*?\*?Priority:\*?\*?\s*\S', stripped, re.IGNORECASE):
+            has_priority = True
+        if stripped.startswith('## '):
+            heading = stripped[3:].strip().rstrip(':').lower()
+            inside_how = (heading == 'how we will know it works')
+            continue
+        if inside_how:
+            if stripped.startswith(('-', '*')):
+                m = SPEC_CHECK_RE.match(stripped)
+                if m:
+                    w_checks.append((line_no, m.group(1)))
+                else:
+                    fail(SPEC_PATH, line_no,
+                         f'malformed W-check syntax {stripped!r}: expected format "- **W1.** <check description>"')
+            elif stripped:
+                fail(SPEC_PATH, line_no,
+                     f'unexpected non-bullet content in "How we will know it works": {stripped!r}')
+
+    if not has_status:
+        fail(SPEC_PATH, spec[0][0], 'spec template missing Status field')
+    if not has_priority:
+        fail(SPEC_PATH, spec[0][0], 'spec template missing Priority field')
+    if not w_checks:
+        fail(SPEC_PATH, spec[0][0],
+             'spec template has no valid W-checks under "## How we will know it works"')
+    elif failed == initial:
+        ok(f'{SPEC_PATH.relative_to(ROOT)}: W-check syntax valid ({", ".join(c[1] for c in w_checks)})')
+
+
+def check_closeout_template_syntax():
+    """Verify flow-close SKILL.md template defines valid Accepted syntax and closeout heading."""
+    close = example(CLOSE_PATH, re.compile(r'^#\s*Closeout:\s*<effort>'))
+    if close is None:
+        return
+    initial = failed
+    accepted_found = False
+    for line_no, text in close:
+        if ACCEPTED_RE.match(text):
+            accepted_found = True
+            break
+    if not accepted_found:
+        fail(CLOSE_PATH, close[0][0],
+             'closeout template missing valid `**Accepted:** <date> by <name>` line')
+    elif failed == initial:
+        ok(f'{CLOSE_PATH.relative_to(ROOT)}: closeout acceptance syntax valid')
+
+
+def check_malformed_template_detection():
+    """Verify that linter and validation rules reject drifted or malformed spec and closeout syntax."""
+    initial = failed
+    malformed_specs = [
+        # Missing bold/dot
+        ("- W1: command", "missing bold/dot formatting"),
+        # Missing bullet
+        ("**W1.** command", "missing leading bullet"),
+        # Colon instead of period inside bold
+        ("- **W1:** command", "colon instead of period inside bold"),
+        # Invalid check ID format
+        ("- **Check 1.** command", "invalid check ID"),
+    ]
+    for text, desc in malformed_specs:
+        if SPEC_CHECK_RE.match(text):
+            fail(SPEC_PATH, 1, f'SPEC_CHECK_RE unexpectedly accepted malformed W-check ({desc}): {text!r}')
+
+    malformed_closeouts = [
+        # Missing Accepted prefix (using Approved)
+        ("**Approved:** 2026-11-03 by user", "wrong keyword"),
+        # Missing colon
+        ("**Accepted** 2026-11-03 by user", "missing colon"),
+        # Empty value
+        ("**Accepted:**", "empty acceptance value"),
+        ("**Accepted:**   ", "whitespace-only acceptance value"),
+    ]
+    for text, desc in malformed_closeouts:
+        if ACCEPTED_RE.match(text):
+            fail(CLOSE_PATH, 1, f'ACCEPTED_RE unexpectedly accepted malformed closeout ({desc}): {text!r}')
+
+    if failed == initial:
+        ok('linter rules detect malformed spec and closeout template syntax')
+
 # Extract the live fenced blocks, retaining original line numbers for diagnostics.
 def example(path, start):
     blocks = []
@@ -349,7 +448,9 @@ REFERENCE_TASK = '''# {number}: Reference target
 def roundtrips(tmp):
     flow = example(FLOW_PATH, re.compile(r'^# <NN>:'))
     decision = example(DECISION_PATH, re.compile(r'^## \d{4}-\d{2}-\d{2} - '))
-    if flow is None or decision is None:
+    spec = example(SPEC_PATH, re.compile(r'^#\s*<Title>'))
+    close = example(CLOSE_PATH, re.compile(r'^#\s*Closeout:\s*<effort>'))
+    if flow is None or decision is None or spec is None or close is None:
         return
     repo = tmp / 'project'
     repo.mkdir()
@@ -368,6 +469,8 @@ def roundtrips(tmp):
                  (str(WORKFLOW), 'init')]:
         if command(repo, env, FLOW_PATH, location, 'cannot initialize workflow example', *args) is None:
             return
+    (repo / '.workflow/standards.md').write_text(
+        '# Project standards\n\nLanding: direct\n\nRun: git status --short\n', encoding='utf-8')
     base = command(repo, env, FLOW_PATH, location, 'cannot resolve example base commit', 'git', 'rev-parse', 'HEAD')
     if base is None:
         return
@@ -379,6 +482,13 @@ def roundtrips(tmp):
         'command': 'git status --short', 'result that means it works': 'working tree status is displayed',
         'acceptance point': 'The demonstrated behavior is documented', 'check IDs': 'W1',
         'Filled in after spike': 'Spike findings have been recorded below.',
+        'Option': 'Alternative SQLite design',
+        'command or action, and the passing result': 'git status --short shows clean tree',
+        'YYYY-MM-DD': '2026-11-03',
+        'who accepted': 'user',
+        'what shipped, with W-check results': 'Observable behavior verified; W1 and W2 passed.',
+        'notable decisions or plan changes, or None': 'None',
+        'open technical-debt.md items or follow-up tasks, or None': 'None',
     }
     tasks = repo / '.workflow/tasks'
     # Blocker targets for the `Blocked by:` alternatives: demo/02 and demo2/01.
@@ -406,6 +516,94 @@ def roundtrips(tmp):
             fail(DECISION_PATH, decision[0][0], f'decision example variant {index}: {error}', result)
         else:
             ok(f'{where}: no validate issues')
+
+    # Round-trip flow-spec template variants: write spec, pair with task covering W1,
+    # and confirm that workflow validate recognizes the spec check IDs.
+    spec_replacements = replacements.copy()
+    spec_replacements['effort'] = 'specdemo'
+    spec_variants = variants(SPEC_PATH, spec, spec_replacements)
+    specs_dir = repo / '.workflow/specs'
+    specs_dir.mkdir(parents=True, exist_ok=True)
+    specdemo_file = specs_dir / 'specdemo.md'
+
+    specdemo_tasks = tasks / 'specdemo'
+    specdemo_tasks.mkdir(parents=True, exist_ok=True)
+    spec_task_file = specdemo_tasks / '01-spec-coverage.md'
+    task_text = REFERENCE_TASK.format(number='01', effort='specdemo', base=base)
+    task_text = task_text.replace('**Blocked by:** None', '**Blocked by:** None\n**Covers:** W1')
+    spec_task_file.write_text(task_text, encoding='utf-8')
+
+    for index, variant in enumerate(spec_variants, 1):
+        specdemo_file.write_text('\n'.join(text for _, text in variant) + '\n', encoding='utf-8')
+        where = f'{label(SPEC_PATH, spec[0][0])} spec example variant {index}'
+        try:
+            result = command(repo, env, SPEC_PATH, spec[0][0],
+                             f'spec example variant {index} roundtrip failed',
+                             str(WORKFLOW), 'validate')
+            if result is not None:
+                ok(f'{where} validates cleanly against task Covers')
+        finally:
+            pass
+
+    # Clean up open task before testing closeout
+    if spec_task_file.exists():
+        spec_task_file.unlink()
+    if specdemo_tasks.exists():
+        shutil.rmtree(specdemo_tasks, ignore_errors=True)
+
+    # Round-trip flow-close template variants: mark spec as done, archive a completed task under done/specdemo/,
+    # and verify that closeout.md satisfies workflow validate acceptance checking.
+    done_specdemo_dir = repo / '.workflow/done' / 'specdemo'
+    done_specdemo_dir.mkdir(parents=True, exist_ok=True)
+    archived_task = done_specdemo_dir / '01-reference.md'
+    archived_task.write_text(
+        REFERENCE_TASK.format(number='01', effort='specdemo', base=base)
+        .replace('- [ ] Reference target exists', '- [x] Reference target exists')
+        + '\n## Progress\nCheck after: git status --short -> ok\n',
+        encoding='utf-8')
+
+    done_spec_text = '\n'.join(text for _, text in spec_variants[0])
+    done_spec_text = re.sub(r'(\*\*Status:\*\*\s*)proposed', r'\1done', done_spec_text)
+    specdemo_file.write_text(done_spec_text + '\n', encoding='utf-8')
+
+    close_variants = variants(CLOSE_PATH, close, spec_replacements)
+    for index, variant in enumerate(close_variants, 1):
+        close_file = done_specdemo_dir / 'closeout.md'
+        close_file.write_text('\n'.join(text for _, text in variant) + '\n', encoding='utf-8')
+        where = f'{label(CLOSE_PATH, close[0][0])} closeout example variant {index}'
+        try:
+            result = command(repo, env, CLOSE_PATH, close[0][0],
+                             f'closeout example variant {index} roundtrip failed',
+                             str(WORKFLOW), 'validate')
+            if result is not None:
+                ok(f'{where} validates with done spec acceptance')
+        finally:
+            if close_file.exists():
+                close_file.unlink()
+
+    # Negative check: confirm that a done spec without valid closeout acceptance is caught by CLI validate
+    bad_close_file = done_specdemo_dir / 'closeout.md'
+    bad_close_file.write_text('# Closeout: specdemo\n\n**Approved:** 2026-11-03 by user\n', encoding='utf-8')
+    res = run(repo, env, str(WORKFLOW), 'validate', '--format', 'json')
+    try:
+        report = json.loads(res.stdout)
+        acceptance_issues = [issue for issue in report.get('issues', [])
+                             if 'without a recorded acceptance' in issue.get('message', '')]
+        if not acceptance_issues:
+            fail(CLOSE_PATH, close[0][0], 'workflow validate failed to catch closeout without recorded acceptance')
+        else:
+            ok(f'{label(CLOSE_PATH, close[0][0])} malformed closeout correctly caught by validate CLI')
+    except Exception as e:
+        fail(CLOSE_PATH, close[0][0], f'error running validate on malformed closeout: {e}')
+    finally:
+        if bad_close_file.exists():
+            bad_close_file.unlink()
+        if specdemo_file.exists():
+            specdemo_file.unlink()
+        if archived_task.exists():
+            archived_task.unlink()
+        if done_specdemo_dir.exists():
+            shutil.rmtree(done_specdemo_dir, ignore_errors=True)
 
     for path, block, number in [(FLOW_PATH, flow, '01')]:
         for index, variant in enumerate(variants(path, block, replacements), 1):
@@ -440,6 +638,9 @@ def main():
     check_removed_mentions()
     check_file_tree()
     check_skill_listing()
+    check_spec_template_syntax()
+    check_closeout_template_syntax()
+    check_malformed_template_detection()
     with tempfile.TemporaryDirectory() as tmp:
         roundtrips(Path(tmp).resolve())
     print(f'\n{passed} passed; {failed} failed')
