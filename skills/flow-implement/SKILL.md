@@ -1,173 +1,136 @@
 ---
 name: flow-implement
 description: >-
-  Build one task end to end: code, proof, docs, review, archive, commit, land. Use
-  when user says "implement task 3", "build this", "do next task". Levels: standard (default) or thorough.
-argument-hint: "<effort>/<NN> [thorough]"
+  Build one task end to end or orchestrate a whole effort's DAG wave by wave. Use
+  when user says "implement task 3", "implement <effort>", "do next task". Levels: standard (default) or thorough.
+argument-hint: "<effort>/<NN> | <effort> [thorough]"
 ---
 
 # Flow: Implement
 
-Read the task file and the spec sections it names, and CONVENTIONS §6 (pause
-handoff), §7 (review) and §8 (fixing bugs); §9 too when you hand any of it to a
-subagent. Read `.workflow/STYLE.md` when writing the commit message and the report.
-A task file that needs the conversation that produced it is broken; fixing it is
-part of this job.
+Read the task file and the named spec sections. Read CONVENTIONS §2 (task files and
+state), §6 (lifecycle and handoff), §7 (review), §8 (bug fixing), §9 (delegation),
+and §10 (scope and proportionality). Read `merge-strategy.md` for branch and landing
+rules, and `.workflow/STYLE.md` for the commit message and report. A task that depends
+on the conversation that produced it is broken; repair that as part of the work.
 
-Find facts in the code. Work end to end; stop only for a decision that changes what
-gets built (one batch of questions) or when the plan is wrong (below). Bare `NN` is
-fine when only one effort has that number; otherwise ask which.
+Find facts in the code and work end to end. Stop only for a decision that changes what
+gets built, or when the plan is wrong. Batch decision questions; do not ask for facts
+the repository can provide. Bare `NN` is fine when only one effort has that number.
 
-Levels: `standard` (default) runs `flow-verify`; `thorough` adds `flow-architect` on
-the touched area, for large refactors and code with many callers.
+`standard` (default) runs `flow-verify`; `thorough` also runs `flow-architect` on the
+touched area when the change is a large refactor or has many callers.
 
 ## 1. Start
 
-`Task type: spike`: also follow `.workflow/spike-tasks.md`. `bugfix`: CONVENTIONS §8
-governs the build.
+For `spike`, also follow `.workflow/spike-tasks.md`; for `bugfix`, follow CONVENTIONS
+§8. Apply CONVENTIONS §2 and `merge-strategy.md` for task state, dirty files, claims,
+branches, base commit, dependencies, and landing. Do not restate those mechanics here.
 
-Under `local-merge` and `pr` a started task's file lives on its branch (`next`
-names it): check that branch out first and read the task file there. If
-`flow-break` amend has since changed the task on the landing branch, rebase onto
-it and keep its copy of the task file.
+For a new task, make the start record in `## Progress` before touching code: Base
+commit (`git rev-parse HEAD`), Started (ISO 8601), Status active, and pre-existing
+dirty paths (or `none`). On resume, preserve the recorded Base commit and restore the
+state named by the task's handoff. A blocked task stays blocked; report it and stop.
 
-`Status: blocked`: say so and stop. `Status: paused`: resume from `## Progress`,
-restore what it names (branch, worktree, stash), keep its Base commit and
-`Dirty at start`, set `Status: active`, continue from the next step it gives.
+Confirm blockers are archived and landed (or stacked as allowed by the merge strategy).
+Reopen a `proposed` or `done` effort as `in progress` when required. Read the task,
+spec, standards, relevant code and tests. If the task omits where to work or how to
+check it, infer that from the repository and record the choice.
 
-For a new task, the task file must be committed on the landing branch (the main
-branch, or the integration branch the spec names; `merge-strategy.md`). When
-resuming, use the committed task file on the claimed task branch; do not stop
-merely because it has not reached the landing branch. In either case, every task in
-`Blocked by` must be archived under `.workflow/done/<effort>/` and landed (or this
-task stacked on its branch). Otherwise name what's missing and stop.
+Run the project's clean-baseline command only when it settles a live uncertainty. Run
+the task's Check before implementation and record `Check before:` plus its output or
+why it cannot run. A feature or bugfix should fail; a refactor should pass; a spike
+skips this gate. If a feature or bugfix passes, determine whether the task is already
+done or the Check misses the behavior, then correct the Check or plan.
 
-For a new task, run `git status --porcelain` and record its paths in `## Progress`
-as `Dirty at start: <paths>` (or `none`). They belong to someone else and stay out
-of every commit; if the task needs one, ask. On resume, keep the original record;
-the task's own work named in the handoff is not someone else's dirty work.
+## 2. Build
 
-Read `Landing:` in `.workflow/standards.md`. Under `local-merge` and `pr`, claim and
-create the branch `<effort>/<NN>-<slug>` from the landing branch as
-`.workflow/merge-strategy.md` describes; if someone else holds it, say whose and
-stop. Under `direct`, say in one line that work goes onto the current branch.
+Make the smallest change that delivers the task, including necessary callers, tests and
+docs. Apply the minimalism ladder from CONVENTIONS §10 before custom code: need it,
+existing project solution, standard library, native platform feature, installed
+dependency, then the smallest clear implementation. Keep anti-overdefense in force:
+do not add theoretical edge-case hardening, speculative flags or compatibility layers,
+guards guarding guards, or checks that do not settle a supported-use risk. Report real
+reachable defects; keep fixes proportional to the task.
 
-New start: write `**Base commit:** <git rev-parse HEAD>`, `**Started:** <ISO 8601>`
-and `**Status:** active` before touching code. Under `pr`, commit and push this task
-file before touching code so the claim is visible. Resume: keep the recorded SHA and
-confirm `git cat-file -e <sha>^{commit}`; if it fails, stop and report.
+Add only requested configurability, error handling and abstractions. For bugs, use the
+§8 reproduce/pin/root-cause/sibling-check order. Keep the Check strict and make it
+exist while writing the code. Run targeted checks as they settle live uncertainties;
+do not rerun unchanged passing checks. Delete a fixed technical-debt entry in the same
+commit.
 
-`.workflow/specs/<effort>.md` says `proposed`, or says `done` (a later task joined a
-closed effort, CONVENTIONS §6): set it to `**Status:** in progress`. Then note in
-`## Progress` that the effort was reopened, unless this is its first task.
+## 3. Prove
 
-Fill in where the work goes or how to check it from spec and code if the task
-doesn't say, and say so. Read the code and tests it touches; build the way the
-project already does. Run the test command from `standards.md` for a clean baseline.
+Run the task's Check after the change and record `Check after:`. Exercise the real path
+once and record what happened (UI, command, or real service); a stand-in proves only
+the stand-in and does not discharge real-path proof. If the Check cannot pass, record
+the blocker and keep it strict. Before every targeted check, state the uncertainty it
+settles and what failure would change; skip unchanged reruns.
 
-Run the task's `Check`; record `Check before: <output, or why it can't run>` in
-`## Progress`:
-- `feature`, `bugfix`: fails or can't run yet. If it passes, the work is done or the
-  Check misses the behaviour; find out which and fix the Check (say so).
-- `refactor`: passes now and must pass after; behaviour stays the same.
-- `spike`: skip.
+## 4. Sync documents and decisions
 
-## 2. Build it
+Before review, update facts in the spec, glossary or standards that no longer match,
+and record durable lessons there. Log only decisions meeting CONVENTIONS §1.2 in the
+format of `.workflow/decisions.md`, tagged `**Effort:** <effort>`; identify choices made
+on the user's behalf with `Mine: yes` in the report.
 
-Make the smallest change that delivers the task. Named files are starting points:
-add the tests, callers and docs the behaviour needs. Add only the configurability,
-error handling and abstractions the task asks for; name anything you skipped in the
-report. Run typecheck and touched tests as you go, and make the `Check` exist while
-writing the code. A bugfix follows CONVENTIONS §8's order. A task that fixes an
-entry in `.workflow/technical-debt.md` deletes that entry in its commit.
+## 5. Review
 
-## 3. Prove it
+Run the §7 security pass when its trust-boundary trigger applies; otherwise record that
+none applies. Run `flow-verify` with the task's exact Base commit and task-file path;
+in `thorough`, then run `flow-architect` on the touched area. Record in `## Progress`
+the reviewed base SHA, briefs run, brief statuses/findings, and every blocking outcome.
 
-Run the Check and record `Check after:`. Exercise the real path once (open the UI,
-run the command, call the real service) and note what you saw, including anything
-odd. If the Check can't pass, say what blocks it and keep the Check as strict as it
-is. If only a stand-in could run, say which; the real path is still owed.
+Handle findings under §7: fix one round together and rerun affected checks only. A
+delta review is needed only for a blocking fix or a fix that expands the boundary.
+Append unaddressed architect findings to `.workflow/technical-debt.md` under `## Entries`
+using the required concrete symptom, Where, Added, Priority, Problem, Impact, Solution
+and Cost fields. If a fix changes the deliverable, update the task and rerun its
+affected brief.
 
-## 4. Sync documents and record decisions
+## 6. Archive, commit and land
 
-Before review, so the review sees them:
-- Fix any fact in the spec, glossary or `standards.md` the code no longer matches.
-- Put what the task taught into spec, glossary or decisions; the archived task file
-  doesn't replace the spec.
-- Log only choices that qualify under CONVENTIONS §1.2, in the format in
-  `.workflow/decisions.md`, tagged `**Effort:** <effort>`. Note the ones you made
-  yourself (`Mine: yes`) for the report.
-
-## 5. Review it
-
-Run the CONVENTIONS §7 security pass when its trigger applies; otherwise say so in
-one line. It covers the boundary closure, not the whole change set.
-
-Run `flow-verify` with the task's exact Base commit and task file path. `thorough`:
-then `flow-architect` on the touched area. Append each architect finding you don't
-act on to `.workflow/technical-debt.md` under `## Entries`: `## <concrete symptom>`
-with `Where`, `Added`, `Priority`, `Problem`, `Impact`, `Solution`, `Cost`.
-
-Record the round in `## Progress`: the `Review boundary` line the reports name, and
-the brief statuses and findings.
-
-Handle findings per CONVENTIONS §7: fix this round's findings together and recheck
-once. A new round is for a `blocking` finding or a fix that moves the boundary, and it
-takes every such fix at once. If a fix changes what the task delivers, update the task
-file and rerun the affected brief.
-
-## 6. Archive, commit, land
-
-1. Close the task file: every checklist item is ticked, or deleted with the reason
-   in `## Progress`; add `**Finished:** <ISO 8601>`, remove `**Status:**`, keep
-   `## Progress`. An item you can't tick or justify means the task isn't finished.
-2. `git mv .workflow/tasks/<effort>/<NN>-<slug>.md .workflow/done/<effort>/`.
-3. Run `.workflow/bin/workflow validate`. Errors block the commit.
-4. Stage the task's paths by name (`git add -- <paths>`), never `Dirty at start`
-   paths. One commit: code, tests, docs, decisions and the archive move.
-5. Land it per `Landing:` (`.workflow/merge-strategy.md`) on the landing branch.
-   Push or open a PR only under `pr` or when the user asks.
-6. Last task of the effort, all landed: if `.workflow/specs/<effort>.md` exists, go
-   to `flow-close` (here if the window is light, else in a fresh session,
-   `.workflow/phase-boundaries.md`). Without a spec, the effort is done.
-
-Spike: findings go into the task's `## Findings` and into spec, decisions or
-glossary. Throwaway code stays off the landing branch: drop it, or keep it on
-`spike/<effort>-<NN>` named in Findings. Then archive, commit and land as above.
+Apply CONVENTIONS §2 and `merge-strategy.md`: finish or justify every checklist item,
+add Finished, remove Status, archive the task, validate it, stage only task paths,
+commit code/tests/docs/decisions/archive together, and land it according to `Landing:`.
+Do not stage `Dirty at start` paths. A final task in an effort with a spec proceeds to
+`flow-close`; a spec-less effort ends here. Spikes record findings and keep throwaway
+code off the landing branch.
 
 ## 7. Report
 
-Unfinished task: say so first, say what remains, leave it unarchived (pause it).
-
-Regular task, five lines: what now works for the user; what proved it (Check before
-and after, real-path run); what review found and what you did; what you left out and
-when it would matter; decisions made on the user's behalf (`Mine: yes`) by heading,
-or "none".
-
-Spike, five lines: the question; the finding; where it is recorded; code kept (which
-branch) or discarded; decisions made on the user's behalf, or "none".
+Use concise STYLE-compliant output. If unfinished, say so first, state what remains,
+and leave the task unarchived and paused. For a regular task report concisely:
+what works; Check before/after and real-path proof; review findings and disposition;
+what was left out and when it matters; decisions made on the user's behalf (`Mine:
+yes`) by heading, or `none`. For a spike report the question, finding, record location,
+code kept or discarded, and decisions, or `none`.
 
 ## When the plan is wrong
 
-The task or spec assumes something the code doesn't do, contradicts itself, or is
-really several tasks: fix the plan, not the build.
-
-1. Set `**Status:** blocked` and add `## Blocked`: what was assumed, what is true
-   (file, command, output), what has to be decided.
-2. Leave partial code on the task branch or in a stash named
-   `<effort>/<NN> blocked`, and say where.
-3. Commit the task file on its own: on the task branch under `local-merge` and
-   `pr` (push it under `pr`), where `next` and `flow-break` amend find it.
-4. Report and route per CONVENTIONS §5. The task resumes once `flow-break` amend
-   clears `blocked`.
+The task or spec is wrong when an assumption contradicts observed code, it contradicts
+itself, or it is several tasks. Follow CONVENTIONS §5: mark the task blocked with
+assumed versus observed facts and the decision needed, preserve partial work on the
+task branch or named stash, commit the task-file state as required, and route the
+replan. Do not work around a broken plan.
 
 ## Pausing and resuming
 
-When the session stops before the task is done, write the CONVENTIONS §6 handoff
-into `## Progress` and set `**Status:** paused`. A session that never saw this
-conversation must be able to continue from the task file alone.
+When stopping before completion, follow CONVENTIONS §6: reconcile disk state, record
+completed proof, failed routes and counterexamples, open findings, branch/worktree,
+uncommitted-work location, and the exact next action in `## Progress`; set Status
+paused and commit/push the task state as the merge strategy requires.
 
 ## Scope
 
-Build the task as written. Report unrelated problems as candidate tasks. Decisions
-in `.workflow/decisions.md` stay settled.
+Build the task as written. Report unrelated problems as candidate tasks. Decisions in
+`.workflow/decisions.md` remain settled.
+
+## Effort mode (`<effort>`)
+
+When given `<effort>` without `/<NN>`, act as a lightweight coordinator (CONVENTIONS §9):
+1. Run `.workflow/bin/workflow next --effort <effort> --all --format json`. Resolve any `paused` or `blocked` tasks before starting new ones.
+2. Dispatch non-overlapping `ready_tasks` concurrently in separate worktrees (`../<repo>-<effort>-<NN>`); serialize tasks sharing paths in `file_overlaps` (or assign one shared-interface owner).
+3. Harvest each finished subagent as soon as it returns — do not wait for the whole wave: verify `Check`, real path, and §7 review, archive and land on the landing branch, remove its worktree, and rerun `next --effort <effort> --all --format json` to dispatch newly unlocked tasks.
+4. If a blocker stalls for two rounds without progress, take over the specific gap or run `flow-break` amend while keeping independent tasks moving. For multi-hour autonomous runs, schedule `.workflow/bin/workflow pulse --effort <effort> --quiet-idle` (e.g. `/loop 30m` where supported).
+5. When no open tasks remain and all work has landed, run `flow-close <effort>` if `.workflow/specs/<effort>.md` exists; otherwise report completion.

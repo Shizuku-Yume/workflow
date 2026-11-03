@@ -8,42 +8,29 @@ description: >-
 
 # Flow: Map
 
-Read `.workflow/CONVENTIONS.md` §1 (decision protocol) and §2 (file structure), and
-`.workflow/STYLE.md`. Per CONVENTIONS §0, check the codebase before asking; many
-apparent decisions are facts waiting to be found.
-
-Use it when the plan can't be written yet because it depends on unanswered
-questions: the work spans sessions, grilling keeps stalling on questions that hang
-on others, or the user knows the goal but not the first step. If you can already list the tasks, use `flow-spec` and `flow-break`; a map for
-clear work is ceremony.
-
-Answer the gating questions in dependency order until the way is clear. Keep each
-session focused, but answer independent questions together when their answers are clear.
+Use when the route depends on unanswered questions across sessions. Read CONVENTIONS
+§0, §1, §2, §6 and STYLE.md. Check the repository before asking. If tasks are already
+clear, skip the map: use `flow-spec` and `flow-break`; clear 1–3 task work without a
+durable spec goes directly to `flow-break`.
 
 ## Map or spec
 
-A **map** holds questions whose answers are decisions. A **spec** holds decisions
-already made. A map graduates into one or more specs and is finished when it is
-empty.
+A map holds decisions still to make; a spec holds settled decisions. Work the map until
+its route is clear, then graduate to one or more specs and tasks.
 
 ## Charting the map
+Chart the destination and the questions that gate reaching it.
+Maps move through `charting` → `working` → `clear` (CONVENTIONS §6).
 
 ### 1. Name the destination
 
-Say in one or two sentences what the end looks like: a shipped feature, a locked
-decision, a finished migration, a written document. The destination sets the scope,
-so a wrong one makes every question wrong. If it is unclear, settle it with
-`flow-grill`; it is the one question you can't defer.
+State in one or two sentences what reaching the end means. If the destination itself is
+unclear, use `flow-grill` first.
 
-### 2. Fan out and find questions
+### 2. Find gating questions
 
-Grill the user **wide rather than deep**, across the whole space, for the questions
-that gate everything else, not for answers. If no fog appears, the route is visible:
-say so and use `flow-spec` and `flow-break`.
-
-### 3. Write the map
-
-Write `.workflow/maps/<slug>.md`:
+Explore broadly for questions that block the route, not detailed answers. Write
+`.workflow/maps/<slug>.md`:
 
 ```markdown
 # Map: <destination in a few words>
@@ -52,21 +39,19 @@ Write `.workflow/maps/<slug>.md`:
 **Started:** <date>   **Status:** charting | working | clear
 
 ## Route so far
-<!-- One line per answer, newest last; detail lives in its question's section. -->
+<!-- One line per answer, newest last. -->
 
 ## Open questions
-<!-- Answerable now: all dependencies settled. Grouped by what they block. -->
+<!-- Answerable now, grouped by what they block. -->
 
 ## Not yet clear
-<!-- Coming, but hanging on answers we don't have, so not sharp yet. Written
-loosely. This is fog. -->
+<!-- In scope but hanging on unanswered dependencies. -->
 
 ## Ruled out
-<!-- Beyond the destination: named, out of this effort, with a reason. Never
-graduates. -->
+<!-- Beyond the destination, with a reason. -->
 ```
 
-Give each open question its own section below the header blocks:
+Give each question a section below the header:
 
 ```markdown
 ## Q<N>: <question, as a question>
@@ -77,62 +62,37 @@ Give each open question its own section below the header blocks:
 **Answer:** <filled in when answered>
 ```
 
-Route so far only points; detail lives in each question's section. A map that
-states its answers twice drifts.
+The four kinds determine the next move:
+- **research:** find the fact in docs, code, or an API, using a subagent when useful.
+- **decide:** resolve the user-owned choice with `flow-grill`.
+- **build-a-bad-version:** make the cheapest rough artifact that lets people react.
+- **do-something-first:** create the prerequisite (access, account, moved data), then record what happened.
 
-Commit the new map (and any decision entries) when the charting session ends, per
-CONVENTIONS §2.
-
-### 4. Four kinds
-
-Each kind says how to answer the question.
-
-- **research**: a findable fact: docs, a third-party API, a library.
-  Answer it with a subagent, in parallel, without the user.
-- **decide**: a real choice between options. Answer it with `flow-grill`.
-- **build-a-bad-version**: how something should look or behave, which talking can't
-  settle. Build the cheapest rough thing to
-  react to (stub, sketch, throwaway page); keep or discard it after.
-- **do-something-first**: nothing to decide, but discussion needs something to exist
-  first (an API account, moved data, access). Do it; the answer records what was
-  done and what came out.
-
-Fill in `Depends on` once all questions exist, so the numbers are real. A question
-with every dependency answered is **open**; the rest are blocked or fog.
-
-## Where lines go
-
-**Question or fog?** Sharpness decides, not answerability. Anything you can state
-precisely now is a question, even if it is blocked; the rest is fog. Keep fog
-coarse: one patch may later become three questions, or none.
-
-**Fog or ruled out?** Fog is in scope but unclear; ruled-out work lies beyond the
-destination. Ruled-out work never graduates. If the destination changes, it returns
-as a new effort, not a resumed one.
+Put anything precise enough to state into Open questions, even if blocked. Keep fog coarse
+in Not yet clear. Ruled-out work is outside the destination and never graduates. Add
+dependencies after all questions exist, then commit the map and decision entries per CONVENTIONS §2.
 
 ## Working the map
+Work open questions in dependency order, updating the map as facts settle.
 
-Answer the first open question, or the one the user named, and keep the session focused.
-Answer more than one when the answers are already clear and independent.
+### 1. Select a question
 
-1. Read the map header and Route so far, not every question section.
-2. Pick the first open question, or the one the user named.
-3. Answer it as its kind says, reading related question sections as needed.
-4. In the question's section, record the answer and what it was based on. Add a
-   decision entry only when CONVENTIONS §1.2 calls for one. The first answer moves
-   the map from `Status: charting` to `Status: working` (CONVENTIONS §6).
-5. Add the answer to Route so far, answer any question it just unblocked, and turn
-   fog that is now sharp into questions, removing it from "Not yet clear".
-6. Move anything the answer shows beyond the destination to "Ruled out" with a
-   reason, instead of resolving it on the route.
-7. Commit the map and any decision entries at the end of the session, per
-   CONVENTIONS §2.
+Read the header and route, choose the first open question or the one the user named, and
+read its related sections.
 
-## Finishing
+### 2. Answer and update
 
-When no open questions or promotable fog remain, the route is clear. Write the specs
-it implies (`flow-spec`), cut them into tasks (`flow-break`), and mark the map
-`Status: clear` with a closing line saying what it produced.
+Answer according to its kind. Record the basis and add a decision only when CONVENTIONS
+§1.2 requires it. The first answer changes `charting` to `working` (CONVENTIONS §6). Add the result to
+Route so far, promote newly sharp fog, and move out-of-destination work to Ruled out.
 
-Keep the map: it records why the plan looks as it does, which someone will ask in
-three months.
+### 3. Commit and repeat
+
+Commit the map and planning entries at session end. Answer independent questions together;
+otherwise continue in dependency order until no open question or promotable fog remains.
+
+## Finish
+
+When the route is clear, set `Status: clear`, add a closing line describing its output,
+write the resulting spec with `flow-spec`, and cut tasks with `flow-break`. Keep the map as
+the record of why the route took its shape.

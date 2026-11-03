@@ -12,9 +12,10 @@
 #   workflow hook        install a pre-commit hook that runs workflow validate
 #   workflow validate    check task files and the decision log (bin/workflow-core.py)
 #   workflow next        list ready tasks (bin/workflow-core.py)
+#   workflow pulse       anti-drift reminder and queue snapshot (bin/workflow-core.py)
 #
-# Runs on Bash 3.2 (stock macOS) with BSD or GNU awk and sed; validate and next
-# need python3.
+# Runs on Bash 3.2 (stock macOS) with BSD or GNU awk and sed; validate, next and
+# pulse need python3.
 #
 # Skills are copied, not linked, so a project keeps working if this toolkit is
 # moved or deleted. Use `workflow update` to pull in newer versions.
@@ -24,7 +25,7 @@
 # need no checkout of this toolkit and nothing on PATH.
 set -euo pipefail
 
-VERSION="2.7.1"
+VERSION="2.8.0"
 BIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 KIT="$(cd "$BIN_DIR/.." && pwd)"
 
@@ -1908,10 +1909,12 @@ Anywhere, including the project's own copy, .workflow/bin/workflow:
                                pre-commit hook that blocks on validate errors
   workflow validate [--strict] [--format text|json]
                                check task files and the decision log
-  workflow next [--format text|json]
+  workflow next [--effort SLUG] [--all] [--format text|json]
                                ready tasks by priority, then paused and blocked
+  workflow pulse [--effort SLUG] [--quiet-idle] [--format text|json]
+                               anti-drift queue snapshot for long autonomous runs
   workflow version             print the version
-Commands support --help. validate and next need python3 (3.8+).
+Commands support --help. validate, next and pulse need python3 (3.8+).
 
 Installs into the nearest git repository above the current directory, or the
 current directory if there is no git repository. Nothing is written outside that
@@ -1962,7 +1965,7 @@ case "${1:-}" in
   hook) shift; cmd_hook "$@" ;;
   version|--version|-v) printf '%s\n' "$VERSION" ;;
   ""|-h|--help|help) usage ;;
-  validate|next) run_core "$@" ;;
+  validate|next|pulse) run_core "$@" ;;
   tasks|deps|decisions|effort|debt|hotfix-review) removed_command "$1" ;;
   *) die "unknown command: $1 (try 'workflow help')" ;;
 esac

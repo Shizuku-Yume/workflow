@@ -3,6 +3,68 @@
 What changed in each version and what an existing project has to do about it.
 Usage lives in the README and in `--help`.
 
+## 2.8.0
+
+### Upgrade
+
+Run `npm install --global @shizuku-yume/workflow`, then on the main branch with a
+clean tree run:
+
+```sh
+workflow update   # use --force if AGENTS.md was previously customized and you want the new Scope limits block
+git add .workflow .agents AGENTS.md && git commit   # plus .claude CLAUDE.md if used
+```
+
+Merge the main branch into every active branch and worktree so all environments run
+the same rules and CLI.
+
+- `standards.md` is preserved by `update`. Its template now suggests naming any
+  untrusted exposure or adversary under `## What this project is` (otherwise a
+  cooperating local operator is assumed, CONVENTIONS §10).
+
+### Changes
+
+- **Scope limits and Anti-OverDefense (`AGENTS.md`, `CONVENTIONS §10`, `STYLE.md`)**:
+  Always-loaded HERO guardrails bound proposed fixes without suppressing bug discovery —
+  blocking unpaid hashes (`H`), unreachable corner-case hardening (`E`), rubric/re-verification
+  loops (`R`), and unrequested flags/wrappers/compat layers (`O`), adding the minimalism
+  ladder (codebase → stdlib → platform → installed dep → minimal code) and
+  clean-deliverable rules (no defense transcripts, trial-and-error traces, leaked
+  prompt rules, or AI signatures). Reviewers (`workflow-reviewer`, `security-reviewer`)
+  are calibrated with Find-vs-Propose and cooperating-local-operator defaults.
+- **Streamlined rulebook and skills (~25–30% shorter)**: Removed cross-file duplication,
+  the Spec `Convergence gate` rubric, rigid report line-count mandates, the
+  `Review boundary:` pseudo-grammar, and redundant check reruns on no-op rebases
+  (`merge-strategy.md` now reruns suites on landing only when the landing branch actually
+  moved ahead).
+- **Direct task breakdown & PR doc stacking (`CONVENTIONS §2, §4, §5`)**: Clear 1–3
+  task work needing no durable spec skips `flow-spec` and `flow-close` and goes straight
+  to `flow-break`; under `Landing: pr`, task 01 may stack on an unmerged planning PR
+  branch (`Base branch:`) instead of stalling on doc-only PRs.
+- **Whole-effort DAG orchestration (`flow-implement <effort>`, `CONVENTIONS §9`)**: Passing
+  `<effort>` runs a wave-by-wave coordinator over
+  `workflow next --effort <effort> --all --format json`, dispatching non-overlapping tasks
+  into parallel worktrees, serializing `file_overlaps`, harvesting completed subagents
+  immediately without waiting for batches, and taking over or amending blockers stuck for
+  two rounds.
+- **Combined leaf review fast-path (`CONVENTIONS §7`, `flow-verify`)**: Localized leaf
+  tasks (no trust boundary, no contract/spec change, ≤3 files or mechanical batch) can
+  run a single combined A+B `workflow-reviewer` pass instead of two separate cold-start
+  subagents.
+- **Grounded handoffs and ephemeral `.workflow/HANDOFF.md` (`CONVENTIONS §6`, `flow-start`, `phase-boundaries.md`)**:
+  Handoffs reconcile with disk artifacts without rerunning settled checks, record failed
+  routes/counterexamples, and support a read-and-retire `.workflow/HANDOFF.md` when
+  switching sessions with no active task file.
+
+### CLI
+
+- `workflow next` adds `--effort SLUG` and `--all`, reports shared `Files:` paths across
+  ready tasks, and expands `--format json` ready entries with `task`, `path`, `branch`,
+  `files`, plus top-level `file_overlaps`.
+- New `workflow pulse [--effort SLUG] [--quiet-idle] [--format text|json]`: compact queue
+  snapshot + anti-drift execution reminder for multi-hour autonomous runs (stays silent
+  when idle under `--quiet-idle`).
+
 ## 2.7.1
 
 ### Upgrade

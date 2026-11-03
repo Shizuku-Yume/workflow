@@ -1,13 +1,11 @@
 # Technical Debt
 
-Code that makes the next change expensive, one entry per finding, so reviews don't
-rediscover it and the reason it wasn't fixed yet is kept. `flow-architect` adds
-entries; any skill that finds debt may add one.
+Track costly code so reviews retain evidence and the reason it remains. `flow-architect`
+or any skill that finds debt may add an entry.
 
 ## Format
 
-Each entry is a level-2 heading naming the concrete symptom, under `## Entries`.
-Refer to an entry by its heading.
+Use a level-two heading naming the concrete symptom under `## Entries`; cite by heading.
 
 ```markdown
 ## Order total computed in three places
@@ -21,12 +19,8 @@ Refer to an entry by its heading.
 - **Cost:** <what the fix risks, how big it is>
 ```
 
-An entry leaves this file in one of two ways:
-
-- Fixed: the task that fixes it deletes the entry in its own commit.
-- Declined by the user: delete the entry and append a decision entry to
-  `decisions.md` (Decided: not fixing <symptom>; Instead of: fixing it; Because;
-  Mine: no; Revisit when), so reviews don't re-propose it.
+Remove entries when fixed (in the fixing commit). If the user declines a fix, delete the
+entry and append a `decisions.md` entry (`Mine: no`) recording the choice and when to revisit.
 
 ## Entries
 

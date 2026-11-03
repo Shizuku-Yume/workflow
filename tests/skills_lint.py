@@ -119,7 +119,7 @@ def section_text(path, number):
 def check_section_references():
     sections = section_numbers()
     prose = sorted(set((ROOT / 'skills').rglob('*.md')) | set((ROOT / 'templates').rglob('*.md')))
-    prose += [CONVENTIONS, ROOT / 'README.md']
+    prose += [p for p in (CONVENTIONS, ROOT / 'README.md', ROOT / 'README_EN.md') if p.is_file()]
     initial = failed
     for path in prose:
         for number, text in enumerate(lines(path), 1):
@@ -157,7 +157,7 @@ def check_skill_structure():
 
 
 def removed_targets():
-    targets = [CONVENTIONS, ROOT / 'STYLE.md', ROOT / 'README.md']
+    targets = [CONVENTIONS, ROOT / 'STYLE.md', ROOT / 'README.md', ROOT / 'README_EN.md']
     targets += sorted((ROOT / 'skills').glob('*/SKILL.md'))
     targets += sorted(path for path in (ROOT / 'templates').rglob('*') if path.is_file())
     return [path for path in targets if path.is_file()]
@@ -232,7 +232,7 @@ def check_file_tree():
 
 def check_skill_listing():
     skills = sorted(path.name for path in (ROOT / 'skills').iterdir() if path.is_dir())
-    readme = (ROOT / 'README.md').read_text(encoding='utf-8')
+    readmes = [p for p in (ROOT / 'README.md', ROOT / 'README_EN.md') if p.is_file()]
     routing = section_text(CONVENTIONS, '5')
     initial = failed
     if routing is None:
@@ -240,12 +240,13 @@ def check_skill_listing():
         routing = ''
     for name in skills:
         pattern = re.compile(r'(?<![\w-])' + re.escape(name) + r'(?![\w-])')
-        if not pattern.search(readme):
-            fail(ROOT / 'README.md', 1, f'skill {name!r} is not mentioned')
+        for readme_path in readmes:
+            if not pattern.search(readme_path.read_text(encoding='utf-8')):
+                fail(readme_path, 1, f'skill {name!r} is not mentioned')
         if routing and not pattern.search(routing):
             fail(CONVENTIONS, 1, f'skill {name!r} is not mentioned in §5')
     if failed == initial:
-        ok(f'all {len(skills)} skills appear in README.md and CONVENTIONS.md §5')
+        ok(f'all {len(skills)} skills appear in READMEs and CONVENTIONS.md §5')
 
 
 # Extract the live fenced blocks, retaining original line numbers for diagnostics.
@@ -438,6 +439,7 @@ def main():
     check_skill_structure()
     check_removed_mentions()
     check_file_tree()
+    check_skill_listing()
     with tempfile.TemporaryDirectory() as tmp:
         roundtrips(Path(tmp).resolve())
     print(f'\n{passed} passed; {failed} failed')

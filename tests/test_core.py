@@ -759,13 +759,92 @@ class NextTests(Base):
         self.assertIn("Waiting on dependencies: 2 task(s); top blockers: core/01 (1), core/02 (1)", text)
         data = self.p.next()
         self.assertEqual(sorted(data), ["blocked_count", "blockers", "duplicate_claims",
-                                        "in_progress", "integrating", "ready_count", "ready_tasks",
-                                        "task_count", "tree"])
+                                        "file_overlaps", "in_progress", "integrating",
+                                        "ready_count", "ready_tasks", "task_count", "tree"])
 
     def test_missing_workflow(self):
         shutil.rmtree(os.path.join(self.p.root, ".workflow"))
         self.assertEqual(self.p.run("next").returncode, 1)
 
+
+    def test_effort_filter_and_all_flag(self):
+        self.p.write(".workflow/done/beta/01-done.md", task("01", "Beta base", "beta"))
+        for n in range(1, 7):
+            blocked = "beta/01" if n == 1 else "None"
+            self.p.write(".workflow/tasks/alpha/%02d-t.md" % n,
+                         task("%02d" % n, "Alpha %d" % n, "alpha", blocked=blocked))
+        self.p.write(".workflow/tasks/beta/02-t.md", task("02", "Beta 2", "beta"))
+
+        capped = json.loads(self.p.run("next", "--format", "json").stdout)
+        self.assertEqual(capped["ready_count"], 7)
+        self.assertEqual(len(capped["ready_tasks"]), 5)
+
+        full = json.loads(self.p.run("next", "--all", "--format", "json").stdout)
+        self.assertEqual(len(full["ready_tasks"]), 7)
+        text_all = self.p.run("next", "--all", "--no-color").stdout
+        self.assertIn("Ready tasks (7):", text_all)
+        self.assertIn("7) alpha/06", text_all)
+
+        scoped = json.loads(self.p.run("next", "--effort", "alpha", "--all", "--format", "json").stdout)
+        self.assertEqual(scoped["task_count"], 6)
+        self.assertEqual([t["task"] for t in scoped["ready_tasks"]],
+                         ["alpha/%02d" % n for n in range(1, 7)])
+
+        for bad in (["next", "--effort"], ["next", "--effort="], ["next", "--effort", "Bad_Slug"]):
+            self.assertEqual(self.p.run(*bad).returncode, 2, bad)
+
+    def test_ready_metadata_and_file_overlaps(self):
+        self.p.write(".workflow/tasks/core/01-api-dir.md",
+                     task("01", "API dir", "core", extra="**Files:** src/api, README.md\n"))
+        self.p.write(".workflow/tasks/core/02-api-child.md",
+                     task("02", "API child", "core", extra="**Files:** `src/api/users.py`, `src/db/*.sql`\n"))
+        self.p.write(".workflow/tasks/core/03-db-file.md",
+                     task("03", "DB file", "core", extra="- **Files:** src/db/schema.sql\n  README.md\n"))
+        self.p.write(".workflow/tasks/core/04-prose.md",
+                     task("04", "Spike prose", "core",
+                          extra="**Files:** throwaway gateway on a spike branch\n"))
+        data = json.loads(self.p.run("next", "--all", "--format", "json").stdout)
+        by_ref = {t["task"]: t for t in data["ready_tasks"]}
+        self.assertEqual(by_ref["core/01"]["path"], ".workflow/tasks/core/01-api-dir.md")
+        self.assertEqual(by_ref["core/01"]["branch"], "core/01-api-dir")
+        self.assertEqual(by_ref["core/01"]["files"], ["src/api", "README.md"])
+        self.assertEqual(by_ref["core/02"]["files"], ["src/api/users.py", "src/db"])
+        self.assertEqual(by_ref["core/03"]["files"], ["src/db/schema.sql", "README.md"])
+        self.assertEqual(by_ref["core/04"]["files"], [])
+        self.assertEqual(data["file_overlaps"], [
+            {"path": "README.md", "tasks": ["core/01", "core/03"]},
+            {"path": "src/api", "tasks": ["core/01", "core/02"]},
+            {"path": "src/db", "tasks": ["core/02", "core/03"]},
+        ])
+        text = self.p.run("next", "--no-color").stdout
+        self.assertIn("Shared files across ready tasks (serialize or coordinate): "
+                      "README.md (core/01, core/03)", text)
+
+    def test_pulse_idle_handoff_and_active(self):
+        idle = self.p.run("pulse", "--quiet-idle")
+        self.assertEqual((idle.returncode, idle.stdout), (0, ""))
+        plain_idle = self.p.run("pulse", "--no-color")
+        self.assertIn("Queue idle.", plain_idle.stdout)
+
+        self.p.write(".workflow/HANDOFF.md", "# Handoff\nNext: finish spec.\n")
+        with_handoff = self.p.run("pulse", "--quiet-idle", "--no-color")
+        self.assertIn(".workflow/HANDOFF.md present", with_handoff.stdout)
+        self.assertIn("Pulse:", with_handoff.stdout)
+        os.remove(os.path.join(self.p.root, ".workflow/HANDOFF.md"))
+
+        self.p.write(".workflow/tasks/core/01-a.md",
+                     task("01", "A", "core", extra="**Files:** src/shared.py\n"))
+        self.p.write(".workflow/tasks/core/02-b.md",
+                     task("02", "B", "core", extra="**Files:** src/shared.py\n"))
+        self.p.write(".workflow/tasks/core/03-c.md",
+                     task("03", "C", "core", extra="**Status:** paused\n"))
+        snap = json.loads(self.p.run("pulse", "--effort", "core", "--format", "json").stdout)
+        self.assertTrue(snap["active"])
+        self.assertFalse(snap["handoff"])
+        self.assertEqual(snap["ready"], ["core/01", "core/02"])
+        self.assertEqual(snap["in_progress"], [{"task": "core/03", "status": "paused", "branch": None}])
+        self.assertEqual(snap["file_overlaps"], [{"path": "src/shared.py", "tasks": ["core/01", "core/02"]}])
+        self.assertEqual(len(snap["directives"]), 4)
 
 class PerformanceTests(Base):
     def test_large_project_is_fast(self):

@@ -2226,6 +2226,41 @@ test_removed_commands_and_stale_copies() {
   fi
 }
 
+test_pulse_and_next_flags_cli() {
+  local repo="$TMPDIR/repo_pulse_next" out
+  setup_repo "$repo"
+  out="$(cd "$repo" && ./.workflow/bin/workflow pulse --quiet-idle)"
+  if [ -z "$out" ]; then pass "workflow pulse --quiet-idle stays silent when queue is empty"; else fail "pulse --quiet-idle printed on idle queue: $out"; fi
+  mkdir -p "$repo/.workflow/tasks/alpha" "$repo/.workflow/tasks/beta"
+  for n in 01 02 03 04 05 06; do
+    cat > "$repo/.workflow/tasks/alpha/${n}-slice.md" <<EOF
+# ${n}: Slice ${n}
+**Effort:** alpha
+**Blocked by:** None
+**Files:** src/shared.ts
+**Check:** echo ok
+EOF
+  done
+  cat > "$repo/.workflow/tasks/beta/01-other.md" <<'EOF'
+# 01: Other
+**Effort:** beta
+**Blocked by:** None
+**Check:** echo ok
+EOF
+  out="$(cd "$repo" && ./.workflow/bin/workflow next --effort alpha --all --no-color)"
+  if [[ "$out" == *"Ready tasks (6):"* ]] && [[ "$out" == *"6) alpha/06"* ]] && [[ "$out" != *"beta/01"* ]] && [[ "$out" == *"Shared files across ready tasks"* ]]; then
+    pass "workflow next --effort --all scopes tasks, lifts 5-cap, and reports shared files"
+  else
+    fail "unexpected workflow next --effort --all output: $out"
+  fi
+  out="$(cd "$repo" && ./.workflow/bin/workflow pulse --effort alpha --no-color)"
+  if [[ "$out" == *"Ready wave (6):"* ]] && [[ "$out" == *"Overlaps: src/shared.ts"* ]] && [[ "$out" == *"Pulse:"* ]]; then
+    pass "workflow pulse --effort reports ready wave, overlaps, and directives"
+  else
+    fail "unexpected workflow pulse output: $out"
+  fi
+}
+
 test_draft_placeholder_accepted
 test_invalid_concrete_sha_rejected
 test_invalid_dependencies_rejected
@@ -2274,6 +2309,7 @@ test_doctor_branch_version_drift
 test_doctor_uncommitted_update
 test_update_branch_guidance
 test_removed_commands_and_stale_copies
+test_pulse_and_next_flags_cli
 
 printf '\nResults: %d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" -eq 0 ]

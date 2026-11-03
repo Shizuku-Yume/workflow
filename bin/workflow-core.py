@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""workflow-core.py - `validate` and `next` for the workflow toolkit.
+"""workflow-core.py - `validate`, `next` and `pulse` for the workflow toolkit.
 
-Called by bin/workflow as `python3 workflow-core.py validate|next ...`.
+Called by bin/workflow as `python3 workflow-core.py validate|next|pulse ...`.
 Python 3.8+, standard library only. Reads task files under .workflow/tasks/
 and .workflow/done/, specs under .workflow/specs/, and .workflow/decisions.md.
 
@@ -20,7 +20,7 @@ import re
 import subprocess
 import sys
 
-VERSION = "2.7.1"
+VERSION = "2.8.0"
 
 KNOWN_FIELDS = {
     "task", "effort", "task type", "base commit", "base branch", "delivers", "blocked by",
@@ -334,8 +334,9 @@ REMOVED_FLAGS = {
 
 
 def parse_common(args, usage, allowed):
-    """Parse --format/--no-color/--strict; returns (options, exit code or None)."""
-    opts = {"format": "text", "no_color": False, "strict": False}
+    """Parse shared CLI flags; returns (options, exit code or None)."""
+    opts = {"format": "text", "no_color": False, "strict": False,
+            "all": False, "quiet_idle": False, "effort": None}
     i = 0
     while i < len(args):
         arg = args[i]
@@ -346,6 +347,19 @@ def parse_common(args, usage, allowed):
             opts["no_color"] = True
         elif arg == "--strict" and "strict" in allowed:
             opts["strict"] = True
+        elif arg == "--all" and "all" in allowed:
+            opts["all"] = True
+        elif arg == "--quiet-idle" and "quiet_idle" in allowed:
+            opts["quiet_idle"] = True
+        elif arg == "--effort" and "effort" in allowed:
+            if i + 1 >= len(args) or not args[i + 1]:
+                return opts, usage_error("--effort requires an effort slug", "")
+            opts["effort"] = args[i + 1]
+            i += 1
+        elif arg.startswith("--effort=") and "effort" in allowed:
+            opts["effort"] = arg[len("--effort="):]
+            if not opts["effort"]:
+                return opts, usage_error("--effort requires an effort slug", "")
         elif arg == "--format":
             if i + 1 >= len(args):
                 return opts, usage_error("--format requires text or json", "")
@@ -358,6 +372,8 @@ def parse_common(args, usage, allowed):
         else:
             return opts, usage_error("unknown option: %s" % arg, usage)
         i += 1
+    if opts["effort"] is not None and not SLUG_RE.match(opts["effort"]):
+        return opts, usage_error("invalid effort slug: %s" % opts["effort"], "")
     if opts["format"] not in ("text", "json"):
         return opts, usage_error("invalid format: %s (use text or json)" % opts["format"], "")
     return opts, None
@@ -958,9 +974,9 @@ def cmd_validate(args):
 
 NEXT_USAGE = """workflow next - suggest what to work on next
 
-Usage: workflow next [--format text|json] [--no-color]
+Usage: workflow next [--effort SLUG] [--all] [--format text|json] [--no-color]
 
-Shows the top five ready tasks: not started, and every blocker archived under
+Shows the top five ready tasks (or all with --all): not started, and every blocker archived under
 .workflow/done/ ("Blocked by: None" also accepts "None, can start now"), with
 their effort goal and Check preview. Efforts rank by the **Priority:** of
 .workflow/specs/<effort>.md: critical, high, normal (default), low; ties sort
@@ -981,6 +997,8 @@ or when a task branch <effort>/<NN>-<slug> exists locally or on a remote
 Status. Branches that all claim one task are named last.
 
 Options:
+  --effort SLUG  Scope output to a single effort slug
+  --all          Return all ready tasks instead of capping at five
   --format TYPE  Output text (default) or JSON
   --no-color     Disable terminal colors
   -h, --help     Show this help
@@ -1239,28 +1257,75 @@ def branch_effort_counts(root, ref, effort):
     return counts[0], counts[1]
 
 
-def cmd_next(args):
-    opts, code = parse_common(args, NEXT_USAGE, ())
-    if code is not None:
-        return code
-    root = project_root()
-    wf = os.path.join(root, ".workflow")
+def _clean_path_token(root, token):
+    token = token.strip().strip("`'\"").strip()
+    if not token or token.lower() == "none" or (token.startswith("<") and token.endswith(">")):
+        return ""
+    if " " in token or "\t" in token or "|" in token:
+        return ""
+    while token.startswith("./"):
+        token = token[2:]
+    if "*" in token:
+        prefix = token.split("*", 1)[0].rstrip("/")
+        token = prefix if prefix else token
+    token = token.rstrip("/")
+    if not token or token == ".":
+        return ""
+    if "/" in token or "." in token or os.path.exists(os.path.join(root, token)):
+        return token
+    return ""
+
+
+def parse_task_files_field(root, raw):
+    """Normalized path list extracted from a task's `Files:` field."""
+    if not raw or not raw.strip():
+        return []
+    cleaned = re.sub(r"\([^)]*\)", " ", raw)
+    if "`" in cleaned:
+        candidates = re.findall(r"`([^`]+)`", cleaned)
+    elif "," in cleaned:
+        candidates = cleaned.split(",")
+    else:
+        parts = cleaned.split()
+        resolved = [_clean_path_token(root, p) for p in parts]
+        return list(dict.fromkeys(p for p in resolved if p)) if parts and all(resolved) else []
+    out = []
+    for item in candidates:
+        norm = _clean_path_token(root, item)
+        if norm and norm not in out:
+            out.append(norm)
+    return out
+
+
+def compute_file_overlaps(ready_tasks):
+    """Shared paths across ready tasks (exact match or parent/child directory)."""
+    overlaps = {}
+    for i in range(len(ready_tasks)):
+        t1 = ready_tasks[i]
+        for j in range(i + 1, len(ready_tasks)):
+            t2 = ready_tasks[j]
+            for p1 in t1["files"]:
+                for p2 in t2["files"]:
+                    shared = None
+                    if p1 == p2 or p2.startswith(p1 + "/"):
+                        shared = p1
+                    elif p1.startswith(p2 + "/"):
+                        shared = p2
+                    if shared:
+                        overlaps.setdefault(shared, set()).update((t1["task"], t2["task"]))
+    return [{"path": path, "tasks": sorted(refs)}
+            for path, refs in sorted(overlaps.items(), key=lambda kv: (-len(kv[1]), kv[0]))]
+
+
+def collect_queue(root, wf, target_effort=None):
+    """Gather queue state across the working tree and git branches."""
     tasks_dir, done_dir = os.path.join(wf, "tasks"), os.path.join(wf, "done")
-    if not os.path.isdir(wf):
-        sys.stderr.write("Error: no .workflow directory at %s; run 'workflow init' first\n" % root)
-        return 1
-    as_json = opts["format"] == "json"
     tree = tree_info(root)
-    header = tree_header(tree)
     if not os.path.isdir(tasks_dir):
-        if as_json:
-            out = {"ready_count": 0, "task_count": 0, "blocked_count": 0, "ready_tasks": [],
-                   "blockers": [], "in_progress": [], "tree": tree, "integrating": [],
-                   "duplicate_claims": []}
-            sys.stdout.write(json.dumps(out, ensure_ascii=False, separators=(",", ":")) + "\n")
-        else:
-            sys.stdout.write(header + "No tasks found (tasks directory is missing).\n")
-        return 0
+        return {"missing_tasks_dir": True, "tree": tree, "ready": [], "started": [],
+                "stackable": [], "block_tasks": {}, "block_numbers": {}, "blockers": [],
+                "task_count": 0, "blocked_count": 0, "waiting": 0, "integrating": [],
+                "duplicates": [], "overlaps": []}
 
     # Blockers archived under done/ are finished and never block.
     archived = set()
@@ -1273,7 +1338,6 @@ def cmd_next(args):
             continue
         archived.add(task_ref(effort, norm_number(m.group(1))))
 
-    # Archived on main while this tree still has the task file: landed, merge main.
     current = tree["branch"]
     main = tree["main"]
     landed_main = set()
@@ -1281,9 +1345,6 @@ def cmd_next(args):
         landed_main = branch_archived_tasks(root, main, {})
         archived |= landed_main
 
-    # An effort with an integration branch runs its tasks against that branch. On the
-    # branch (or one of its task branches) its archives count as landed; elsewhere the
-    # effort is being worked in another checkout and must not be handed out here.
     hidden_efforts = set()
     integrating = []
     integration_landed = {}
@@ -1296,6 +1357,8 @@ def cmd_next(args):
             if not name.endswith(".md") or not os.path.isfile(path):
                 continue
             effort = name[:-3]
+            if target_effort and effort != target_effort:
+                continue
             integration = read_fields(path).get("integration branch").strip()
             if not integration or (integration.startswith("<") and integration.endswith(">")):
                 continue
@@ -1324,8 +1387,7 @@ def cmd_next(args):
             branch_status_cache[(b_ref, b_name)] = b_status
             if b_status == "finished" and b_ref not in finished_branches and b_name not in skip_branches:
                 finished_branches[b_ref] = b_name
-    # A task's archive may sit on a branch that is not named after it (an integration
-    # or aggregate branch), so union every branch's done/ tree and record who carries it.
+
     union_cache = {}
     archived_branch = {}
     branch_names = all_branch_names(root)
@@ -1358,6 +1420,8 @@ def cmd_next(args):
         if not SLUG_RE.match(effort):
             sys.stderr.write("Warning: %s has an invalid effort reference; using default priority\n" % name)
             effort = "none"
+        if target_effort and effort != target_effort:
+            continue
         if effort in hidden_efforts:
             continue
         status = meta.get("status").lower()
@@ -1376,7 +1440,6 @@ def cmd_next(args):
                             integration_landed[ref], effort))
             continue
 
-        # Started here (Status in this tree) or on its own task branch: not ready.
         branch = None
         if status not in ("active", "paused", "blocked"):
             if ref in finished_branches:
@@ -1423,13 +1486,17 @@ def cmd_next(args):
             waiting += 1
             continue
         priority, rank, goal = spec_info(wf, effort, specs)
-        task = {"number": int(number), "title": title, "effort": effort, "priority": priority,
-                "goal": goal, "check": meta.get("check") or "(not specified)",
+        rel_path = os.path.relpath(path, root).replace(os.sep, "/")
+        branch_name = "%s/%s" % (effort, name[:-3])
+        files_list = parse_task_files_field(root, meta.get("files"))
+        task = {"task": ref, "number": int(number), "title": title, "effort": effort,
+                "priority": priority, "goal": goal, "check": meta.get("check") or "(not specified)",
+                "path": rel_path, "branch": branch_name, "files": files_list,
                 "start_command": "flow-implement " + ref}
         ready.append((rank, int(number), len(ready), ref, task))
     ready.sort(key=lambda item: item[:3])
     started.sort(key=lambda item: (item[0], item[6], item[1]))
-    blockers = sorted(block_tasks, key=lambda b: (-len(block_tasks[b]), b.encode("utf-8")))[:5]
+    blockers = sorted(block_tasks, key=lambda b: (-len(block_tasks[b]), b.encode("utf-8")))
 
     claims = {}
     for branch_name in set(branch_names):
@@ -1437,20 +1504,67 @@ def cmd_next(args):
         if not m:
             continue
         ref = task_ref(m.group(1), norm_number(m.group(2)))
+        if target_effort and m.group(1) != target_effort:
+            continue
         claims.setdefault(ref, set()).add(branch_name)
     duplicates = [(ref, sorted(names)) for ref, names in claims.items()
                   if len(names) >= 2 and ref in open_refs]
     duplicates.sort(key=lambda item: (-len(item[1]), item[0]))
+    overlaps = compute_file_overlaps([item[4] for item in ready])
+    return {"missing_tasks_dir": False, "tree": tree, "ready": ready, "started": started,
+            "stackable": stackable, "block_tasks": block_tasks, "block_numbers": block_numbers,
+            "blockers": blockers, "task_count": task_count, "blocked_count": blocked_count,
+            "waiting": waiting, "integrating": integrating, "duplicates": duplicates,
+            "overlaps": overlaps}
+
+
+def cmd_next(args):
+    opts, code = parse_common(args, NEXT_USAGE, ("all", "effort"))
+    if code is not None:
+        return code
+    root = project_root()
+    wf = os.path.join(root, ".workflow")
+    if not os.path.isdir(wf):
+        sys.stderr.write("Error: no .workflow directory at %s; run 'workflow init' first\n" % root)
+        return 1
+    as_json = opts["format"] == "json"
+    state = collect_queue(root, wf, opts["effort"])
+    tree = state["tree"]
+    header = tree_header(tree)
+    if state["missing_tasks_dir"]:
+        if as_json:
+            out = {"ready_count": 0, "task_count": 0, "blocked_count": 0, "ready_tasks": [],
+                   "file_overlaps": [], "blockers": [], "in_progress": [], "tree": tree,
+                   "integrating": [], "duplicate_claims": []}
+            sys.stdout.write(json.dumps(out, ensure_ascii=False, separators=(",", ":")) + "\n")
+        else:
+            sys.stdout.write(header + "No tasks found (tasks directory is missing).\n")
+        return 0
+
+    ready = state["ready"]
+    started = state["started"]
+    stackable = state["stackable"]
+    block_tasks = state["block_tasks"]
+    block_numbers = state["block_numbers"]
+    shown_ready = ready if opts["all"] else ready[:5]
+    shown_blockers = state["blockers"] if opts["all"] else state["blockers"][:5]
+    shown_duplicates = state["duplicates"] if opts["all"] else state["duplicates"][:5]
+    overlaps = state["overlaps"]
+    integrating = state["integrating"]
+    task_count = state["task_count"]
+    blocked_count = state["blocked_count"]
+    waiting = state["waiting"]
 
     if as_json:
         out = {"ready_count": len(ready), "task_count": task_count, "blocked_count": blocked_count,
-               "ready_tasks": [item[4] for item in ready[:5]],
+               "ready_tasks": [item[4] for item in shown_ready],
+               "file_overlaps": overlaps,
                "blockers": [{"dependency": b, "count": len(block_tasks[b]), "tasks": block_numbers[b]}
-                            for b in blockers],
+                            for b in shown_blockers],
                "in_progress": [{"task": item[2], "number": item[1], "effort": item[6], "title": item[3],
                                 "status": item[4], "branch": item[5]} for item in started],
                "tree": tree, "integrating": integrating,
-               "duplicate_claims": [{"task": ref, "branches": names} for ref, names in duplicates]}
+               "duplicate_claims": [{"task": ref, "branches": names} for ref, names in shown_duplicates]}
         sys.stdout.write(json.dumps(out, ensure_ascii=False, separators=(",", ":")) + "\n")
         return 0
 
@@ -1463,8 +1577,8 @@ def cmd_next(args):
     headings = (("paused", "Paused (resume before starting new work):"),
                 ("blocked", "Needs replanning (Status: blocked; flow-break amend):"),
                 ("active", "In progress:"))
-    for state, heading in headings:
-        rows = [item for item in started if item[4] == state]
+    for st_name, heading in headings:
+        rows = [item for item in started if item[4] == st_name]
         if rows:
             out.append("%s\n" % heading)
             for item in rows:
@@ -1487,19 +1601,26 @@ def cmd_next(args):
             out.append("  %s%s%s %s (branch %s)\n" % (bold, item[2], off, item[3], item[5]))
     if task_count:
         if ready:
-            out.append("%sReady tasks%s (%d total; showing up to 5):\n" % (bold, off, len(ready)))
-            for i, item in enumerate(ready[:5], 1):
+            if opts["all"]:
+                out.append("%sReady tasks%s (%d):\n" % (bold, off, len(ready)))
+            else:
+                out.append("%sReady tasks%s (%d total; showing up to 5):\n" % (bold, off, len(ready)))
+            for i, item in enumerate(shown_ready, 1):
                 ref, task = item[3], item[4]
                 out.append("%d) %s%s%s %s (priority: %s)\n" % (i, bold, ref, off, task["title"], task["priority"]))
                 if task["goal"] != "(not specified)":
                     out.append("   %sGoal:%s %s\n" % (dim, off, task["goal"]))
                 out.append("   %sCheck:%s %s\n" % (dim, off, task["check"]))
                 out.append("   Start: flow-implement %s\n" % ref)
+            if overlaps:
+                shown_overlaps = overlaps if opts["all"] else overlaps[:5]
+                out.append("Shared files across ready tasks (serialize or coordinate): %s\n" % (
+                    ", ".join("%s (%s)" % (o["path"], ", ".join(o["tasks"])) for o in shown_overlaps)))
         else:
             out.append("No ready tasks.\n")
     if waiting:
         out.append("Waiting on dependencies: %d task(s); top blockers: %s\n" % (
-            waiting, ", ".join("%s (%d)" % (b, len(block_tasks[b])) for b in blockers)))
+            waiting, ", ".join("%s (%d)" % (b, len(block_tasks[b])) for b in shown_blockers)))
         if stackable:
             out.append("Stackable under pr (blockers finished on branch): %s\n" % (
                 ", ".join("%s (on %s)" % (r, ", ".join(bs)) for r, bs in stackable)))
@@ -1508,20 +1629,96 @@ def cmd_next(args):
         for item in integrating:
             out.append("  %s on %s: %d archived, %d open\n" % (
                 item["effort"], item["branch"], item["archived"], item["open"]))
-    if duplicates:
+    if shown_duplicates:
         out.append("Several branches claim one task (keep one; rename retries to "
                    "attempt/<effort>-<NN>): %s\n" % ", ".join(
-                       "%s (%d)" % (ref, len(names)) for ref, names in duplicates[:5]))
+                       "%s (%d)" % (ref, len(names)) for ref, names in shown_duplicates))
     sys.stdout.write("".join(out))
+    return 0
+
+
+# ------------------------------------------------------------------ pulse
+
+PULSE_USAGE = """workflow pulse - anti-drift queue snapshot for long autonomous runs
+
+Usage: workflow pulse [--effort SLUG] [--quiet-idle] [--format text|json] [--no-color]
+
+Prints a compact snapshot of active, paused, blocked and ready tasks alongside
+anti-drift execution directives (CONVENTIONS §7, §9, §10) so multi-hour sessions
+keep momentum after compaction or heavy tool output.
+
+Options:
+  --effort SLUG  Scope snapshot to a single effort slug
+  --quiet-idle   Print nothing when no open tasks or .workflow/HANDOFF.md exist
+  --format TYPE  Output text (default) or JSON
+  --no-color     Disable terminal colors
+  -h, --help     Show this help
+"""
+
+PULSE_DIRECTIVES = [
+    "Act on the bottleneck directly; do not spend a turn acknowledging this pulse.",
+    "Harvest completed subagent work immediately (Check + real path + land) and launch newly ready tasks.",
+    "If the same blocker survived two rounds without progress, take over the gap or run flow-break amend.",
+    "Reuse valid checks on unchanged code; skip speculative edge cases, unpaid hashes and unrequested wrappers.",
+]
+
+
+def cmd_pulse(args):
+    opts, code = parse_common(args, PULSE_USAGE, ("effort", "quiet_idle"))
+    if code is not None:
+        return code
+    root = project_root()
+    wf = os.path.join(root, ".workflow")
+    if not os.path.isdir(wf):
+        sys.stderr.write("Error: no .workflow directory at %s; run 'workflow init' first\n" % root)
+        return 1
+    state = collect_queue(root, wf, opts["effort"])
+    handoff = os.path.isfile(os.path.join(wf, "HANDOFF.md"))
+    active_work = bool(handoff or state["started"] or state["ready"]
+                       or state["waiting"] or state["integrating"])
+    if opts["quiet_idle"] and not active_work:
+        return 0
+
+    ready_refs = [item[3] for item in state["ready"]]
+    started_summary = [{"task": item[2], "status": item[4], "branch": item[5]}
+                       for item in state["started"]]
+    if opts["format"] == "json":
+        out = {"active": active_work, "handoff": handoff, "tree": state["tree"],
+               "in_progress": started_summary, "ready": ready_refs,
+               "file_overlaps": state["overlaps"], "waiting_count": state["waiting"],
+               "integrating": state["integrating"], "directives": PULSE_DIRECTIVES}
+        sys.stdout.write(json.dumps(out, ensure_ascii=False, separators=(",", ":")) + "\n")
+        return 0
+
+    lines = [tree_header(state["tree"])]
+    if handoff:
+        lines.append("Handoff: .workflow/HANDOFF.md present — read it and delete once absorbed.\n")
+    if started_summary:
+        lines.append("Started: %s\n" % ", ".join(
+            "%s [%s%s]" % (s["task"], s["status"], " @" + s["branch"] if s["branch"] else "")
+            for s in started_summary))
+    if ready_refs:
+        lines.append("Ready wave (%d): %s\n" % (len(ready_refs), ", ".join(ready_refs)))
+    if state["overlaps"]:
+        lines.append("Overlaps: %s\n" % ", ".join(
+            "%s (%s)" % (o["path"], "+".join(o["tasks"])) for o in state["overlaps"]))
+    if state["waiting"]:
+        lines.append("Waiting on dependencies: %d task(s)\n" % state["waiting"])
+    if not active_work:
+        lines.append("Queue idle.\n")
+    else:
+        lines.append("Pulse:\n" + "".join("- %s\n" % d for d in PULSE_DIRECTIVES))
+    sys.stdout.write("".join(lines))
     return 0
 
 
 # ------------------------------------------------------------------- main
 
-MAIN_USAGE = """workflow-core.py %s - validate and next for the workflow toolkit
+MAIN_USAGE = """workflow-core.py %s - validate, next and pulse for the workflow toolkit
 
 Usage: workflow-core.py validate [--strict] [--format text|json] [--no-color]
-       workflow-core.py next [--format text|json] [--no-color]
+       workflow-core.py next [--effort SLUG] [--all] [--format text|json] [--no-color]
+       workflow-core.py pulse [--effort SLUG] [--quiet-idle] [--format text|json] [--no-color]
        workflow-core.py <command> --help
 """ % VERSION
 
@@ -1535,10 +1732,11 @@ def main(argv):
         return cmd_validate(args)
     if command == "next":
         return cmd_next(args)
+    if command == "pulse":
+        return cmd_pulse(args)
     sys.stderr.write("Error: unknown command: %s\n" % command)
     sys.stderr.write(MAIN_USAGE)
     return 2
-
 
 if __name__ == "__main__":
     try:

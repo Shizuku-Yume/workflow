@@ -11,13 +11,14 @@ Injects conventions, skills, document layouts, and a task scheduling CLI directl
 ## Key Features
 
 - **Project-Local & Zero Extra Setup**: All conventions, skills, templates, and scheduling tools are copied and committed into the repository root (`.workflow/`, `.agents/`, and optionally `.claude/`). Any teammate, CI runner, or cloud agent cloning the repository gets the identical workflow without global environment dependencies or PATH configuration.
-- **Evidence Before Questions (§0, §1)**: Agents must autonomously investigate codebase evidence (patterns, existing behaviors, APIs, constraints) before interrupting the user. Only questions involving user decision ownership (intent, preferences, scope, irreversible trade-offs) are batched and asked.
-- **DAG Task Queue & Dependency Tracking**: Complex efforts are broken down via `flow-break` into bite-sized, single-session task files (`.workflow/tasks/<effort>/`), scheduled topologically by `workflow next` based on priority and dependencies.
+- **Evidence Before Questions & Momentum (§0, §1)**: Agents autonomously investigate codebase evidence (patterns, existing behaviors, APIs, constraints) before interrupting the user. Reversible choices take reasonable defaults to maintain momentum; only questions involving user decision ownership (intent, scope, expensive reversals) are batched and asked.
+- **DAG Task Queue & Scope Routing (§5)**: Clear 1–3 task work goes straight to `flow-break` without spec or close ceremony, while multi-task or architecturally non-obvious efforts use `flow-spec` and `flow-close`. Ready tasks in `.workflow/tasks/<effort>/` are scheduled topologically by `workflow next` based on priority and dependencies.
 - **Observable Verification (§2.1, §8)**: Every task requires an explicit `Check` command. Features and bug fixes must reproduce or fail before changes and pass afterward; unverified deliverables are rejected. A check against a fixture or mock proves only the stand-in: behaviour that depends on a real service is checked against it.
 - **Real-Path Acceptance (§6)**: `flow-close` reruns every spec check on the build that will ship and walks the main use as a user would. An effort is done only when the user says yes, recorded as `**Accepted:**` in its retrospective.
-- **Parallel Work with Integration Branches (§9)**: Parallel tasks run in separate worktrees. An effort that can't land piece by piece names an integration branch in its spec; its tasks land there and the whole effort lands on main at close. Delegating a task to a subagent keeps its proof with the session that archives it.
+- **Proportional Scope & Anti-OverDefense (§10)**: Bounds fixes and implementation without suppressing bug discovery. Real defects reachable through supported use are reported directly; avoids unpaid hashes, unreachable corner-case hardening, rubric or audit loops, unrequested wrappers or flags, and trial-and-error or AI traces in deliverables (`STYLE.md`).
+- **Parallel Work with Integration Branches (§9)**: Parallel tasks run in separate worktrees. `flow-implement <effort>` coordinates whole-effort DAG execution in waves, serializing file overlaps and harvesting completed deliverables immediately. An effort that can't land piece by piece names an integration branch in its spec; its tasks land there and the whole effort lands on main at close. Delegating a task to a subagent keeps its proof with the session that archives it.
 - **Append-Only Decision Log**: Significant architectural decisions are appended to `.workflow/decisions.md` with five structured fields (`Decided`, `Instead of`, `Because`, `Mine`, `Revisit when`). Git union merge configuration prevents merge conflicts across parallel branches.
-- **Independent Two-Brief Reviews (§7)**: Built-in `workflow-reviewer` agent conducts independent reviews covering both process adherence and code implementation quality; `security-reviewer` reviews the boundary closure when the change touches a trust boundary. A round covers one boundary; its fixes are rechecked together.
+- **Independent Two-Brief Reviews (§7)**: Built-in `workflow-reviewer` agent conducts independent reviews covering process adherence and code implementation quality (`security-reviewer` reviews boundary closure on trust boundaries); localized leaf tasks can use a single combined review pass. Findings are batched for fixes and affected checks rerun; in-scope fixes without new files, callers, or sinks skip redundant re-review.
 
 ---
 
@@ -65,11 +66,11 @@ The toolkit provides 9 standard skills covering distinct development phases (rou
 | `flow-start` | Session start / context lost / resuming work | Loads project standards, classifies request (clarification, small task, or complex work). |
 | `flow-grill` | Requirements vague / design options open | Clarifies scope, categorizes decisions, batches user questions, and logs decisions. |
 | `flow-map` | Foggy projects / multi-session exploration | Charts dependencies and open questions across sessions when requirements are unclear. |
-| `flow-spec` | Settled design / ready for documentation | Records consensus into a structured effort specification (`.workflow/specs/<effort>.md`). |
-| `flow-break` | Splitting spec into actionable tasks | Decomposes spec into tasks with dependencies (`Blocked by`) and observable checks (`Check`). |
-| `flow-implement` | Building a single task (Feature / Bugfix / Refactor / Spike) | End-to-end task execution: dirty file audit, implementation, verification, review, and archive. |
-| `flow-verify` | Reviewing completed work before merging | Invokes `workflow-reviewer` for quality inspection and process compliance verification. |
-| `flow-close` | All tasks of an effort landed | Verifies against spec, demonstrates behavior, logs retrospective, and marks spec done. |
+| `flow-spec` | Settled design / multi-task effort needing a spec | Records consensus into a structured effort specification (`.workflow/specs/<effort>.md`); clear 1–3 task work skips this step. |
+| `flow-break` | Splitting spec or clear scope into tasks | Decomposes a spec or clear 1–3 task scope into task files with dependencies (`Blocked by`) and observable checks (`Check`). |
+| `flow-implement` | Building a single task or orchestrating an effort | End-to-end task execution (audit, implementation, verification, review, archive); accepts `<effort>` to coordinate DAG waves across parallel worktrees. |
+| `flow-verify` | Reviewing completed work before merging | Invokes `workflow-reviewer` for process and quality review; localized leaf tasks can use a single combined review pass. |
+| `flow-close` | All tasks of an effort with a spec landed | Verifies against spec, demonstrates behavior, logs retrospective, and marks spec done (efforts without a spec finish on last task land). |
 | `flow-architect` | High code friction / auditing technical debt | Detects duplication, dead code, leaky modules, and tracks technical debt. |
 
 ---
@@ -80,8 +81,10 @@ Run `workflow <command>` via the global CLI or call `.workflow/bin/workflow <com
 
 ### Daily Commands
 
-- `workflow next [--format text|json]`
-  Inspects task dependency graphs and displays up to 5 ready tasks by priority, along with paused and blocked tasks. Off the main branch it names the branch it read and how far main is ahead; it lists tasks landed on main but still open in this tree, shows an effort integrating on another branch as one line, and names tasks that several branches claim.
+- `workflow next [--effort SLUG] [--all] [--format text|json]`
+  Inspects task dependency graphs and displays up to 5 ready tasks by priority (or all ready tasks with `--all`, optionally scoped with `--effort`), along with paused and blocked tasks, detecting shared file path overlaps across ready tasks (`file_overlaps`). Off the main branch it names the branch it read and how far main is ahead; it lists tasks landed on main but still open in this tree, shows an effort integrating on another branch as one line, and names tasks that several branches claim.
+- `workflow pulse [--effort SLUG] [--quiet-idle] [--format text|json]`
+  Compact queue snapshot and anti-drift execution reminder for long autonomous runs, displaying active, ready, and blocked task state (supports `--effort`, and stays silent when idle under `--quiet-idle`).
 - `workflow validate [--strict] [--format text|json]`
   Statically validates schemas, field grammar, dependency references, and decision logs across `tasks/`, `done/`, and `specs/`. A task being archived must have every checklist item ticked and a `Check after:` record; a spec can't be marked done while one of its tasks is open or before the user's acceptance is recorded.
 - `workflow doctor`

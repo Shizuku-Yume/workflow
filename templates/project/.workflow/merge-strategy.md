@@ -13,23 +13,18 @@ branch, or the effort's integration branch when its spec names one (below).
 **`direct`** — commit straight onto the current branch. No task branches. Suits
 one person working in one tree; there is no parallel work to protect.
 
-**`local-merge`** (default when `Landing:` is unset) — one branch per task,
-`<effort>/<NN>-<slug>`, created from the landing branch. After the task's commit,
-rebase onto the landing branch, rerun the tests, the task's Check and the real path
-once. With one working tree, switch back to the landing branch and fast-forward it.
-If it is checked out in another worktree, fast-forward it there instead. Remove
-any separate task worktree before deleting the task branch. Nothing is pushed, so
-it suits one person, with parallel tasks in separate worktrees.
+**`local-merge`** (default) — one branch per task, `<effort>/<NN>-<slug>`, cut from
+the landing branch. After committing, compare `Base commit` with the current landing
+branch `HEAD`. Only if the branch moved ahead, rebase and rerun the test suite, Check,
+and real path once. Fast-forward on the landing branch (in its other worktree if needed),
+remove any separate task worktree, then delete the task branch. Nothing is pushed.
 
-**`pr`** — one branch per task as above, pushed, merged through a pull request
-into the landing branch. The task is landed when its PR is merged. Open the PR as
-the last step of `flow-implement`. Use it whenever several people share a remote:
-pushed task branches are how they see each other's claims.
+**`pr`** — one pushed branch per task, merged by pull request. It lands when merged;
+open the PR as `flow-implement`'s last step. Use when people share a remote so task
+claims are visible.
 
-**A landing needs a clean tree.** Landing writes into the landing branch's working
-tree. If that tree holds changes nobody has claimed, stop and ask whose they are
-before landing anything. Moving the work to other branches to get around them
-leaves the landing branch stale for every later session.
+Landing needs a clean tree. If the landing tree has unclaimed changes, stop and ask
+whose they are; moving work elsewhere leaves the landing branch stale.
 
 ## Integration branch
 
@@ -101,24 +96,17 @@ task someone else holds. Under `direct` there is one tree and none of this appli
 
 ## Dependent tasks
 
-A task starts only when every blocker is archived under `.workflow/done/<effort>/`
-and has landed on the landing branch.
-
-Under `pr` a dependent may stack instead of waiting: branch from the blocker's
-branch and record `**Base branch:** <blocker branch>` in the task file. When the
-blocker merges, rebase the dependent onto the landing branch and drop the
-`Base branch` line. Under `local-merge`, landing takes minutes, so wait.
+A dependent starts when its blockers are archived and landed. Under `pr`, it may instead
+stack on a blocker's unmerged PR branch; record `**Base branch:** <blocker branch>`.
+After that PR merges, rebase onto the landing branch and remove `Base branch`. This lets
+task 01 proceed on a planning PR branch for doc-only plans. Under `local-merge`, wait.
 
 ## Base commit
 
-`flow-implement` records `Base commit: <sha>` before the first edit. It is the
-comparison point for `flow-verify`, never changes during implementation, and stays
-in the task file as history. If the landing branch moves ahead, don't rebase until
-landing.
-
-After a rebase the Base commit is still an ancestor, but `git diff <Base commit>`
-now also contains everything that landed in between. A review rerun after a rebase
-compares against `git merge-base <landing branch> HEAD` instead.
+`flow-implement` records `Base commit: <sha>` before editing; it remains history and is
+the `flow-verify` comparison point. If the landing branch moves ahead, don't rebase until
+landing. After rebase, update the review comparison point to
+`git merge-base <landing branch> HEAD` (CONVENTIONS §7).
 
 ## Merge style
 
@@ -129,19 +117,15 @@ merge commit.
 
 ## Rebase and conflicts
 
-1. `git fetch origin` (under `pr`)
-2. `git rebase <landing branch>` (or `origin/<landing branch>`)
-3. Resolve conflicts, `git rebase --continue`
-4. Rerun the test suite, the task's Check, and the real path once
-5. Under `pr`: `git push --force-with-lease`
+1. Under `pr`, fetch origin; rebase onto the landing branch (or its origin ref).
+2. Resolve conflicts and continue. If the landing branch actually moved ahead since
+   `Base commit`, rerun the test suite, Check, and real path once. Otherwise skip these
+   redundant reruns: `Base commit` is already the landing branch `HEAD`.
+3. Under `pr`, push with `--force-with-lease`.
 
-The whole `flow-verify` doesn't rerun after a rebase: the change itself hasn't
-moved. The Check and the real path do, because a rebase can break behaviour
-without a textual conflict. A rebase, a landing or an integration merge starts a new
-`Review boundary` record (CONVENTIONS §7): the comparison point becomes
-`git merge-base <landing branch> HEAD` and the round number goes up. If conflict
-resolution changed the task's own lines, that resolution is a fix: CONVENTIONS §7
-decides whether it goes back to the reviewer.
+The rebase alone does not require full `flow-verify`. Update the comparison point to
+`git merge-base <landing branch> HEAD` (CONVENTIONS §7). If conflict resolution changed
+task lines, treat it as a fix and apply §7 review rules.
 
 ## Protection rules
 

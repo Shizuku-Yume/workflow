@@ -1,32 +1,12 @@
 # Spike Tasks
 
-Exploratory work where the output is an answer and the code may be throwaway.
-
-## What is a Spike?
-
-A spike is a task where:
-- Goal is learning, not shipping
-- Solution approach is unknown
-- The answer is the deliverable, and the code that produced it may be discarded
-
-## When to Use Spikes
-
-**Good reasons:**
-- "Can this library do X?"
-- "How does this API actually work?"
-- "Is this architecture viable?"
-- "What's the performance of approach A vs B?"
-- "What causes this bug?" when it reproduces but nobody can say why
-  (CONVENTIONS §8); the fix task is `Blocked by` the spike
-
-**Not a spike:**
-- Feature is hard → build it properly
-- Requirements unclear → use `flow-grill`
-- Skipping the plan → plan it
-
-## Spike Task Format
-
-Same file format as any task (CONVENTIONS §2.1), plus:
+A spike answers a question; code may be throwaway. Use it when the solution is unknown
+and learning is the deliverable.
+Use a spike to test a library/API, architecture, performance, or root cause of a
+reproducible but unexplained bug (CONVENTIONS §8); the fix task is blocked by the spike.
+Do not use one because a feature is hard (build it), requirements are unclear
+(`flow-grill`), or to skip planning.
+Use the regular task format (CONVENTIONS §2.1), plus:
 
 ```markdown
 **Task type:** spike
@@ -34,29 +14,18 @@ Same file format as any task (CONVENTIONS §2.1), plus:
 **Time box:** <what to stop after: one prototype, one benchmark run, N approaches tried>
 ```
 
-**The three things that differ from a regular task:**
-- `Delivers` is "Answer to: <question>"; the Check is "question answered with
-  evidence", not "feature works".
-- Time box is a scope limit, not wall-clock hours: an agent can't measure hours, but
-  it can tell when it has built the one prototype it was allowed. Stop at the limit
-  even if the answer is incomplete, and report what's still unknown.
-- No production code is required, and code may be thrown away (see below).
+`Delivers` is `Answer to: <question>`; the Check proves the question answered with
+evidence, not that a feature works. Time-box scope (one prototype, benchmark, or set of
+approaches), not hours. Stop at the limit and report unknowns. Production code is not
+required.
 
-## After a Spike
+Record results in `## Findings` and wherever useful: spec for a validated approach,
+decisions for a rejected option, glossary for a clarified term, or a follow-up task for
+work to build.
 
-Write findings into the task file's `## Findings` section, then record them where they'll be read:
-- Spec (if spike validates approach)
-- Decision log (if spike rules out option)
-- Glossary (if spike clarifies concept)
-- New task (if spike shows what to build)
-
-**Spike code disposal** (when `flow-implement` finishes the spike):
-- If keeping: clean it up, add tests, make it real; that's a follow-up task, not the spike
-- If discarding: drop it before committing, or leave it on a `spike/<effort>-<NN>` branch named in Findings
-- Never leave spike code in main
-
-The task file itself is archived to `.workflow/done/<effort>/` like any task.
-
+At completion, either turn kept code into real code with tests in follow-up work, or
+discard it before committing / leave it only on a `spike/<effort>-<NN>` branch named in
+Findings. Never leave spike code on main. Archive the task like any other.
 ## Example Spike Task
 
 ```markdown

@@ -12,8 +12,9 @@ Load the project's context, classify the request, and route it. Runs once per se
 ## 1. Load project context
 
 Read silently:
-1. `.workflow/standards.md` — commands, layout, project conventions. If it still holds unfilled `<...>` placeholders, inspect the repository's build, test and lint configs (`package.json`, `pyproject.toml`, `Cargo.toml`, `Makefile`, CI workflows) and top-level layout, fill in `.workflow/standards.md`, and note what you filled in for confirmation in step 5.
+1. `.workflow/standards.md` — commands, layout, project conventions. If it still holds unfilled `<...>` placeholders, inspect the repository's build, test and lint configs (`package.json`, `pyproject.toml`, `Cargo.toml`, `Makefile`, CI workflows) and top-level layout, fill in `.workflow/standards.md`, and mention what you filled in in the report.
 2. Check that `.workflow/glossary.md` and `.workflow/decisions.md` exist, but do not preload them. After classification or once the area to touch is known, grep relevant glossary and decision terms; read the newest decision entries and any linked supersession entries as needed.
+3. If `.workflow/HANDOFF.md` exists (from a task-less session switch, CONVENTIONS §6), read its objective, verified artifacts, failed routes, and next action; delete `.workflow/HANDOFF.md` once absorbed into active work or planning files so no stale handoff lingers.
 
 A missing file goes in the report; a project without decisions or glossary is new, not broken. This keeps the session entry point small while preserving the evidence-before-questions rule.
 
@@ -30,43 +31,27 @@ Hotfix follow-ups and fix-now debt don't pick the next task; they go in the repo
 
 If this session will cross several phases, or context is already heavy, follow `.workflow/phase-boundaries.md` at each boundary.
 
-## 3. Classify request
+## 3. Classify and route
 
-Sort the message into exactly one class from CONVENTIONS §4 (trivial, hotfix, small, complex). Read the criteria there. Every hotfix criterion must hold; between small and complex, choose complex.
+Classify by blast radius and reversibility, not file count. Read direct callers before
+locking the class; use CONVENTIONS §4 for hotfix and small-task criteria, then
+CONVENTIONS §5 for routing. Upgrade work that crosses a public contract, persisted schema,
+or architectural boundary.
 
-The class is provisional: before calling something small, read the callers of what it changes. The CONVENTIONS §4 tripwires upgrade it while building.
+Trivial questions get direct answers. Hotfixes and small tasks follow CONVENTIONS §4;
+do not restate its process here. For complex work, use `next` and existing specs, maps,
+and tasks to choose the earliest incomplete step in CONVENTIONS §5. Clear 1–3 task work
+needing no durable spec goes straight to `flow-break`.
 
-## 4. Route
+## 4. Report and proceed
 
-### Trivial → answer directly
-Answer or clarify. No other skill.
-
-### Hotfix → fix now, follow-up before the session ends
-State the outage you understood and fix it, with no grilling or spec. Verify where the failure was observed; if you can't reach production, say so and hand that check to the user. Before the session ends, write the hotfix decision entry and draft the follow-up bugfix task, both as CONVENTIONS §4 specifies. If you can't write the entry honestly, it wasn't a hotfix: reclassify.
-
-### Small task → fast path
-Run `git status --porcelain` first: paths already modified or untracked belong to someone else (CONVENTIONS §2). Then:
-
-- **No decisions needed:** say what you understood and build.
-- **User-owned decisions:** ask in one message with your recommendation, wait, then
-  build. Log only choices that qualify under CONVENTIONS §1.2.
-- **Routine choices:** use the existing convention; several routine choices do not
-  make the work complex.
-
-The fast path keeps what CONVENTIONS §4 requires of small tasks (read the code and its callers, tests before and after, proof by running it, CONVENTIONS §8 for a bug, the CONVENTIONS §7 security pass). Land it per `.workflow/merge-strategy.md`.
-
-### Complex → full workflow
-Route to the earliest incomplete step with the table in CONVENTIONS §5, using `next` output and existing `.workflow/specs/`, `.workflow/maps/`, `.workflow/tasks/`. Name tasks `<effort>/<NN>`.
-
-## 5. Report and proceed
-
-Three lines:
-1. Context loaded (or missing), plus paused or blocked tasks, open hotfix follow-ups and fix-now debt when there are any
-2. Classification and why
-3. Next action
-
-Then do that action in the same turn. Stop only when the classification genuinely needs the user's input.
+Report context or missing files, relevant paused/blocked work and follow-ups, the
+classification, and the next action—concisely, without a fixed line count. Then take that
+action in the same turn; do not stall when the next step is clear (CONVENTIONS §1.1).
 
 ## When to skip this skill
 
-Skip it mid-session with context loaded, when the user names a flow skill directly, or when resuming with context still present. Use it on a fresh session, after compaction, when the user asks "what's next", or when unsure which skill applies.
+Skip mid-session with context loaded, when the user names a flow skill directly, or when
+resuming with context present. Use on a fresh session, after compaction, when asked
+what's next, or when unsure which skill applies.
+

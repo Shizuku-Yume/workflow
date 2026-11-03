@@ -1,13 +1,7 @@
 # Glossary
 
-What things in this project are called, and what those words mean.
-
-One entry per concept. If two people would use the word differently, that is a
-bug in the project, not in the conversation: fix it here.
-
-Add a term the moment it is agreed, not later. A name that exists only in a
-conversation is a name that will drift. Git merges this file with the union driver
-(`.gitattributes`), so parallel branches can each add terms.
+One entry per concept; differing meanings for the same word are a project bug. Add terms
+when agreed. This file uses git union merge so parallel branches can add terms.
 
 ## Format
 

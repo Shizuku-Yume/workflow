@@ -1,39 +1,28 @@
 # Phase Boundaries
 
-A phase is one stage of work: grilling, spec, breakdown, a task, a review. At the
-boundary between two phases, choose how context carries forward.
-
-You usually can't clear or compact your own window. When a step other than
-continue fits, first make sure the handoff lives in files (an unfinished task is
-paused with its handoff written, CONVENTIONS §6; planning documents are
-committed), then recommend the step to the user in one line.
+A phase is a stage of work: grilling, spec, breakdown, task, or review. At its boundary,
+choose how context carries forward. You usually cannot clear or compact your own window;
+first commit planning docs and write any unfinished task handoff — or `.workflow/HANDOFF.md`
+when no task file is active (CONVENTIONS §6) — then recommend the next step in one line.
 
 ## Options
 
-- **Continue**: stay in this session with all context.
-- **Clear**: empty the window; the files carry what the next phase needs.
-- **Compact**: compress this context into a fresh window.
-- **Switch session**: move to another directory, harness or person; committed
-  files are the handoff.
-- **Subagent**: hand a tightly scoped piece to its own window and take back a
-  report.
+- **Continue:** stay in this session.
+- **Clear:** empty the window; files carry the work.
+- **Compact:** compress context into a fresh window.
+- **Switch session:** change directory, harness, or person; committed files hand off.
+- **Subagent:** delegate a tightly scoped piece and take back its report.
 
-## Deciding
+Use the first applicable rule:
 
-Take the first rule that applies:
-
-1. Keep `flow-grill` → `flow-spec` → `flow-break` in one window; each builds on
-   the discussion before it.
-2. A task starts well in a fresh session: its task file and spec are the input,
-   not this conversation. `flow-close` likewise reads only committed files. These
-   boundaries are the cheapest place to clear.
-3. Compact or clear only at a phase boundary and on a real signal: the window is
-   past about half full with phases still to run, or reasoning visibly degrades
-   (answered questions asked again, recorded decisions missed, files re-read).
-   Mid-phase, finish the phase first or delegate the rest. After any compaction,
-   reread `next` and the active task file before acting.
-4. Delegate tightly scoped, independent lookups to a subagent: library research
-   during grilling, impact analysis during a task, a deep dive during
-   `flow-architect`. A session driving many tasks delegates each task's build
-   instead of holding it (CONVENTIONS §9).
-5. Otherwise continue. It costs nothing and loses nothing.
+1. Keep `flow-grill` → `flow-spec` → `flow-break` in one window; each builds on the
+   preceding discussion.
+2. Start a task or `flow-close` in a fresh session: their inputs are committed files.
+3. Clear or compact at a phase boundary only on real degradation signals, not a fixed
+   schedule. Mid-phase, finish or delegate first. On resume/compaction, verify workspace
+   state and reread `next` and the active task. Reuse valid check evidence for unchanged
+   inputs; do not rerun settled suites.
+4. Delegate independent, tightly scoped lookups or task builds (CONVENTIONS §9). On
+   multi-hour autonomous runs, schedule `.workflow/bin/workflow pulse --quiet-idle` (such
+   as `/loop 30m`) to counter context drift.
+5. Otherwise continue: it costs nothing and loses nothing.

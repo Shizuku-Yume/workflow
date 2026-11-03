@@ -9,8 +9,8 @@ disagrees with CONVENTIONS.md or STYLE.md, this file wins.
 
 ## What this project is
 
-<One or two sentences. What it does, who uses it. Enough that someone can tell
-whether a change belongs here. Not its progress: that lives in specs and tasks.>
+<One or two sentences: what it does, who uses it, and any untrusted exposure or adversary
+(otherwise a cooperating local operator is assumed, CONVENTIONS §10).>
 
 ## Running it
 
@@ -56,9 +56,7 @@ that stops the same argument from being had again.>
 
 Landing: <direct | local-merge | pr>
 
-How finished work reaches the main branch: `direct` commits on the current branch,
-`local-merge` (the default) lands a branch locally, `pr` through a pull request.
-Several people sharing a remote: use `pr`. An effort that must not land piece by
-piece names an integration branch in its spec header (not under `direct`).
-`.workflow/merge-strategy.md` describes each. Name the main branch here if it is
-neither `main` nor `master`.
+`direct` commits on the current branch; `local-merge` lands locally; `pr` uses pull
+requests. Use `pr` when people share a remote. An effort that cannot land piece by
+piece names an integration branch in its spec (not under `direct`). See
+`.workflow/merge-strategy.md`; name the main branch if it is neither `main` nor `master`.

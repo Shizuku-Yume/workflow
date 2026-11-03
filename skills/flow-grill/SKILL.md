@@ -7,77 +7,37 @@ description: >-
 
 # Flow: Grill
 
-Read `.workflow/CONVENTIONS.md` §1 (decision protocol) and `.workflow/STYLE.md` first.
+Resolve only decisions still open after checking the repo. Read `.workflow/CONVENTIONS.md`
+§0 and §1.1–§1.3, plus `.workflow/STYLE.md`, first.
 
-Goal: agree on what to build and why, with small choices made and logged, so the next step is unblocked. Four questions and six logged decisions beat twelve questions.
+## 1. Find facts and map choices
 
-## 1. Evidence check
+Check code, tests, configs, docs, and prior decisions before asking. For a port, migration,
+rewrite, or replacement, map each user-visible flow and old concept to its new counterpart;
+read the new system's own model and identify behavioral differences for a decision.
 
-CONVENTIONS §0: before asking anything, check whether the code, tests, configs or an existing pattern answer it. Investigate with `grep`, `find`, file reads or subagents, and report findings in one line each before the questions.
+List privately what the work is for, must not do, where it fits, data shape, failure
+behavior, and observable outcome. Separate settled decisions, findable facts (look them
+up), and genuine open choices.
 
-## 2. Write the design tree down, privately
+For expensive choices—architecture shifts, infrastructure, breaking changes, or new
+dependencies—start from the problem and hard constraints. Test each proposed piece by
+asking what breaks if removed; choose the cheapest experiment that resolves uncertainty.
 
-List the decisions this work depends on: what it's for, what it must not do, where it plugs into existing code, what shape data takes, how it gets tested, what happens when it fails, what the user sees. Mark each as settled (by the user's message or existing docs), a fact to look up (do it now, step 1), or a real open decision. Only the last group can become questions.
+## 2. Triage and ask
 
-When the work replaces existing behaviour (a port, a migration, a rewrite, a swapped
-engine or library), the old behaviour is part of the requirement. Before deciding
-anything, map it: each user-visible flow and each concept of the old system, its
-counterpart in the new one, and where the two differ. Read the new side's own code
-and docs for its model; don't assume a matching name means a matching concept. Each
-difference is an open decision (keep the old behaviour, adopt the new, or change it),
-and the user usually owns it. The mapped terms go into the glossary.
+Apply CONVENTIONS §1.1 and §1.2: resolve facts; for Bucket B, choose the reasonable,
+reversible option and state its trade-off in one line instead of offering a menu. Log only
+decisions that meet the convention's criteria. Ask only Bucket C questions: genuine
+user-owned trade-offs about what gets built or expensive-to-reverse choices.
+Batch independent questions in one ranked message (up to CONVENTIONS §1.3's limit). Include
+a recommendation and one-line reason. Stop grilling immediately when the next step is
+unblocked; proceed to `flow-spec` or `flow-break` as appropriate. If the work remains too
+foggy to plan, use `flow-map`.
 
-For expensive choices (infrastructure, architecture shifts, breaking changes, new dependencies), decompose before deciding:
-- Restate the problem without naming a solution.
-- List the hard constraints.
-- For each proposed piece, ask what breaks if it's removed.
-- Build up only what a constraint demands.
-- Name the cheapest experiment that would prove it.
+## 3. Record and continue
 
-Present the decomposition when it shows a requirement can be met much more simply.
-
-## 3. Triage every open decision
-
-Bucket each per CONVENTIONS §1:
-
-- **Look it up** → do it now.
-- **Decide and log** → take your recommendation, log it if substantial, mention it in one line at the end of the round.
-- **Ask** → it changes what gets built, the trade-off is real, and you can't resolve it from what's in front of you.
-
-Default for a detail is "decide it and say so". Draft decision entries while you evaluate options, with each alternative's strongest case written while it's fresh.
-
-## 4. Ask the round
-
-Ask every Bucket C question you can ask now without guessing another answer, in one
-message, ranked by what unblocks most, formatted and capped per CONVENTIONS §1. Decide
-routine details with a stated default. Then stop only when a user-owned decision is
-needed; if repeated rounds still do not unblock the work, use `flow-map` or a smaller
-slice.
-
-## 5. Resolve remaining decisions
-
-Questions beyond the round's cap wait for the next round; the cap does not change
-who owns a decision. Repeat only while a blocking question remains.
-
-## 6. Name things as you go
-
-Record project terms that need a shared meaning in `.workflow/glossary.md`: the term, what it means, and competing names to avoid. Do not catalogue routine code identifiers. A term that names two things gets split now.
-
-## 7. Confirm and stop
-
-Restate Bucket C decisions and any logged choices as a numbered list (CONVENTIONS §1),
-then state the next step. Routine defaults need no confirmation.
-
-If the user says "enough": write the decision log, list what's still open (one line each), hand back.
-
-If the session ends here (no `flow-spec` follows now), commit the decision and glossary entries per CONVENTIONS §2.
-
-## Decision log
-
-Append to `.workflow/decisions.md` in the format that file shows: five fields, plus `**Effort:** <slug>` when the entry belongs to one effort. Run `.workflow/bin/workflow validate` after appending.
-
-Start from the drafts written in step 3. If "Instead of" reads like a strawman, that alternative was never serious: find the real runner-up, or the choice needs no entry.
-
-## When to use something else
-
-Routing is in CONVENTIONS §5. Work too big to see the route through → `flow-map`. User already knows what they want → `flow-spec`.
+Add only shared project terms to `.workflow/glossary.md`. Append qualifying choices to
+`.workflow/decisions.md` using its format; cite the entry as `decisions.md: <date> - <title>`.
+Commit planning records if the session ends here, per CONVENTIONS §2. When proceeding to
+`flow-spec` or `flow-break`, carry decisions forward without reopening settled choices.

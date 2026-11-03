@@ -10,109 +10,80 @@ argument-hint: "<effort>"
 
 # Flow: Close
 
-Read `.workflow/CONVENTIONS.md` §6 (lifecycle) and §7 (review), and `.workflow/STYLE.md` first.
+Read `.workflow/CONVENTIONS.md` §2, §4, §6, and §7, plus `.workflow/STYLE.md` first.
 
-Every task was checked on its own, against its own baseline. Nobody has yet checked that the pieces add up to what the spec promised; tasks that each pass can still fail together. This skill does that check, and an effort is not done until it has.
+Tasks were checked separately. This close checks the assembled effort against its spec, demonstrates the real shipped path, and records acceptance and learning.
 
 ## 1. Confirm closable
 
-- Find the spec: `.workflow/specs/<effort>.md`. If there is none, stop and say so in one line: an effort without a spec (a lone bugfix, a spike, `maintenance`) is done when its last task lands, with no close and no retrospective.
-- No task of `<effort>` is left under `.workflow/tasks/<effort>/`. If one is, name it and stop: it is unfinished, or it should be dropped through `flow-break` amend.
-- Every archived task has landed on the landing branch (`merge-strategy.md`). Work from an up-to-date copy of it. With an integration branch, merge the main branch into it first and rerun the tests.
-- If `.workflow/done/<effort>/retrospective.md` exists, this is a reopen (CONVENTIONS §6):
-  the tasks added since the last close are what this run closes, and step 6 appends
-  instead of rewriting. Use the `Base commit` of the earliest-started added task as
-  the comparison point; otherwise use the effort's earliest-started archived task.
-- List the effort's commits once and reuse the list:
-  `git log --format='%h %s' <point>..HEAD -- .workflow/done/<effort>/`. On a reopen,
-  include the newly archived tasks, not earlier closes.
+- Find `.workflow/specs/<effort>.md`. If absent, stop: a no-spec effort (lone bugfix, spike, `maintenance`) ends when its last task lands; no close or retrospective.
+- No task remains under `.workflow/tasks/<effort>/`; otherwise name it and stop, or drop it through `flow-break` amend. Every archived task must have landed on the landing branch (`merge-strategy.md`). Use its up-to-date head; on an integration branch merge main into it first and rerun tests.
+- If `.workflow/done/<effort>/retrospective.md` exists, this is a reopen: close only tasks added since the last close, appending at step 7. Compare from the earliest-started added task's `Base commit`; otherwise use the earliest-started archived task.
+- List commits once and reuse them: `git log --format='%h %s' <point>..HEAD -- .workflow/done/<effort>/`. On reopen, include newly archived tasks, not earlier closes.
+## 2. Run the spec checks and demo
 
-## 2. Run the spec's checks
+Run every check in “How we will know it works,” by ID, on the landing head and the actual shipping build/path (packaged app, deployed service, installed CLI), not a stand-in. Record pass, fail, or not runnable with reason; a stand-in run is not a pass. Checks absent from task `Covers` are still expected. Any failure blocks.
 
-Run every check in the spec's "How we will know it works", by ID, now, on the build that will ship: the landing branch's head, built and run the way a user gets it (the packaged app, the deployed service, the installed CLI). These describe the whole; task Checks and earlier receipts were taken on the pieces and don't count here. Record each as pass, fail, or not runnable with the reason; a check that ran only against a stand-in is recorded as that, not as pass. A check no task lists in `Covers` is expected: some only make sense once everything is in. A failing check is a blocking finding.
-
-Then use the feature once the way the spec's "What it does" describes, as a user would: its real entry point, real dependencies, the main flow to the end. Note what you saw. Step 5 shows this to the user.
+Then use the feature once through the real entry point and dependencies, following “What it does” to completion. Note what happened for the user report.
 
 ## 3. Review the whole
 
-Run `flow-verify` in effort mode (its "Effort mode" section) with the comparison point
-and commit list from step 1: it reuses the tasks' `Review boundary` records and runs
-the assembly checks, without replaying per-task briefs.
+Run `flow-verify` in effort mode with step 1's comparison point and commit list. It reuses task review records in `## Progress` and checks assembly, without replaying unchanged task briefs. A spec-requested evidence or documentation pass is a separate invocation over the assembled whole, never a rerun of an unchanged brief.
 
-A spec may ask for a separate evidence or documentation pass over the assembled whole;
-that pass is an independent invocation, judging the assembly and the evidence, never a
-rerun of an unchanged task brief.
-
-Handle findings per CONVENTIONS §7. A fix that passes as a small task (CONVENTIONS §4) is made here, rechecked, and committed with the close. Anything bigger becomes a task in this effort through `flow-break` amend, and closing waits for it.
-
+Handle findings per CONVENTIONS §7. Make and recheck a fix here only if it passes as a small task (§4); commit it with the close. Otherwise add a task through `flow-break` amend and wait to close. Report open hotfix follow-ups (`grep -rl 'Hotfix:' .workflow/tasks/`) touching this effort; they remain open until their task lands.
 ## 4. Revisit decisions
 
-List the effort's decisions with `grep -n 'Effort:\*\* <effort>' .workflow/decisions.md`, plus any entry the spec cites. For each, read `Revisit when` and ask whether what this effort built or learned has triggered it. A triggered entry goes into the report with what triggered it. Reversing it is a new entry made with the user (CONVENTIONS §2), not here on your own.
-
-List open hotfix follow-ups (`grep -rl 'Hotfix:' .workflow/tasks/`) that touch this effort's code. They stay open until their own task lands.
+List decisions with `grep -n 'Effort:\*\* <effort>' .workflow/decisions.md` and those cited by the spec. Check each `Revisit when`; report triggers. Reversal requires a new entry made with the user (§2), not unilateral change.
 
 ## 5. Show the user
 
-One message: each spec check by ID with its result, what the demo showed, review status per brief, triggered decisions. Ask whether the effort is accepted.
+Send one message: each spec check by ID and result, demo observations, review status per brief, and triggered decisions. Ask whether the effort is accepted. Only the user's explicit yes accepts; silence or passing checks do not. Until then keep the spec `in progress` and report waiting for acceptance. If something is missing, add tasks through `flow-break` amend and wait.
 
-This is the only stop in this skill, and only the user's explicit yes accepts the effort: passing checks are not acceptance, and neither is silence. Until then the spec stays `in progress`, and the effort is reported as waiting for acceptance, never as done. Accepted: carry on. Something missing: it becomes tasks through `flow-break` amend, and closing waits.
+## 6. What changes
 
-## 6. Write the retrospective
+Review findings repeated across multiple tasks are patterns. Convert a genuine mechanical pattern to an automated check, or a judgement pattern to one concise `.workflow/standards.md` line. Do not create one-off bureaucracy; if no pattern recurred, record none.
 
-`.workflow/done/<effort>/retrospective.md`. The git history of `.workflow/tasks/<effort>/`, `.workflow/done/<effort>/` and the spec answers the plan-versus-actual questions (`git log --stat --follow -- <path>`); the `## Progress` sections of archived tasks hold the review findings.
+## 7. Write the retrospective
 
-On a reopen, append a `## Reopened <date>` section with the same headings and its own
-`**Accepted:**` line, covering the tasks added since the last close, instead of
-replacing the file: what the effort originally shipped stays readable. `validate`
-refuses to mark the spec done without one more `Accepted:` line than `## Reopened`
-headings.
+Write `.workflow/done/<effort>/retrospective.md`, using task/spec history (`git log --stat --follow -- <path>`) for plan versus actual and archived task `## Progress` for findings. Record patterns and their resulting check/standard, or why none recurred; include remaining debt and open hotfixes.
+
+On reopen append `## Reopened <date>` with the same headings and its own `**Accepted:**` line; keep the original shipment readable. `validate` requires one more `Accepted:` line than `## Reopened` headings.
 
 ```markdown
 # Retrospective: <effort>
 
 ## Goal
-<one or two sentences, from the spec>
+<one or two sentences from the spec>
 
 **Accepted:** <date> by <who said yes>
 
 ## What shipped
-<what a user can now do; spec check results by ID>
+<user-visible result; spec check results by ID>
 
 ## Decisions that shaped it
-<entry headings, one line each on why it mattered>
+<entry headings, one line each on why they mattered>
 
 ## Plan versus actual
 - Tasks at break: N. Added later: N. Split: N. Dropped: N, and why.
-- Spec changes after confirmation: N, which sections, why.
-- Tasks that went `blocked`: which, and what the plan had wrong.
+- Spec changes after confirmation: N, sections and why.
+- Blocked tasks and what the plan got wrong.
 
 ## Review findings
-<blocking findings by kind: correctness, missing deliverable, standards, process.
-A kind that came up in more than one task is a pattern.>
+<blocking findings by kind: correctness, missing deliverable, standards, process>
 
 ## What changes
-<each pattern, and the check or standards.md line it became; or why nothing>
+<recurring patterns and resulting check/standard, or none>
 
 ## Debt left behind
-<technical-debt.md entries by heading, and open hotfix follow-up tasks>
+<technical-debt.md entries by heading; open hotfix follow-ups>
 ```
 
-A pattern in the review findings is the most useful line here; a retrospective that changes nothing is a diary. Turn each pattern into something the next effort can't miss:
+## 8. Mark done and commit
 
-- A mechanical pattern (banned API, import shape, file location, missing test) becomes a check: a lint rule, a test, or a CI step. Build it in this change if it passes as a small task (CONVENTIONS §4); otherwise draft it as a task.
-- A judgement call becomes one line in `.workflow/standards.md` ("How code is written here" or "What we do not do").
+1. Set the spec to `**Status:** done`.
+2. Run `.workflow/bin/workflow validate`; errors block.
+3. Commit retrospective, spec status, checks/standards, decision entries, and step 3 fixes together. Land per `Landing:` (`merge-strategy.md`). On an integration branch, land the close commit by fast-forward or one merge commit, never replace main's tree; then delete the landed task branches.
 
-## 7. Mark done and commit
+## 9. Report
 
-1. Spec: `**Status:** done`.
-2. `.workflow/bin/workflow validate`. Errors block.
-3. One commit: retrospective, spec status, new checks or `standards.md` lines, decision entries, any fixes from step 3. Land it per `Landing:` (`merge-strategy.md`). With an integration branch, the close commit goes on it, and then the branch lands on the main branch by fast-forward or one merge commit, never by replacing the main branch's tree; delete it and the landed task branches afterwards.
-
-## 8. Report
-
-Five lines:
-- Whether the effort is done, or exactly what is left
-- Spec checks: how many passed, and which failed or couldn't run
-- What the effort review found and what was done about it
-- Decisions whose `Revisit when` has triggered
-- Checks or `standards.md` lines added, or "none"
+Report concisely: done or exactly what remains; spec check totals and failures/unrun checks; review findings and response; triggered decisions; checks/standards added or "none".

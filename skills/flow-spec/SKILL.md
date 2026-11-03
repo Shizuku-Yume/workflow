@@ -7,24 +7,19 @@ description: >-
 
 # Flow: Spec
 
-Read `.workflow/CONVENTIONS.md` §2 (file structure) and `.workflow/STYLE.md` first.
+Read CONVENTIONS §0, §2, §3, §5 and §6, plus `.workflow/STYLE.md`. Clear 1–3 task work
+with no durable spec skips this step and goes straight to `flow-break`.
 
-Input: the conversation and design discussion. Output: `.workflow/specs/<effort>.md`, named by the effort slug its tasks will use.
-
-Write from what was decided; the user isn't interviewed again. Decisions confirmed in `flow-grill` stay settled. Anything genuinely undecided goes under "Open questions" and you keep going.
-
-## Two mistakes to avoid
-
-**Writing implementation** — a spec that names every function is stale in a week. Name modules, boundaries, contracts, shapes.
-
-**Writing only conclusions** — a spec without the rejected option is a press release. The next session reads it, disagrees with invisible reasoning, and reopens the decision.
+Write `.workflow/specs/<effort>.md` from the settled conversation and existing decisions;
+do not re-interview. Keep genuinely unresolved items under Open questions and continue.
+The spec is a clean launch document, not a defense transcript (STYLE.md).
 
 ## Before writing
 
-1. **Collect the decisions already made** — from the conversation, `.workflow/decisions.md` and the user's message. Fill sections only with real decisions.
-2. **Read the code** this will touch (CONVENTIONS §0).
+Collect settled choices from the conversation and `.workflow/decisions.md`; read the code
+and relevant glossary terms. Cite relied-on decisions as `decisions.md: <date> - <title>`.
 
-## The document
+## Spec template
 
 ```markdown
 # <Title>
@@ -33,98 +28,49 @@ Write from what was decided; the user isn't interviewed again. Decisions confirm
 **Priority:** normal
 
 ## What this is for
-Problem from user's perspective. What's broken, missing, or wanted, and what
-happens if nobody does this. Must stand alone.
+Standalone user problem and what happens if it remains unsolved.
 
 ## What it does
-Behavior after the change, from user's perspective. Not implementation; what
-someone notices is different. Concrete enough to demo.
+Observable user-facing behavior, concrete enough to demonstrate.
 
 ## How it is built
-Decisions that shape code. Modules added/changed, boundaries, data shapes,
-interfaces, failure behavior. Prose and short lists; snippet only when clearer
-(state machine, schema, type). Say what each piece is responsible for and what
-it's not.
+Modules, boundaries, data shapes, interfaces, and failure behavior; explain
+responsibilities without prescribing function-by-function implementation.
 
 ## What it must not do
-Out of scope, explicitly, with reason. Things a reasonable reader might assume
-are included. Prevents scope creep.
+Plausible assumptions that are out of scope, with reasons.
 
 ## What was considered and rejected
-One entry per real alternative:
-- **<The option>.** Its strongest argument, stated fairly. Then constraint that
-  killed it.
+- **<Option>.** Strongest case, then the constraint that ruled it out.
 
 ## How we will know it works
-Checks that prove behavior, each with an ID. Tasks list the IDs they make pass
-in `Covers`; `flow-close` runs all of them against the finished effort.
-- **W1.** <what command or user step, what result someone can observe>
-- **W2.** ...
-
-At least one check walks the main use from "What it does" end to end, through the
-real entry point with real dependencies; name any stand-in (fixture, mock,
-recorded reply) a check still uses. Work that replaces existing behaviour adds a
-check that the main flows behave as before, except where this spec says otherwise.
-
-Also:
-- What's tested at which level, and why that level.
-- Observable signal when it breaks.
-- Edges worth testing: empty input, big input, concurrent use, failure of each
-  external dependency, permission denied.
-
-If anything is "we will see", say so plainly.
+- **W1.** <runnable check and observable passing result>
+- **W2.** <runnable check and observable passing result>
 
 ## Open questions
-Unresolved decisions, each with what would settle it and who can settle it.
-Empty is good. Long list means spec not ready to build from.
+Unresolved choices and who or what settles them; omit when empty.
 
 ## Notes
-Anything a reader would otherwise ask. Links to task files, related specs.
+Useful links or context; omit when empty.
 ```
-
-`Priority` is optional (`critical | high | normal | low`, default `normal`); `next` ranks ready tasks by it. `Status` starts `proposed`; `flow-implement` and `flow-close` move it on (CONVENTIONS §6).
 
 ## Rules
 
-- **Numbers, not adjectives** — "handles large imports" says nothing; "10k rows under 2s" is a spec. If nobody knows the number, say that.
-- **Updated in place** — a reversed decision rewrites the spec (CONVENTIONS §2), so one document never holds contradicting answers. Once tasks exist, a spec change goes through `flow-break` amend so they follow it (CONVENTIONS §5).
-- **Check IDs are stable** — a dropped check keeps its ID out of use; a new one takes the next free number.
-- **Write for someone reading in six months.**
-- **Name modules, not paths that will move.**
-- **Delete sections with nothing to say** — a missing section says "didn't apply"; an empty one looks forgotten.
-
-## Convergence gate
-
-Before presenting, verify:
-
-**Completeness:**
-- "What this is for" stands alone as a problem statement
-- "What it does" describes observable behavior
-- "How it is built" names modules, boundaries, data shapes
-- "How we will know it works" has runnable checks, each with an ID, and one walks
-  the main use on the real path
-- No duplicate facts across sections, no contradictions (the latest decision wins)
-- Terms match `.workflow/glossary.md` or are newly added
-- Decisions the spec relies on cite their entry as `decisions.md: <date> - <title>`
-
-**Resolvability:**
-- Every open question names who or what settles it
-- No placeholder text ("TBD", "to be decided"), no unresolved alternatives disguised as notes
-
-**Evidence:**
-- The modules read are named
-- Rejected alternatives have real reasons
-- Numbers replace adjectives where they matter
-
-Fix any failure before presenting.
+- Make the problem standalone and behavior observable. Keep the spec about outcomes and
+  boundaries, not implementation trivia; use numbers where they materially clarify scope.
+- Define stable, runnable `W`-ID checks with observable pass signals. At least one must
+  exercise the main user path end to end through the real entry point and real dependencies;
+  name any remaining stand-in. Tasks cite covered IDs; `flow-close` checks the whole effort.
+- Include only real rejected alternatives and unresolved questions. No `TBD` or other
+  placeholders; delete empty sections and avoid duplicate or contradictory facts.
+- Update the spec in place when facts or decisions change. Once tasks exist, amend through
+  `flow-break` (CONVENTIONS §5); keep terminology aligned with the glossary.
+- `Priority` is optional (default `normal`); `Status` starts `proposed` and advances per
+  CONVENTIONS §6.
 
 ## Finish
 
-Write the file, then:
-
-- **`flow-break` follows in this session (the normal case):** go straight to it. Its single review round covers the spec summary and the tasks; one approval settles both.
-- **The session ends after the spec:** report the path, what the spec decides (one line), and open questions or "ready to build". Ask for explicit confirmation, then commit the spec with its decision and glossary entries per CONVENTIONS §2.
-
-If the spec changes materially after approval, rerun the convergence gate and get fresh approval.
-
-Building always goes through `flow-break`, even for one task: the task file carries the Base commit, the Check and the archive.
+If `flow-break` follows now, go straight to it; its review covers the spec and tasks.
+Otherwise report the path, decisions, and open questions or readiness; get approval and
+commit the spec and related planning records per CONVENTIONS §2. Material changes after
+approval need fresh approval.
