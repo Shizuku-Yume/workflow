@@ -12,10 +12,9 @@
 #   workflow hook        install a pre-commit hook that runs workflow validate
 #   workflow validate    check task files and the decision log (bin/workflow-core.py)
 #   workflow next        list ready tasks (bin/workflow-core.py)
-#   workflow pulse       anti-drift reminder and queue snapshot (bin/workflow-core.py)
 #
-# Runs on Bash 3.2 (stock macOS) with BSD or GNU awk and sed; validate, next and
-# pulse need python3.
+# Runs on Bash 3.2 (stock macOS) with BSD or GNU awk and sed; validate and next
+# need python3.
 #
 # Skills are copied, not linked, so a project keeps working if this toolkit is
 # moved or deleted. Use `workflow update` to pull in newer versions.
@@ -25,7 +24,7 @@
 # need no checkout of this toolkit and nothing on PATH.
 set -euo pipefail
 
-VERSION="2.8.0"
+VERSION="2.9.0"
 BIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 KIT="$(cd "$BIN_DIR/.." && pwd)"
 
@@ -42,32 +41,15 @@ MARKER_START="<!-- workflow:start -->"
 MARKER_END="<!-- workflow:end -->"
 
 # Regexes live in variables: Bash 3.2 can't parse ( | ) in a literal =~ pattern.
-RE_TERMS_HEADING='^[[:space:]]*##[[:space:]]+Terms'
-RE_FENCE='^[[:space:]]*```'
-RE_HTML_COMMENT='<!--.*-->'
-RE_BLANK='^[[:space:]]*$'
-RE_H1_H2='^[[:space:]]*#{1,2}[[:space:]]'
-RE_HEADING='^[[:space:]]*#'
-RE_AVOID_ITEM='^[[:space:]]*[-*][[:space:]]+(_Avoid_|\*Avoid\*)(.*)$'
-RE_AVOID_REST='^[[:space:]]*[:-][[:space:]]*(.*)$'
-RE_TERM_BOLD='^[[:space:]]*[-*][[:space:]]+\*\*([^*]+)\*\*[[:space:]]*[:-][[:space:]]*(.*)$'
-RE_TERM_COLON='^[[:space:]]*[-*][[:space:]]+([^:]+):[[:space:]]*(.*)$'
-RE_TERM_DASH='^[[:space:]]*[-*][[:space:]]+([^-]+)[[:space:]]+-[[:space:]]+(.*)$'
-RE_LIST_ITEM='^[[:space:]]*[-*][[:space:]]+'
-RE_INDENTED='^[[:space:]]+'
 RE_DIGITS='^[0-9]+$'
 RE_VALIDATE_SUMMARY='^([0-9]+) error\(s\), ([0-9]+) warning\(s\)\.$'
-RE_TASK_FILE='^[0-9]+-.+\.md$'
+RE_STANDARDS_PLACEHOLDER='<TODO:[^>]+>|<(install|run|test|typecheck|lint) command>|<direct \| local-merge \| pr>'
 
 GA_START="# workflow:start"
 GA_END="# workflow:end"
 
-# Framework files installed with the workflow and checked by doctor.
-# technical-debt.md is user data, installed once.
-MANAGED_FRAMEWORK="phase-boundaries.md merge-strategy.md spike-tasks.md"
 # Framework files earlier versions installed; update removes unedited copies.
-RETIRED_FRAMEWORK="thinking.md"
-
+RETIRED_FRAMEWORK="thinking.md phase-boundaries.md merge-strategy.md spike-tasks.md"
 # ---------------------------------------------------------------- output
 
 if [ -t 2 ]; then
@@ -114,41 +96,10 @@ normalize_path() {
   printf '%s\n' "${out:-/}"
 }
 
-# task_field FILE NAME - first value of a `Name: value` field (plain, bulleted
-# or bolded; NAME in lowercase), outside fenced code blocks.
-task_field() {
-  awk -v want="$2" '
-    /^[[:space:]]*```/ { fence = !fence; next }
-    fence { next }
-    {
-      line = $0
-      sub(/^[[:space:]]*[-*][[:space:]]+/, "", line)
-      gsub(/\*\*/, "", line)
-      i = index(line, ":")
-      if (i == 0) next
-      name = tolower(substr(line, 1, i - 1))
-      gsub(/^[[:space:]]+|[[:space:]]+$/, "", name)
-      if (name != want) next
-      value = substr(line, i + 1)
-      gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
-      print value
-      exit
-    }
-  ' "$1"
-}
-
 # Is python3 (3.8+) on PATH? validate and next run on it.
 have_python() {
   command -v python3 >/dev/null 2>&1 &&
     python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 8) else 1)' >/dev/null 2>&1
-}
-
-# Does a Base commit value name a real commit in ROOT?
-base_commit_ok() {
-  local root="$1" value="$2"
-  case "$value" in ""|"<commit-sha>"|not-started) return 1 ;; esac
-  git -C "$root" rev-parse --git-dir >/dev/null 2>&1 &&
-    git -C "$root" rev-parse --verify --end-of-options "$value^{commit}" >/dev/null 2>&1
 }
 
 # The repository's main branch: main if it exists, else master, else empty.
@@ -340,10 +291,10 @@ check_symlink_safety() {
     check_path_symlink_safety "$root" "$root/.workflow/.${f%.md}.workflow-managed" || return 1
   done
 
-  for f in standards.md glossary.md decisions.md technical-debt.md $MANAGED_FRAMEWORK $RETIRED_FRAMEWORK; do
+  for f in standards.md glossary.md decisions.md technical-debt.md $RETIRED_FRAMEWORK; do
     check_path_symlink_safety "$root" "$root/.workflow/$f" || return 1
   done
-  for f in $MANAGED_FRAMEWORK $RETIRED_FRAMEWORK; do
+  for f in $RETIRED_FRAMEWORK; do
     check_path_symlink_safety "$root" "$root/.workflow/.${f%.md}.workflow-managed" || return 1
   done
   check_path_symlink_safety "$root" "$root/.gitattributes" || return 1
@@ -477,281 +428,8 @@ install_rulebooks() {
     fi
   done
 
-  # Install framework files; checksum-managed like CONVENTIONS.md.
-  for f in $MANAGED_FRAMEWORK; do
-    local src="$KIT/templates/project/.workflow/$f" target="$root/.workflow/$f"
-    local marker="$root/.workflow/.${f%.md}.workflow-managed"
-    if [ ! -f "$src" ]; then
-      continue  # Source doesn't exist in this version, skip
-    fi
-    if [ ! -e "$target" ]; then
-      cp "$src" "$target"
-      mark_managed "$target" "$marker"
-      ok "$f"
-    elif [ "$mode" = "force" ]; then
-      cp "$src" "$target"
-      mark_managed "$target" "$marker"
-      ok "$f"
-    elif [ -f "$marker" ] && managed_ok "$target" "$marker" "$src"; then
-      if [ "$mode" = "update" ]; then
-        cp "$src" "$target"
-        mark_managed "$target" "$marker"
-        ok "$f"
-      else
-        skip "$f (already exists, left alone)"
-      fi
-    elif [ ! -f "$marker" ] && cmp -s "$target" "$src"; then
-      mark_managed "$target" "$marker"
-      if [ "$mode" = "update" ]; then
-        ok "$f"
-      else
-        skip "$f (already exists, left alone)"
-      fi
-    elif [ "$mode" = "init" ]; then
-      warn "skipped $f: $target was edited locally and is yours to keep (use --force)"
-    else
-      warn "skipped $f: $target was edited locally and is yours to keep"
-    fi
-  done
-
   # technical-debt.md is user data: install once, never overwrite edits.
   install_file "$root/.workflow/technical-debt.md" "$KIT/templates/project/.workflow/technical-debt.md"
-}
-
-check_glossary() {
-  local file="$1" p_var="$2"
-  [ -f "$file" ] || return 0
-  local nl=$'\n'
-  local seen_terms="$nl"
-  local in_terms=0
-  local has_terms_section=0
-  if grep -qE '^[[:space:]]*##[[:space:]]+Terms' "$file"; then
-    has_terms_section=1
-  fi
-
-  local cur_term=""
-  local term_has_def=0
-  local avoid_has_def=0
-  local last_item="none"
-  local last_avoid_line=""
-  local in_fence=0
-
-  check_pending_def() {
-    if [ "$last_item" = "term" ] && [ "$term_has_def" -eq 0 ]; then
-      warn "glossary.md: missing definition for term: $cur_term"
-      bump "$p_var"
-      term_has_def=1
-    elif [ "$last_item" = "avoid" ] && [ "$avoid_has_def" -eq 0 ]; then
-      warn "glossary.md: empty Avoid entry: $last_avoid_line"
-      bump "$p_var"
-      avoid_has_def=1
-    fi
-  }
-
-  while IFS= read -r line || [ -n "$line" ]; do
-    line="${line%$'\r'}"
-    if [ "$has_terms_section" -eq 1 ] && [ "$in_terms" -eq 0 ]; then
-      if [[ "$line" =~ $RE_TERMS_HEADING ]]; then
-        in_terms=1
-      fi
-      continue
-    fi
-
-    # Ignore fenced code blocks
-    if [[ "$line" =~ $RE_FENCE ]]; then
-      check_pending_def
-      last_item="none"
-      in_fence=$(( 1 - in_fence ))
-      continue
-    fi
-    if [ "$in_fence" -eq 1 ]; then
-      continue
-    fi
-
-    # Strip inline HTML comments
-    [[ "$line" =~ $RE_HTML_COMMENT ]] && line="${line%%<!--*}${line#*-->}"
-
-    # Skip blanks, comments, headings
-    if [[ "$line" =~ $RE_BLANK ]]; then
-      check_pending_def
-      last_item="none"
-      continue
-    fi
-    if [[ "$line" =~ $RE_HEADING ]]; then
-      check_pending_def
-      cur_term=""
-      if [ "$has_terms_section" -eq 1 ] && [[ "$line" =~ $RE_H1_H2 ]]; then
-        last_item="none"
-        break
-      fi
-      last_item="none"
-      continue
-    fi
-
-    # List items
-    if [[ "$line" =~ $RE_LIST_ITEM ]]; then
-      check_pending_def
-
-      # Check if this list item is an Avoid line
-      if [[ "$line" =~ $RE_AVOID_ITEM ]]; then
-        local avoid_rest="${BASH_REMATCH[2]}"
-        if [[ "$avoid_rest" =~ $RE_AVOID_REST ]]; then
-          if [ -z "$cur_term" ]; then
-            warn "glossary.md: orphan Avoid entry: $line"
-            bump "$p_var"
-            last_item="none"
-            continue
-          fi
-          local avoid_content="${BASH_REMATCH[1]}"
-          avoid_content="${avoid_content#"${avoid_content%%[![:space:]]*}"}"
-          avoid_content="${avoid_content%"${avoid_content##*[![:space:]]}"}"
-          if [ -n "$avoid_content" ]; then
-            avoid_has_def=1
-          else
-            avoid_has_def=0
-          fi
-          last_item="avoid"
-          last_avoid_line="$line"
-          continue
-        else
-          warn "glossary.md: malformed Avoid entry: $line"
-          bump "$p_var"
-          last_item="none"
-          continue
-        fi
-      fi
-
-      # Term parsing
-      local term="" term_def=""
-      # 1. Bold term anchored to list start: - **term**: def or - **term** - def
-      if [[ "$line" =~ $RE_TERM_BOLD ]]; then
-        term="${BASH_REMATCH[1]}"
-        term_def="${BASH_REMATCH[2]}"
-      # 2. Plain term with colon: - term: def
-      elif [[ "$line" =~ $RE_TERM_COLON ]]; then
-        term="${BASH_REMATCH[1]}"
-        term_def="${BASH_REMATCH[2]}"
-        term="${term#"${term%%[![:space:]]*}"}"
-        term="${term%"${term##*[![:space:]]}"}"
-      # 3. Plain term with dash separator: - term - def
-      elif [[ "$line" =~ $RE_TERM_DASH ]]; then
-        term="${BASH_REMATCH[1]}"
-        term_def="${BASH_REMATCH[2]}"
-        term="${term#"${term%%[![:space:]]*}"}"
-        term="${term%"${term##*[![:space:]]}"}"
-      else
-        warn "glossary.md: malformed line: $line"
-        bump "$p_var"
-        last_item="none"
-        continue
-      fi
-
-      local norm_term="${term// /}"
-      case "$seen_terms" in
-        *"$nl$norm_term$nl"*)
-          warn "glossary.md: duplicate term: $term"
-          bump "$p_var"
-          ;;
-        *) seen_terms="$seen_terms$norm_term$nl" ;;
-      esac
-
-      term_def="${term_def#"${term_def%%[![:space:]]*}"}"
-      term_def="${term_def%"${term_def##*[![:space:]]}"}"
-      if [ -n "$term_def" ]; then
-        term_has_def=1
-      else
-        term_has_def=0
-      fi
-      cur_term="$term"
-      last_item="term"
-      continue
-    fi
-
-    # Indented plain continuation lines wrapping definitions
-    if [[ "$line" =~ $RE_INDENTED ]]; then
-      if [ "$last_item" = "term" ]; then
-        term_has_def=1
-      elif [ "$last_item" = "avoid" ]; then
-        avoid_has_def=1
-      else
-        warn "glossary.md: unexpected line format: $line"
-        bump "$p_var"
-      fi
-      continue
-    fi
-
-    # Unindented arbitrary line
-    check_pending_def
-    last_item="none"
-    cur_term=""
-    warn "glossary.md: unexpected line format: $line"
-    bump "$p_var"
-  done < "$file"
-
-  check_pending_def
-  unset -f check_pending_def 2>/dev/null || true
-}
-
-
-check_maps() {
-  local root="$1" p_var="$2"
-  [ -d "$root/.workflow/maps" ] || return 0
-  for map in "$root/.workflow/maps/"*.md; do
-    [ -f "$map" ] || continue
-    local status
-    status=$(grep -Ei '(^|\*\*)Status:' "$map" | head -1)
-    [[ "$status" =~ working ]] || continue
-
-    # Parse index sections and trailing Q sections, ignoring template comments.
-    local map_state
-    map_state="$(awk '
-      function finish_q() {
-        if (in_q) {
-          if (!q_answered) open = 1
-          in_q = 0
-        }
-      }
-      BEGIN { section=""; open=0; fog=0; in_q=0; q_answered=0; in_comment=0; in_code=0 }
-      /^```/ { in_code = 1 - in_code; next }
-      in_code { next }
-      {
-        gsub(/<!--.*-->/, "")
-        if (in_comment) {
-          if ($0 ~ /-->/) { in_comment = 0; sub(/.*-->/, "") } else next
-        }
-        if ($0 ~ /<!--/) { in_comment = 1; sub(/<!--.*/, "") }
-        if ($0 ~ /^[[:space:]]*$/) next
-      }
-      /^## / {
-        finish_q()
-        h = tolower($0)
-        if (h ~ /^## open questions/) section = "open"
-        else if (h ~ /^## not yet clear/) section = "fog"
-        else if (h ~ /^## q([0-9]+|:|[[:space:]])/) { section = "q"; in_q = 1; q_answered = 0; ans_seen = 0 }
-        else section = ""
-        next
-      }
-      section == "open" { open = 1 }
-      section == "fog" { fog = 1 }
-      section == "q" && $0 ~ /^\*?\*?Answer:\*?\*?[[:space:]]*/ {
-        value = $0
-        sub(/^\*?\*?Answer:\*?\*?[[:space:]]*/, "", value)
-        ans_seen = 1
-        if (value != "" && value !~ /^<.*>$/) q_answered = 1
-        next
-      }
-      section == "q" && ans_seen && $0 !~ /^\*?\*?(Blocks|Kind|Depends on):/ && $0 !~ /^<.*>$/ {
-        q_answered = 1
-      }
-      END { finish_q(); print open + 0, fog + 0 }
-    ' "$map")"
-    local open fog
-    read -r open fog <<< "$map_state"
-    if [ "$open" -eq 0 ] && [ "$fog" -eq 1 ]; then
-      warn "map $(basename "$map"): Status working but no open questions and fog remains; consider promoting or closing"
-      bump "$p_var"
-    fi
-  done
 }
 
 check_managed_file() {
@@ -1170,7 +848,7 @@ prune_stale_files() {
   done
   # Framework files the toolkit no longer ships (thinking.md since 2.5).
   local f target
-  for f in $RETIRED_FRAMEWORK $MANAGED_FRAMEWORK; do
+  for f in $RETIRED_FRAMEWORK; do
     [ -f "$KIT/templates/project/.workflow/$f" ] && continue
     target="$root/.workflow/$f"
     marker="$root/.workflow/.${f%.md}.workflow-managed"
@@ -1278,8 +956,7 @@ cmd_update() {
     fi
   fi
   say ""
-  say "Your own files (standards, glossary, decisions, specs, tasks) were not touched."
-  say "Skills, agents, and rulebooks you edited yourself were skipped; run 'workflow init --force' to replace them."
+  say "Your own files (standards, glossary, decisions, technical-debt, specs, tasks) were not touched."
 }
 
 # Doctor reports what is installed. Task and decision checks are not
@@ -1470,57 +1147,16 @@ cmd_doctor() {
       "$(kit_file "$KIT/$f")" || problems=$((problems + 1))
   done
 
-  # Framework files are checksum-managed; technical-debt.md is user data and
-  # only has to exist.
-  for f in $MANAGED_FRAMEWORK; do
-    if [ "$VENDORED" = 1 ] || [ -f "$KIT/templates/project/.workflow/$f" ]; then
-      check_managed_file ".workflow/$f" "$root/.workflow/$f" "$root/.workflow/.${f%.md}.workflow-managed" \
-        "$(kit_file "$KIT/templates/project/.workflow/$f")" || problems=$((problems + 1))
-    fi
-  done
-
-  if [ ! -f "$root/.workflow/technical-debt.md" ]; then
-    warn ".workflow/technical-debt.md missing"
-    problems=$((problems + 1))
-  fi
-
-  for f in standards.md glossary.md decisions.md; do
+  for f in standards.md glossary.md decisions.md technical-debt.md; do
     [ -f "$root/.workflow/$f" ] || { warn ".workflow/$f missing"; problems=$((problems + 1)); }
   done
-
-  if [ -f "$root/.workflow/standards.md" ] && grep -qE '<[a-z][a-z ]*>' "$root/.workflow/standards.md"; then
+  if [ -f "$root/.workflow/standards.md" ] && grep -qE "$RE_STANDARDS_PLACEHOLDER" "$root/.workflow/standards.md"; then
     warn "standards.md still contains unfilled placeholders"
     problems=$((problems + 1))
   fi
 
-  if [ -f "$root/.workflow/glossary.md" ]; then
-    check_glossary "$root/.workflow/glossary.md" problems
-  fi
-  check_maps "$root" problems
   if [ -d "$root/.workflow" ]; then
     run_validate_for_doctor "$root" problems
-  fi
-
-  if [ -d "$root/.workflow/tasks" ]; then
-    local tf rel active=0 drafts=0 flat=0
-    while IFS= read -r tf; do
-      [[ "${tf##*/}" =~ $RE_TASK_FILE ]] || continue
-      active=$((active + 1))
-      rel="${tf#"$root/.workflow/tasks/"}"
-      case "$rel" in */*) ;; *) flat=$((flat + 1)) ;; esac
-      # Started means flow-implement pinned a real Base commit or wrote Started;
-      # everything else (placeholder, no Base commit yet) is still a draft.
-      if ! base_commit_ok "$root" "$(task_field "$tf" "base commit")" &&
-         [ -z "$(task_field "$tf" started)" ]; then
-        drafts=$((drafts + 1))
-      fi
-    done < <(find "$root/.workflow/tasks" \( -type f -o -type l \) -name '*.md' 2>/dev/null | LC_ALL=C sort)
-    if [ "$active" -gt 0 ]; then
-      say "Tasks: $active active ($drafts draft, $((active - drafts)) started)"
-    fi
-    if [ "$flat" -gt 0 ]; then
-      skip "$flat task(s) in the flat layout; tasks/<effort>/<NN>-<slug>.md is the convention (git mv to move them)"
-    fi
   fi
 
   local hook; hook="$(hook_path "$root" 2>/dev/null || true)"
@@ -1687,16 +1323,19 @@ cmd_uninstall() {
   rmdir "$root/.claude/skills" 2>/dev/null || true
   rmdir "$root/.claude" 2>/dev/null || true
 
-  # Rulebooks: remove if unedited, keep if edited. Clean single marker either way.
-  for f in CONVENTIONS.md STYLE.md; do
+  # Rulebooks and retired managed framework guides: remove if unedited, keep if edited.
+  for f in CONVENTIONS.md STYLE.md $RETIRED_FRAMEWORK; do
     local target="$root/.workflow/$f"
     local marker="$root/.workflow/.${f%.md}.workflow-managed"
-    local src="$KIT/$f"
+    [ -e "$target" ] || [ -e "$marker" ] || continue
+    local src=""
+    [ -f "$KIT/$f" ] && src="$KIT/$f"
+    [ -z "$src" ] && [ -f "$KIT/templates/project/.workflow/$f" ] && src="$KIT/templates/project/.workflow/$f"
     if [ -f "$marker" ] && managed_ok "$target" "$marker" "$src"; then
       rm -f "$target" "$marker"
       ok "removed .workflow/$f"
       removed=$((removed + 1))
-    elif [ ! -f "$marker" ] && [ -f "$target" ] && cmp -s "$target" "$src"; then
+    elif [ ! -f "$marker" ] && [ -f "$target" ] && [ -n "$src" ] && cmp -s "$target" "$src"; then
       rm -f "$target"
       ok "removed .workflow/$f"
       removed=$((removed + 1))
@@ -1707,7 +1346,6 @@ cmd_uninstall() {
       fi
     fi
   done
-
   if [ -f "$root/.workflow/.workflow-version" ]; then
     rm "$root/.workflow/.workflow-version"
     ok "removed .workflow/.workflow-version"
@@ -1733,7 +1371,7 @@ cmd_uninstall() {
   say ""
   say "Removed $removed file(s)."
   say "Your own files are untouched: .workflow/standards.md, glossary.md,"
-  say "decisions.md, specs/, tasks/, maps/ and done/."
+  say "decisions.md, technical-debt.md, specs/, tasks/, maps/ and done/."
   if [ -d "$root/.workflow" ] && [ -z "$(ls -A "$root/.workflow")" ]; then
     rmdir "$root/.workflow"
   fi
@@ -1909,12 +1547,10 @@ Anywhere, including the project's own copy, .workflow/bin/workflow:
                                pre-commit hook that blocks on validate errors
   workflow validate [--strict] [--format text|json]
                                check task files and the decision log
-  workflow next [--effort SLUG] [--all] [--format text|json]
+  workflow next [--effort SLUG] [--all] [--brief] [--format text|json]
                                ready tasks by priority, then paused and blocked
-  workflow pulse [--effort SLUG] [--quiet-idle] [--format text|json]
-                               anti-drift queue snapshot for long autonomous runs
   workflow version             print the version
-Commands support --help. validate, next and pulse need python3 (3.8+).
+Commands support --help. validate and next need python3 (3.8+).
 
 Installs into the nearest git repository above the current directory, or the
 current directory if there is no git repository. Nothing is written outside that
@@ -1941,8 +1577,12 @@ run_core() {
   exec python3 "$core" "$@"
 }
 
-# Commands removed in 2.5: say what to do instead, exit 2.
+# Removed commands: say what to do instead, exit 2.
 removed_command() {
+  if [ "$1" = "pulse" ]; then
+    printf "workflow pulse was removed: run 'workflow next --brief'\n" >&2
+    exit 2
+  fi
   local hint
   case "$1" in
     tasks) hint="run 'workflow next', or read .workflow/tasks/*/ directly" ;;
@@ -1965,7 +1605,7 @@ case "${1:-}" in
   hook) shift; cmd_hook "$@" ;;
   version|--version|-v) printf '%s\n' "$VERSION" ;;
   ""|-h|--help|help) usage ;;
-  validate|next|pulse) run_core "$@" ;;
-  tasks|deps|decisions|effort|debt|hotfix-review) removed_command "$1" ;;
+  validate|next) run_core "$@" ;;
+  pulse|tasks|deps|decisions|effort|debt|hotfix-review) removed_command "$1" ;;
   *) die "unknown command: $1 (try 'workflow help')" ;;
 esac

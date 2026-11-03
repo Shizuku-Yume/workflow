@@ -1,25 +1,21 @@
 ---
 name: flow-spec
 description: >-
-  Turn settled conversation into a spec document. No interview. Use after design
-  discussion or when user says "write the spec", "document the decision".
+  Write a short technical spec from settled decisions for multi-task work. Run
+  flow-grill first if core flows or trade-offs are still open.
 ---
 
 # Flow: Spec
 
-Read CONVENTIONS §0, §2, §3, §5 and §6, plus `.workflow/STYLE.md`. Clear 1–3 task work
-with no durable spec skips this step and goes straight to `flow-break`.
+For multi-task or architecturally open work. Clear 1–3 task work goes straight to `flow-break`.
 
-Write `.workflow/specs/<effort>.md` from the settled conversation and existing decisions;
-do not re-interview. Keep genuinely unresolved items under Open questions and continue.
-The spec is a clean launch document, not a defense transcript (STYLE.md).
+## 1. Confirm scope is settled
 
-## Before writing
+Core user flows, failure handling, and non-goals must be decided. If real trade-offs remain, run a short `flow-grill` round instead of inventing answers. Reuse `.workflow/decisions.md` and `.workflow/glossary.md`.
 
-Collect settled choices from the conversation and `.workflow/decisions.md`; read the code
-and relevant glossary terms. Cite relied-on decisions as `decisions.md: <date> - <title>`.
+## 2. Write `.workflow/specs/<effort>.md`
 
-## Spec template
+Omit sections like `What it must not do`, `What was considered and rejected`, and `Open questions` when empty—never pad a spec with `None` or `TBD`:
 
 ```markdown
 # <Title>
@@ -28,49 +24,30 @@ and relevant glossary terms. Cite relied-on decisions as `decisions.md: <date> -
 **Priority:** normal
 
 ## What this is for
-Standalone user problem and what happens if it remains unsolved.
+The user problem and why it matters.
 
 ## What it does
-Observable user-facing behavior, concrete enough to demonstrate.
+Concrete, observable behavior.
 
 ## How it is built
-Modules, boundaries, data shapes, interfaces, and failure behavior; explain
-responsibilities without prescribing function-by-function implementation.
+Modules, boundaries, data shapes, interfaces, and failure handling. No line-by-line code.
 
 ## What it must not do
-Plausible assumptions that are out of scope, with reasons.
+Out-of-scope items, with short reasons.
 
 ## What was considered and rejected
-- **<Option>.** Strongest case, then the constraint that ruled it out.
+- **<Option>.** The strongest case for it, and why it lost here.
 
 ## How we will know it works
-- **W1.** <runnable check and observable passing result>
-- **W2.** <runnable check and observable passing result>
+- **W1.** <command or action, and the passing result>
+- **W2.** <command or action, and the passing result>
 
 ## Open questions
-Unresolved choices and who or what settles them; omit when empty.
-
-## Notes
-Useful links or context; omit when empty.
+Remaining choices and how they will be settled.
 ```
 
-## Rules
+At least one `W` check runs the real user entry point end to end. Keep `W` IDs stable.
 
-- Make the problem standalone and behavior observable. Keep the spec about outcomes and
-  boundaries, not implementation trivia; use numbers where they materially clarify scope.
-- Define stable, runnable `W`-ID checks with observable pass signals. At least one must
-  exercise the main user path end to end through the real entry point and real dependencies;
-  name any remaining stand-in. Tasks cite covered IDs; `flow-close` checks the whole effort.
-- Include only real rejected alternatives and unresolved questions. No `TBD` or other
-  placeholders; delete empty sections and avoid duplicate or contradictory facts.
-- Update the spec in place when facts or decisions change. Once tasks exist, amend through
-  `flow-break` (CONVENTIONS §5); keep terminology aligned with the glossary.
-- `Priority` is optional (default `normal`); `Status` starts `proposed` and advances per
-  CONVENTIONS §6.
+## 3. Hand off
 
-## Finish
-
-If `flow-break` follows now, go straight to it; its review covers the spec and tasks.
-Otherwise report the path, decisions, and open questions or readiness; get approval and
-commit the spec and related planning records per CONVENTIONS §2. Material changes after
-approval need fresh approval.
+Get approval, then continue to `flow-break`; one confirmation can cover the spec and the task list. Later changes: edit the spec in place, and once tasks exist, also run `flow-break` amend.

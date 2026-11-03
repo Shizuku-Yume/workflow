@@ -2,54 +2,86 @@
 
 [English](README_EN.md) | 简体中文
 
-面向 AI 编程智能体（Coding Agents）与开发者的项目本地化工作流套件。
-
-通过将规范、技能（Skills）、文档结构与任务调度 CLI 直接注入目标 Git 仓库，使 Coding Agent 具备严谨的工程化规划、分解、实现、验证与复盘能力。
+面向 AI 编程智能体与开发者的轻量级项目工作流工具。通过 `workflow init` 将规则、技能（Skills）、文档模板与任务调度 CLI 直接写入目标 Git 仓库，减少日常开发中的沟通和上下文管理开销。
 
 ---
 
-## 核心特性
+## 设计要点
 
-- **项目本地化（Project-Local）**：所有规范、技能、模板与调度工具均拷贝并提交至仓库根目录（`.workflow/`、`.agents/`，以及可选的 `.claude/`）。任何克隆该仓库的协作者、CI 或云端智能体无需在全局环境安装依赖或配置 PATH，即可获得完全一致的工作流。
-- **事实与证据先于提问与推进动量（§0、§1）**：智能体在打扰用户前自主在代码库检索证据（现有模式、行为、接口与配置）；面对可逆选择主动选定合理默认值保持推进动量，仅当涉及用户决策所有权（目标、范围、高成本逆转的权衡）时才批量向用户提问。
-- **任务拓扑与分级路由（§5）**：目标清晰的 1–3 项任务直接进入 `flow-break` 拆解任务文件，无需编写 Spec 和走 close 仪式；多任务或架构未定的复杂工作通过 `flow-spec` 确立规约并在收尾时运行 `flow-close`。就绪任务通过 `workflow next` 按优先级与依赖拓扑输出。
-- **严格的可观测验证（§2.1、§8）**：所有任务均要求具备明确的验证命令（`Check`）。功能与 Bugfix 必须在修改前复现或确认失败、修改后通过验证，严禁无证据交付。针对 fixture 或 mock 的检查只证明替身本身；依赖真实服务的行为要对真实服务检查。
-- **真实路径验收（§6）**：`flow-close` 在将要交付的构建上重跑全部 spec 检查，并像用户一样走一遍主流程。只有用户明确同意后 Effort 才算完成，并在复盘中记录 `**Accepted:**`。
-- **反过度防御与比例原则（§10）**：界定方案与修复范围，不压制缺陷发现。支持场景下可触发的真实缺陷据实汇报；杜绝无收益的哈希校验、脱离实际的极端防御、评分表与反复审计循环、未要求的兼容封装与配置开关，并在交付物中剔除试错痕迹与 AI 标记（`STYLE.md`）。
-- **并行与集成分支（§9）**：并行任务各用独立 worktree。`flow-implement <effort>` 提供整组 Effort 的波次 DAG 协调，按文件重叠排队分派任务并即时回收成果。不能逐个落地的 Effort 在 spec 中声明集成分支，任务先落到集成分支，收尾时整体落地到 main。把任务委派给子代理时，验证责任仍属于归档该任务的会话。
-- **不可逆决策日志（Decisions Log）**：重大技术决策在 `.workflow/decisions.md` 中以结构化要素（`Decided`, `Instead of`, `Because`, `Mine`, `Revisit when`）追加记录。通过 Git union merge 属性杜绝多分支合并冲突。
-- **双重视角独立审查（§7）**：内置 `workflow-reviewer` 审查智能体，分别从交付规范一致性与代码实现质量两个独立维度进行把关；触及信任边界时另有 `security-reviewer` 复核边界闭包；局部叶子任务支持合并为单次快速审查。同轮审查意见集中修复并复核受影响检查；未引入新文件或边界扩展的同范围修复跳过冗余复审。
+- **随仓库提交**：规则、技能与 CLI 保存在仓库内（`.workflow/`、`.agents/` 及可选的 `.claude/`），克隆即可使用，无需全局配置。
+- **先查代码再提问**：提问前先查代码、配置与提交历史；可逆细节选合理默认值，只把方向性决定或高成本取舍交给用户。
+- **真实路径验证**：每个任务附带可执行的 `Check` 验证命令。修复 Bug 先复现失败，交付前在真实 CLI 或服务入口跑通验证。
+- **克制实现**：优先复用现有代码与标准库；处理真实可达的问题，不写臆想场景的防御逻辑、空封装或未要求的兼容开关。
+- **独立上下文审查**：由独立上下文的 `workflow-reviewer` 检查需求落实与代码质量；涉及鉴权、外部输入等安全边界时运行 `security-reviewer`。
+- **并行隔离与决策留痕**：`workflow next` 调度任务并提示文件冲突；并行任务在独立 Git worktree 中执行；难以回退的技术决定记入 `.workflow/decisions.md`，项目术语维护在 `glossary.md`。
+
+---
+
+## 日常怎么用
+
+按改动规模与确定性选择最短路径，不需要每次走完完整流程：
+
+1. **小改动 / 普通 Bug**：直接改代码 → 跑测试和真实入口验证 → 提交。不建任务卡，不走审查流程。
+2. **明确的 1–3 个任务**：`flow-break` 拆任务卡 → `flow-implement` 完成并归档。不写 Spec，不走 `flow-close`。
+3. **多任务复杂功能 / 涉及接口或数据结构变更**：`flow-spec` → `flow-break` → `flow-implement` → `flow-close`。
+
+**需求或方案未定时**（无论规模大小），先运行 `flow-grill` 理清取舍，再进入上面对应的路径；需要跨会话摸索的未知问题记入 `maps/<slug>.md`，`workflow next` 会持续提示。
+
+---
+
+## 9 个工作流技能（Skills）
+
+日常开发大部分时候只用到 2–4 个技能。技能分为**日常主流程**与**按需辅助**两类：
+
+### 日常主流程技能
+
+| 技能 | 适用场景 | 作用 |
+| :--- | :--- | :--- |
+| `flow-start` | 新开会话 / 恢复工作 / 不确定下一步干什么 | 读取项目标准与任务队列，给出下一步建议或推进任务。 |
+| `flow-grill` | 需求未定 / 新功能起步 | 查清代码现状与需求取舍。方案明确后转入 `flow-spec` 或 `flow-break`；需跨会话摸索的记入 `maps/<slug>.md`。 |
+| `flow-spec` | 方案未定 / 多任务复杂功能 | 将确认的设计整理为精简技术方案（`specs/<effort>.md`）；1–3 个明确任务直接跳过。 |
+| `flow-break` | 拆解可执行任务卡 | 把技术方案或明确需求拆为带依赖（`Blocked by`）和验证命令（`Check`）的任务卡片。 |
+| `flow-implement` | 执行单个任务或整组任务 | 完成单个任务或整组任务的编码、验证、审查与归档；传入 `<effort>` 时按依赖波次调度。 |
+| `flow-verify` | 合并前代码审查 | 启动独立上下文的 `workflow-reviewer` 审查需求落实与代码质量，按需触发安全审查。 |
+
+### 按需辅助技能
+
+| 技能 | 适用场景 | 作用 |
+| :--- | :--- | :--- |
+| `flow-close` | 技术方案（Spec）整组收尾验收 | 在真实交付构建上跑通 Spec 检查与主流程，经用户确认后记录验收结论并归档。 |
+| `flow-retro` | 会话卡壳 / 协作摩擦复盘 | 复盘会话卡壳与协作摩擦，提炼为自动化检查、规则精简或配置补充（需用户同意）。 |
+| `flow-architect` | 改动阻力大 / 排查技术债 | 排查高频修改模块中的冗余、死代码与过度封装，整理并跟踪可执行清理项。 |
 
 ---
 
 ## 安装与初始化
 
-### 1. 全局安装 CLI
+### 1. 安装 CLI
 
-推荐使用 npm 全局安装：
+通过 npm 全局安装：
 
 ```bash
 npm install --global @shizuku-yume/workflow
 ```
 
-或克隆本仓库后使用源码路径 `bin/workflow`。
+或克隆本仓库后直接调用 `bin/workflow`。
 
-### 2. 初始化项目
+### 2. 初始化目标项目
 
-进入需要应用工作流的 Git 仓库根目录，运行：
+在目标 Git 仓库根目录运行：
 
 ```bash
 workflow init
 ```
 
-常用选项：
-- `--claude`：强制安装 Claude Code 适配层（写入 `.claude/skills/`、`.claude/agents/` 并创建导入配置的 `CLAUDE.md`）。若项目中已存在 `CLAUDE.md` 或 `.claude/` 目录，则默认开启。
-- `--no-claude`：仅安装标准 `.agents/` 目录与 `AGENTS.md`。
-- `--force`：覆盖已修改的受管模板文件。
+常用参数：
+- `--claude`：同时生成 Claude Code 适配目录（`.claude/` 与 `CLAUDE.md`；仓库已有相关文件时自动开启）。
+- `--no-claude`：仅生成通用 `.agents/` 与 `AGENTS.md`。
+- `--force`：强制覆盖本地修改过的受管模板文件。
 
-### 3. 安装 Pre-commit 检查钩子（可选）
+### 3. 安装提交前校验钩子（可选）
 
-为防止格式错误或依赖断裂的任务文件被意外提交：
+提交前自动检查任务卡片格式与依赖关系：
 
 ```bash
 workflow hook install
@@ -57,94 +89,68 @@ workflow hook install
 
 ---
 
-## 技能全景 (Skills)
-
-套件提供 9 个标准技能，分别应对开发流程的不同阶段（按 §5 路由）：
-
-| 技能 | 适用场景 | 说明 |
-| :--- | :--- | :--- |
-| `flow-start` | 会话开始 / 上下文丢失 / 恢复工作 | 加载项目标准与规范，对请求分流（日常问答、小型任务或复杂规划）。 |
-| `flow-grill` | 需求模糊 / 设计方案待定 | 澄清需求并推导细节，按分类筛选问题，批量向用户提问并记录架构决策。 |
-| `flow-map` | 目标迷茫 / 跨多个会话的复杂探索 | 为具有大片未知区域（Fog）的项目绘制开放性探索地图与问题依赖。 |
-| `flow-spec` | 方案已定 / 复杂工作需要规约 | 将多任务或架构未定的方案整理为格式化技术规约（`.workflow/specs/<effort>.md`）；清晰的 1–3 项任务跳过此步。 |
-| `flow-break` | 规约或小范围工作需拆解任务 | 将 Spec 或清晰的 1–3 项工作拆解为带有依赖项（`Blocked by`）和验证命令（`Check`）的任务文件。 |
-| `flow-implement` | 执行具体任务或整组 Effort 编排 | 端到端完成单项任务（排查脏文件、代码实现、验证与归档）；支持传入 `<effort>` 执行整组任务的波次 DAG 编排与并行分派。 |
-| `flow-verify` | 代码审查 / 提交前验收 | 调用 `workflow-reviewer` 代理，对完成的代码和交付过程进行双重审查；局部叶子任务支持单次合并审查快道。 |
-| `flow-close` | 带规约 Effort 的任务均已合并 | 对照 Spec 进行全量验收与功能演示，撰写复盘文档并标记 Spec 完成（无 Spec 工作随最后一项任务合入结束）。 |
-| `flow-architect` | 代码库存在技术债 / 变更阻力大 | 审计代码异味、重复逻辑、冗余封装与脆弱模块，记录技术债务。 |
-
----
-
 ## CLI 命令速查
 
-可在安装了全局 CLI 的环境下运行 `workflow <command>`，或在已初始化的项目内直接调用提交的 `.workflow/bin/workflow <command>`。
+可在全局运行 `workflow <command>`，也可直接运行项目内的 `.workflow/bin/workflow <command>`。
 
-### 日常调度与校验
+### 日常调度与检查
 
-- `workflow next [--effort SLUG] [--all] [--format text|json]`
-  分析当前任务依赖拓扑，按优先级输出最多 5 个可立即执行的就绪任务（`--all` 输出全部就绪任务，`--effort` 限定 Effort 范围），展示暂停中（paused）与阻塞（blocked）任务，并检测就绪任务间的共享文件冲突（`file_overlaps`）。不在 main 上时会说明读取的分支和 main 领先的提交数；列出已在 main 落地但本树仍未归档的任务，把在其他分支集成的 Effort 显示为一行，并指出被多个分支认领的任务。
-- `workflow pulse [--effort SLUG] [--quiet-idle] [--format text|json]`
-  长时间自主运行时的紧凑队列快照与防漂移执行提醒，展示活跃、就绪与阻塞任务状态（支持 `--effort` 限定范围，`--quiet-idle` 在无活跃任务时保持静默）。
+- `workflow next [--effort SLUG] [--all] [--brief] [--format text|json]`
+  按优先级列出可开工任务、进行中/暂停/阻塞任务，并提示共用文件冲突；`--brief` 输出精简简报，空闲时不输出。
 - `workflow validate [--strict] [--format text|json]`
-  静态校验所有任务文件（`tasks/` 与 `done/`）、Spec（`specs/`）和决策记录（`decisions.md`）的语法与依赖完整性。正在归档的任务必须勾完所有清单项并记录 `Check after:`；Spec 在仍有未完成任务、或未记录用户验收时不能标记为 done。
+  检查 `tasks/`、`done/`、`specs/` 与 `decisions.md` 的字段格式和依赖完整性。
 - `workflow doctor`
-  全面诊断工作流安装健康状况，检查受管文件完整性、软链接安全、AGENTS 标记配对、术语表格式及任务依赖死锁。当前分支的工作流版本与 main 不一致、或上次 update 未提交时给出警告。
+  检查工作流文件是否齐全、分支版本是否同步，并运行 `validate`。
 - `workflow hook install|uninstall|status [--force|--append]`
-  管理 Git pre-commit 钩子，拦截存在校验错误的代码提交（`--append` 可向项目已有的钩子追加校验块）。
+  管理 Git `pre-commit` 自动校验钩子。
 - `workflow version`
-  显示当前工作流工具版本号。
+  查看版本号。
 
-### 项目维护命令
+### 安装与维护
 
-- `workflow init [--force] [--claude|--no-claude]`
-  将工作流骨架、规则文档与 CLI 复制到当前项目。
-- `workflow update [--force] [--claude|--no-claude]`
-  在工具链版本升级后，重新同步受管技能、规则模板及项目内 CLI，保留用户自定义内容。结果需提交到 main：其他分支和 worktree 合并 main 之前仍使用旧规则。
-- `workflow uninstall`
-  安全清理项目内的工作流受管文件，不损伤用户的业务代码与未清理的项目文档。
+- `workflow init [--force] [--claude|--no-claude]`：在当前项目安装工作流文件与 CLI。
+- `workflow update [--force] [--claude|--no-claude]`：升级受管技能、规则与 CLI，保留本地改写过的内容。
+- `workflow uninstall`：移除未改动的受管工作流文件，保留项目自身配置、任务与决策记录。
 
 ---
 
-## 项目目录结构
+## 目录结构
 
-在项目内运行 `workflow init` 后生成的布局如下（详见 §2）：
+执行 `workflow init` 后的目录结构：
 
 ```
-AGENTS.md                          # Agent 规则总入口（workflow 标记块）
+AGENTS.md                        # Agent 入口规则（带 workflow 标记块）
 .agents/
-  skills/<name>/SKILL.md           # 9 个工作流技能实现步骤
-  agents/workflow-reviewer.md      # 代码与规范审查 Agent Brief
-  agents/security-reviewer.md      # 信任边界安全复核 Agent Brief
+  skills/<name>/SKILL.md         # 9 个工作流技能步骤
+  agents/workflow-reviewer.md    # 需求与代码质量审查规则
+  agents/security-reviewer.md    # 安全边界审查规则
 .workflow/
-  bin/workflow                     # 随项目提交的 CLI 入口（Bash 实现）
-  bin/workflow-core.py             # 随项目提交的验证与队列引擎（Python 3 标准库）
-  CONVENTIONS.md                   # 全套工作流规范守则
-  STYLE.md                         # 交流与产出文本风格指引
-  standards.md                     # 项目专用配置（构建/测试命令、代码布局、合入策略）
-  glossary.md                      # 业务领域词汇表（Git union merge）
-  decisions.md                     # 架构决策日志（Git union merge）
-  technical-debt.md                # 架构设计与技术债务清单
-  merge-strategy.md                # 分支、工作树与合入策略
-  phase-boundaries.md              # 智能体上下文切换与阶段控制
-  spike-tasks.md                   # 探索性任务指南
-  specs/<effort>.md                # 具体 Effort 的规约文档
-  tasks/<effort>/<NN>-<slug>.md    # 待执行任务卡片
-  maps/<slug>.md                   # 迷茫区域长期探索地图
-  done/<effort>/                   # 已完结任务与复盘报告归档
+  bin/workflow                   # 随仓库提交的 CLI（Bash）
+  bin/workflow-core.py           # 校验与任务队列脚本（Python 3 标准库）
+  CONVENTIONS.md                 # 工作流通用规则
+  STYLE.md                       # 表达与汇报风格规则
+  standards.md                   # 项目命令、目录说明与分支合入方式
+  glossary.md                    # 项目术语表（Git union merge）
+  decisions.md                   # 架构与技术决策记录（Git union merge）
+  technical-debt.md              # 待清理技术债记录
+  specs/<effort>.md              # 多任务功能的技术方案（Spec）
+  tasks/<effort>/<NN>-<slug>.md  # 待完成任务卡片
+  maps/<slug>.md                 # 跨会话未决问题记录（由 flow-grill 写入）
+  done/<effort>/                 # 已归档任务与验收记录
 ```
 
 ---
 
 ## 环境要求
 
-- **操作系统**：POSIX 兼容环境（Linux / macOS）。
-- **Shell**：Bash 3.2+（兼容 macOS 默认 Bash）。
-- **Python**：Python 3.8+（仅需标准库，用于 `validate` 与 `next`）。
-- **Git**：用于版本管理及路径解析。
-- **Node.js**（可选）：Node.js 14+（仅使用全局 npm 安装分发包时需要）。
+- **系统**：Linux / macOS（POSIX 环境）
+- **Shell**：Bash 3.2+（兼容 macOS 自带 Bash）
+- **Python**：Python 3.8+（仅用标准库，供 `validate` 与 `next` 使用）
+- **Git**：版本控制与分支状态读取
+- **Node.js**（可选）：Node.js 14+（仅通过 npm 全局安装时需要）
 
 ---
 
 ## 许可证
 
-本项目依据 MIT 许可证开源。
+MIT

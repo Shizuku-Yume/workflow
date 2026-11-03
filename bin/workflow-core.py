@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""workflow-core.py - `validate`, `next` and `pulse` for the workflow toolkit.
+"""workflow-core.py - `validate` and `next` for the workflow toolkit.
 
-Called by bin/workflow as `python3 workflow-core.py validate|next|pulse ...`.
+Called by bin/workflow as `python3 workflow-core.py validate|next ...`.
 Python 3.8+, standard library only. Reads task files under .workflow/tasks/
 and .workflow/done/, specs under .workflow/specs/, and .workflow/decisions.md.
 
@@ -10,8 +10,8 @@ bulleted (`- Name: value`) or bolded (`**Name:** value`); fenced code blocks
 and HTML comments are ignored; indented or bulleted lines continue the
 previous field (`Blocked by` joins with ", ", other fields with a space);
 blank lines, headings, checklists and new fields end a continuation.
-`## Goal` and `## Check` headings start sections whose lines join the same
-way. The first occurrence of a field wins; later ones are duplicates.
+`## Check` starts a section whose lines join the same way. The first
+occurrence of a field wins; later ones are duplicates.
 """
 
 import json
@@ -20,22 +20,20 @@ import re
 import subprocess
 import sys
 
-VERSION = "2.8.0"
+VERSION = "2.9.0"
 
 KNOWN_FIELDS = {
     "task", "effort", "task type", "base commit", "base branch", "delivers", "blocked by",
-    "files", "read first", "check", "covers", "done when", "priority", "status",
-    "started", "finished", "question", "time box", "goal", "scope", "spec",
-    "dependencies", "notes", "integration branch",
+    "files", "read first", "check", "covers", "question", "time box", "priority",
+    "status", "integration branch",
 }
-FIELD_ALIASES = {"base": "base commit", "type": "task type"}
 TASK_TYPES = ("feature", "bugfix", "spike", "refactor")
-PRIORITY_RANK = {"critical": 0, "urgent": 0, "high": 1, "normal": 2, "low": 3}
+PRIORITY_RANK = {"critical": 0, "high": 1, "normal": 2, "low": 3}
 SPEC_STATUSES = ("proposed", "in progress", "done")
 TASK_STATUSES = ("active", "paused", "blocked")
 FINISHED_STATUSES = ("done", "completed", "archived")
-DECISION_FIELDS = ("Decided", "Instead of", "Because", "Mine", "Revisit when")
-
+DECISION_REQUIRED_FIELDS = ("Decided", "Instead of", "Because")
+DECISION_FIELDS = ("Decided", "Instead of", "Because", "Decided by", "Revisit when")
 SLUG_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 TASK_FILE_RE = re.compile(r"^([0-9]+)-.+\.md$")
 FENCE_RE = re.compile(r"^\s*(```|~~~)")
@@ -51,7 +49,7 @@ BARE_REF_RE = re.compile(r"^([0-9]+)$")
 SPEC_CHECK_RE = re.compile(r"^[-*]\s+\*\*([A-Za-z][A-Za-z0-9_-]*[0-9])\.\*\*")
 UNTICKED_RE = re.compile(r"^[-*]\s+\[ \]\s*(.*)$")
 ACCEPTED_RE = re.compile(r"^\s*(?:[-*]\s+)?(?:\*\*)?Accepted:(?:\*\*)?\s*\S")
-REOPENED_RE = re.compile(r"^\s*##\s+Reopened\s*:?\s*$", re.IGNORECASE)
+REOPENED_RE = re.compile(r"^\s*##\s+Reopened(?:\b.*)?$", re.IGNORECASE)
 
 
 # ---------------------------------------------------------------- helpers
@@ -228,7 +226,7 @@ def read_fields(path, lines=None):
                 heading = heading[:-1]
             heading = heading.strip()
             current = kind = None
-            if heading in ("goal", "check"):
+            if heading == "check":
                 current, kind, section_content = heading, "section", False
             continue
         if line.startswith("#") or CHECKLIST_RE.match(line):
@@ -243,7 +241,7 @@ def read_fields(path, lines=None):
             key = m.group(1).lower()
             if key.endswith(":"):
                 key = key[:-1]
-            key = FIELD_ALIASES.get(key.strip(), key.strip())
+            key = key.strip()
             if key in KNOWN_FIELDS:
                 if key not in meta.line:
                     meta.field[key] = m.group(2).strip()
@@ -330,13 +328,14 @@ def usage_error(message, usage):
 REMOVED_FLAGS = {
     "--fix": "validate --fix was removed in 2.5: CRLF line endings are read like LF, so there is nothing to repair",
     "--interactive": "next --interactive was removed in 2.5: run 'workflow next' and start a task with flow-implement <effort>/<NN>",
+    "--quiet-idle": "pulse was replaced by 'workflow next --brief', which is silent when idle",
 }
 
 
 def parse_common(args, usage, allowed):
     """Parse shared CLI flags; returns (options, exit code or None)."""
     opts = {"format": "text", "no_color": False, "strict": False,
-            "all": False, "quiet_idle": False, "effort": None}
+            "all": False, "brief": False, "effort": None}
     i = 0
     while i < len(args):
         arg = args[i]
@@ -349,8 +348,8 @@ def parse_common(args, usage, allowed):
             opts["strict"] = True
         elif arg == "--all" and "all" in allowed:
             opts["all"] = True
-        elif arg == "--quiet-idle" and "quiet_idle" in allowed:
-            opts["quiet_idle"] = True
+        elif arg == "--brief" and "brief" in allowed:
+            opts["brief"] = True
         elif arg == "--effort" and "effort" in allowed:
             if i + 1 >= len(args) or not args[i + 1]:
                 return opts, usage_error("--effort requires an effort slug", "")
@@ -656,7 +655,7 @@ class Validator(object):
         commits, branches = {}, {}
         for path in self.files:
             value = self.meta[path].get("base commit").strip()
-            if value and value not in ("<commit-sha>", "not-started"):
+            if value and value != "<commit-sha>":
                 commits.setdefault(value, []).append(path)
             branch = self.meta[path].get("base branch").strip()
             if branch and not (branch.startswith("<") and branch.endswith(">")):
@@ -782,7 +781,7 @@ class Validator(object):
             self.issue("ERROR", path, meta.line.get("status", 1),
                        "specs/%s.md says done but %s is still open"
                        % (effort, task_ref(effort, number)),
-                       "Set the spec back to in progress (CONVENTIONS §6), or archive the task.")
+                       "Set the spec back to in progress (CONVENTIONS §4), or archive the task.")
 
     def check_spec_acceptance(self):
         """A spec that turns done in this change needs the user's acceptance on record.
@@ -800,16 +799,16 @@ class Validator(object):
             if ready and read_fields(path, split_text(text)).get("status").strip().lower() == "done":
                 continue
             required, accepted = 1, 0
-            retro = os.path.join(self.done_dir, effort, "retrospective.md")
-            if os.path.isfile(retro):
-                lines = read_lines(retro)
+            closeout = os.path.join(self.done_dir, effort, "closeout.md")
+            if os.path.isfile(closeout):
+                lines = read_lines(closeout)
                 required += sum(1 for line in lines if REOPENED_RE.match(line))
                 accepted = sum(1 for line in lines if ACCEPTED_RE.match(line))
             if accepted < required:
                 self.issue("ERROR", path, meta.line.get("status", 1),
                            "specs/%s.md is marked done without a recorded acceptance" % effort,
                            "flow-close records `**Accepted:** <date> by <name>` in "
-                           "done/%s/retrospective.md once the user accepts." % effort)
+                           "done/%s/closeout.md once the user accepts." % effort)
 
     def check_decisions(self):
         path = os.path.join(self.wf, "decisions.md")
@@ -826,8 +825,8 @@ ISO_TIME_RE = re.compile(r"^[0-9-]+T[0-9][0-9]:[0-9][0-9](:[0-9][0-9](\.[0-9]+)?
                          r"(Z|[+-][0-9][0-9]:[0-9][0-9])?$")
 DATE_RE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
 DECISION_HEADING_RE = re.compile(r"^[^ \t]+[ \t]+-[ \t]+[^ \t]")
-DECISION_OUTSIDE_RE = re.compile(r"^[ \t]*-[ \t]+\*\*(Decided|Instead of|Because|Mine|Revisit when):")
-MINE_RE = re.compile(r"^(yes|no)([ \t.(]|$)")
+DECISION_OUTSIDE_RE = re.compile(r"^[ \t]*-[ \t]+\*\*(Decided|Instead of|Because|Decided by|Revisit when):")
+DECIDED_BY_RE = re.compile(r"^(user|agent)([ \t.(]|$)")
 
 
 def valid_iso(value):
@@ -870,11 +869,13 @@ def decision_problems(lines):
     def finish():
         if not state["entry"]:
             return
-        for name in DECISION_FIELDS:
+        for name in DECISION_REQUIRED_FIELDS:
             if not state["values"].get(name):
                 problems.append((state["start"], "missing or empty decision field %s" % name,
                                  "Add - **%s:** meaningful content." % name))
-
+        if "Revisit when" in seen and not state["values"].get("Revisit when"):
+            problems.append((state["start"], "missing or empty decision field Revisit when",
+                             "Add - **Revisit when:** meaningful content, or omit the field."))
     in_comment = in_fence = entries = False
     seen = {}
     pending = ""
@@ -923,9 +924,9 @@ def decision_problems(lines):
             v = v.split(":", 1)[1].strip(" \t\r") if ":" in v else ""
             state["values"][key] = bool(v)
             pending = key
-            if key == "Mine" and not MINE_RE.match(v):
-                problems.append((number, "invalid Mine field",
-                                 "Use yes for agent decisions, no for user decisions."))
+            if key == "Decided by" and not DECIDED_BY_RE.match(v):
+                problems.append((number, "invalid Decided by field",
+                                 "Use user or agent."))
         elif pending and re.match(r"^[ \t]+[^ \t]", s):
             state["values"][pending] = True
         elif s.strip(" \t\r"):
@@ -974,7 +975,7 @@ def cmd_validate(args):
 
 NEXT_USAGE = """workflow next - suggest what to work on next
 
-Usage: workflow next [--effort SLUG] [--all] [--format text|json] [--no-color]
+Usage: workflow next [--effort SLUG] [--all] [--brief] [--format text|json] [--no-color]
 
 Shows the top five ready tasks (or all with --all): not started, and every blocker archived under
 .workflow/done/ ("Blocked by: None" also accepts "None, can start now"), with
@@ -999,6 +1000,7 @@ Status. Branches that all claim one task are named last.
 Options:
   --effort SLUG  Scope output to a single effort slug
   --all          Return all ready tasks instead of capping at five
+  --brief        Compact snapshot; print nothing when the queue is idle
   --format TYPE  Output text (default) or JSON
   --no-color     Disable terminal colors
   -h, --help     Show this help
@@ -1078,7 +1080,7 @@ def spec_check_ids(wf, effort):
     return found
 
 
-# A started task's file lives on its branch until it lands (merge-strategy.md), so
+# A started task's file lives on its branch until it lands (CONVENTIONS §7), so
 # `next` reads task branches to tell claimed, paused and blocked tasks from ready ones.
 TASK_BRANCH_RE = re.compile(r"^([a-z0-9]+(?:-[a-z0-9]+)*)/([0-9]+)-([^/]+)$")
 STARTED_ORDER = {"paused": 0, "blocked": 1, "active": 2, "landed": 3, "finished": 4}
@@ -1317,16 +1319,47 @@ def compute_file_overlaps(ready_tasks):
             for path, refs in sorted(overlaps.items(), key=lambda kv: (-len(kv[1]), kv[0]))]
 
 
+def open_maps(root, wf):
+    """[{"path": rel, "slug": slug, "title": title}] for active maps in .workflow/maps/."""
+    maps_dir = os.path.join(wf, "maps")
+    if not os.path.isdir(maps_dir):
+        return []
+    found = []
+    for name in sorted(os.listdir(maps_dir)):
+        if not name.endswith(".md"):
+            continue
+        path = os.path.join(maps_dir, name)
+        if not os.path.isfile(path):
+            continue
+        lines = read_lines(path)
+        if read_fields(path, lines).get("status", "").strip().lower() == "clear":
+            continue
+        slug = name[:-3]
+        title = slug
+        for _, line in visible_lines(lines):
+            text = line.strip()
+            if text.startswith("# ") and not text.startswith("## "):
+                heading = text[2:].strip()
+                if heading.lower().startswith("map:"):
+                    heading = heading[4:].strip()
+                if heading:
+                    title = heading
+                break
+        rel = os.path.relpath(path, root).replace(os.sep, "/")
+        found.append({"path": rel, "slug": slug, "title": title})
+    return found
+
+
 def collect_queue(root, wf, target_effort=None):
     """Gather queue state across the working tree and git branches."""
     tasks_dir, done_dir = os.path.join(wf, "tasks"), os.path.join(wf, "done")
     tree = tree_info(root)
+    maps = [] if target_effort else open_maps(root, wf)
     if not os.path.isdir(tasks_dir):
-        return {"missing_tasks_dir": True, "tree": tree, "ready": [], "started": [],
-                "stackable": [], "block_tasks": {}, "block_numbers": {}, "blockers": [],
-                "task_count": 0, "blocked_count": 0, "waiting": 0, "integrating": [],
-                "duplicates": [], "overlaps": []}
-
+        return {"missing_tasks_dir": True, "tree": tree, "open_maps": maps, "ready": [],
+                "started": [], "stackable": [], "block_tasks": {}, "block_numbers": {},
+                "blockers": [], "task_count": 0, "blocked_count": 0, "waiting": 0,
+                "integrating": [], "duplicates": [], "overlaps": []}
     # Blockers archived under done/ are finished and never block.
     archived = set()
     for path in task_files(done_dir):
@@ -1511,15 +1544,14 @@ def collect_queue(root, wf, target_effort=None):
                   if len(names) >= 2 and ref in open_refs]
     duplicates.sort(key=lambda item: (-len(item[1]), item[0]))
     overlaps = compute_file_overlaps([item[4] for item in ready])
-    return {"missing_tasks_dir": False, "tree": tree, "ready": ready, "started": started,
-            "stackable": stackable, "block_tasks": block_tasks, "block_numbers": block_numbers,
-            "blockers": blockers, "task_count": task_count, "blocked_count": blocked_count,
-            "waiting": waiting, "integrating": integrating, "duplicates": duplicates,
-            "overlaps": overlaps}
-
+    return {"missing_tasks_dir": False, "tree": tree, "open_maps": maps, "ready": ready,
+            "started": started, "stackable": stackable, "block_tasks": block_tasks,
+            "block_numbers": block_numbers, "blockers": blockers, "task_count": task_count,
+            "blocked_count": blocked_count, "waiting": waiting, "integrating": integrating,
+            "duplicates": duplicates, "overlaps": overlaps}
 
 def cmd_next(args):
-    opts, code = parse_common(args, NEXT_USAGE, ("all", "effort"))
+    opts, code = parse_common(args, NEXT_USAGE, ("all", "brief", "effort"))
     if code is not None:
         return code
     root = project_root()
@@ -1531,14 +1563,47 @@ def cmd_next(args):
     state = collect_queue(root, wf, opts["effort"])
     tree = state["tree"]
     header = tree_header(tree)
+    maps = state["open_maps"]
+    if opts["brief"] and not as_json:
+        handoff = os.path.isfile(os.path.join(wf, "HANDOFF.md"))
+        active_work = bool(handoff or maps or state["started"] or state["ready"]
+                           or state["waiting"] or state["integrating"])
+        if not active_work:
+            return 0
+        lines = [header]
+        if handoff:
+            lines.append("Handoff: .workflow/HANDOFF.md present — read it and delete once absorbed.\n")
+        if maps:
+            lines.append("Maps: %s (continue with flow-grill)\n" % ", ".join(m["path"] for m in maps))
+        if state["started"]:
+            lines.append("Started: %s\n" % ", ".join(
+                "%s [%s%s]" % (item[2], item[4], " @" + item[5] if item[5] else "")
+                for item in state["started"]))
+        if state["ready"]:
+            ready_refs = [item[3] for item in state["ready"]]
+            lines.append("Ready (%d): %s\n" % (len(ready_refs), ", ".join(ready_refs)))
+        if state["overlaps"]:
+            lines.append("Overlaps: %s\n" % ", ".join(
+                "%s (%s)" % (o["path"], "+".join(o["tasks"])) for o in state["overlaps"]))
+        if state["waiting"]:
+            lines.append("Waiting on dependencies: %d task(s)\n" % state["waiting"])
+        if state["integrating"]:
+            lines.append("Integrating elsewhere: %s\n" % ", ".join(
+                "%s on %s" % (i["effort"], i["branch"]) for i in state["integrating"]))
+        sys.stdout.write("".join(lines))
+        return 0
     if state["missing_tasks_dir"]:
         if as_json:
             out = {"ready_count": 0, "task_count": 0, "blocked_count": 0, "ready_tasks": [],
-                   "file_overlaps": [], "blockers": [], "in_progress": [], "tree": tree,
-                   "integrating": [], "duplicate_claims": []}
+                   "file_overlaps": [], "blockers": [], "in_progress": [], "open_maps": maps,
+                   "tree": tree, "integrating": [], "duplicate_claims": []}
             sys.stdout.write(json.dumps(out, ensure_ascii=False, separators=(",", ":")) + "\n")
         else:
-            sys.stdout.write(header + "No tasks found (tasks directory is missing).\n")
+            extra = ""
+            if maps:
+                extra = "Open exploration maps (continue with flow-grill):\n" + "".join(
+                    "  %s — %s\n" % (m["path"], m["title"]) for m in maps)
+            sys.stdout.write(header + extra + "No tasks found (tasks directory is missing).\n")
         return 0
 
     ready = state["ready"]
@@ -1563,7 +1628,7 @@ def cmd_next(args):
                             for b in shown_blockers],
                "in_progress": [{"task": item[2], "number": item[1], "effort": item[6], "title": item[3],
                                 "status": item[4], "branch": item[5]} for item in started],
-               "tree": tree, "integrating": integrating,
+               "open_maps": maps, "tree": tree, "integrating": integrating,
                "duplicate_claims": [{"task": ref, "branches": names} for ref, names in shown_duplicates]}
         sys.stdout.write(json.dumps(out, ensure_ascii=False, separators=(",", ":")) + "\n")
         return 0
@@ -1571,8 +1636,12 @@ def cmd_next(args):
     color = colors_enabled(opts["no_color"])
     bold, dim, off = ("\033[1m", "\033[2m", "\033[0m") if color else ("", "", "")
     out = [header]
+    if maps:
+        out.append("Open exploration maps (continue with flow-grill):\n")
+        for m in maps:
+            out.append("  %s%s%s — %s\n" % (bold, m["path"], off, m["title"]))
     if task_count == 0 and not integrating:
-        sys.stdout.write(header + "No tasks found.\n")
+        sys.stdout.write("".join(out) + "No tasks found.\n")
         return 0
     headings = (("paused", "Paused (resume before starting new work):"),
                 ("blocked", "Needs replanning (Status: blocked; flow-break amend):"),
@@ -1637,88 +1706,12 @@ def cmd_next(args):
     return 0
 
 
-# ------------------------------------------------------------------ pulse
-
-PULSE_USAGE = """workflow pulse - anti-drift queue snapshot for long autonomous runs
-
-Usage: workflow pulse [--effort SLUG] [--quiet-idle] [--format text|json] [--no-color]
-
-Prints a compact snapshot of active, paused, blocked and ready tasks alongside
-anti-drift execution directives (CONVENTIONS §7, §9, §10) so multi-hour sessions
-keep momentum after compaction or heavy tool output.
-
-Options:
-  --effort SLUG  Scope snapshot to a single effort slug
-  --quiet-idle   Print nothing when no open tasks or .workflow/HANDOFF.md exist
-  --format TYPE  Output text (default) or JSON
-  --no-color     Disable terminal colors
-  -h, --help     Show this help
-"""
-
-PULSE_DIRECTIVES = [
-    "Act on the bottleneck directly; do not spend a turn acknowledging this pulse.",
-    "Harvest completed subagent work immediately (Check + real path + land) and launch newly ready tasks.",
-    "If the same blocker survived two rounds without progress, take over the gap or run flow-break amend.",
-    "Reuse valid checks on unchanged code; skip speculative edge cases, unpaid hashes and unrequested wrappers.",
-]
-
-
-def cmd_pulse(args):
-    opts, code = parse_common(args, PULSE_USAGE, ("effort", "quiet_idle"))
-    if code is not None:
-        return code
-    root = project_root()
-    wf = os.path.join(root, ".workflow")
-    if not os.path.isdir(wf):
-        sys.stderr.write("Error: no .workflow directory at %s; run 'workflow init' first\n" % root)
-        return 1
-    state = collect_queue(root, wf, opts["effort"])
-    handoff = os.path.isfile(os.path.join(wf, "HANDOFF.md"))
-    active_work = bool(handoff or state["started"] or state["ready"]
-                       or state["waiting"] or state["integrating"])
-    if opts["quiet_idle"] and not active_work:
-        return 0
-
-    ready_refs = [item[3] for item in state["ready"]]
-    started_summary = [{"task": item[2], "status": item[4], "branch": item[5]}
-                       for item in state["started"]]
-    if opts["format"] == "json":
-        out = {"active": active_work, "handoff": handoff, "tree": state["tree"],
-               "in_progress": started_summary, "ready": ready_refs,
-               "file_overlaps": state["overlaps"], "waiting_count": state["waiting"],
-               "integrating": state["integrating"], "directives": PULSE_DIRECTIVES}
-        sys.stdout.write(json.dumps(out, ensure_ascii=False, separators=(",", ":")) + "\n")
-        return 0
-
-    lines = [tree_header(state["tree"])]
-    if handoff:
-        lines.append("Handoff: .workflow/HANDOFF.md present — read it and delete once absorbed.\n")
-    if started_summary:
-        lines.append("Started: %s\n" % ", ".join(
-            "%s [%s%s]" % (s["task"], s["status"], " @" + s["branch"] if s["branch"] else "")
-            for s in started_summary))
-    if ready_refs:
-        lines.append("Ready wave (%d): %s\n" % (len(ready_refs), ", ".join(ready_refs)))
-    if state["overlaps"]:
-        lines.append("Overlaps: %s\n" % ", ".join(
-            "%s (%s)" % (o["path"], "+".join(o["tasks"])) for o in state["overlaps"]))
-    if state["waiting"]:
-        lines.append("Waiting on dependencies: %d task(s)\n" % state["waiting"])
-    if not active_work:
-        lines.append("Queue idle.\n")
-    else:
-        lines.append("Pulse:\n" + "".join("- %s\n" % d for d in PULSE_DIRECTIVES))
-    sys.stdout.write("".join(lines))
-    return 0
-
-
 # ------------------------------------------------------------------- main
 
-MAIN_USAGE = """workflow-core.py %s - validate, next and pulse for the workflow toolkit
+MAIN_USAGE = """workflow-core.py %s - validate and next for the workflow toolkit
 
 Usage: workflow-core.py validate [--strict] [--format text|json] [--no-color]
-       workflow-core.py next [--effort SLUG] [--all] [--format text|json] [--no-color]
-       workflow-core.py pulse [--effort SLUG] [--quiet-idle] [--format text|json] [--no-color]
+       workflow-core.py next [--effort SLUG] [--all] [--brief] [--format text|json] [--no-color]
        workflow-core.py <command> --help
 """ % VERSION
 
@@ -1733,7 +1726,8 @@ def main(argv):
     if command == "next":
         return cmd_next(args)
     if command == "pulse":
-        return cmd_pulse(args)
+        sys.stderr.write("workflow pulse was removed: run 'workflow next --brief'\n")
+        return 2
     sys.stderr.write("Error: unknown command: %s\n" % command)
     sys.stderr.write(MAIN_USAGE)
     return 2

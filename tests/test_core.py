@@ -26,7 +26,7 @@ VALID_DECISIONS = """# Decisions
 - **Decided:** Port validate and next to Python.
 - **Instead of:** Keeping Bash 4.
 - **Because:** macOS ships Bash 3.2.
-- **Mine:** yes
+- **Decided by:** agent
 - **Revisit when:** Python is unavailable.
 """
 
@@ -178,7 +178,7 @@ class ValidateTests(Base):
 
     def test_done_problems_are_warnings(self):
         self.p.write(".workflow/done/core/01-old.md", "# 01: Old\n\n**Effort:** core\n")
-        self.p.write(".workflow/done/core/retrospective.md", "# Retrospective\n")
+        self.p.write(".workflow/done/core/closeout.md", "# Closeout\n")
         code, data = self.p.validate()
         self.assertEqual(code, 1)
         self.assertEqual((data["errors"], data["valid"], data["tasks"]), (0, False, 1))
@@ -231,7 +231,7 @@ class ValidateTests(Base):
             - **Decided:** y
             - **Instead of:** z
             - **Because:** w
-            - **Mine:** maybe
+            - **Decided by:** maybe
             - **Revisit when:** v
 
             ## 2026-03-01 - Missing fields
@@ -248,18 +248,18 @@ class ValidateTests(Base):
         msgs = self.messages(data)
         self.assertIn("malformed decision heading", msgs)
         self.assertIn("duplicate decision field Decided", msgs)
-        self.assertIn("invalid Mine field", msgs)
+        self.assertIn("invalid Decided by field", msgs)
         self.assertIn("missing or empty decision field Because", msgs)
         self.assertIn("missing or empty decision field Instead of", msgs)
         self.assertNotIn("decision field outside an entry", msgs)  # before ## Entries is ignored
-        self.assertEqual(len([m for m in msgs if "decision" in m or "Mine" in m]), 7, msgs)
+        self.assertEqual(len([m for m in msgs if "decision" in m or "Decided by" in m]), 5, msgs)
 
     def test_decisions_missing_entries_and_outside_field(self):
         self.p.write(".workflow/decisions.md", "# Decisions\n")
         code, data = self.p.validate()
         self.assertEqual(code, 2)
         self.assertIssue(data, "missing ## Entries section")
-        self.p.write(".workflow/decisions.md", "## Entries\n\n- **Mine:** yes\n")
+        self.p.write(".workflow/decisions.md", "## Entries\n\n- **Decided by:** agent\n")
         _, data = self.p.validate()
         self.assertIssue(data, "decision field outside an entry")
         os.remove(os.path.join(self.p.root, ".workflow/decisions.md"))
@@ -278,10 +278,17 @@ class ValidateTests(Base):
             - **Instead of:** Python,
               which needs an interpreter.
             - **Because:** One static binary.
-            - **Mine:** no (user call)
+            - **Decided by:** user (user call)
             - **Revisit when:** Never.
             - **Supersedes:** 2026-01-02 - Use Python for the core
             <!-- a note -->
+
+            ## 2026-06-01 - Minimal three-field entry with legacy Mine line
+
+            - **Decided:** Keep SQLite for local queue state.
+            - **Instead of:** Adding Redis.
+            - **Because:** Single-host CLI needs zero daemon setup.
+            - **Mine:** yes
             """))
         code, data = self.p.validate()
         self.assertEqual((code, data["issues"]), (0, []))
@@ -315,10 +322,12 @@ class ValidateTests(Base):
         self.assertEqual(code, 2)
         self.assertIssue(data, "missing .workflow directory")
         for args in (["validate", "--fix"], ["validate", "--format"], ["validate", "--format", "xml"],
-                     ["next", "--interactive"], ["bogus"], []):
+                     ["next", "--interactive"], ["next", "--quiet-idle"], ["pulse"], ["bogus"], []):
             self.assertEqual(self.p.run(*args).returncode, 2, args)
         for args, hint in ((["validate", "--fix"], "validate --fix was removed in 2.5"),
-                           (["next", "--interactive"], "next --interactive was removed in 2.5")):
+                           (["next", "--interactive"], "next --interactive was removed in 2.5"),
+                           (["next", "--quiet-idle"], "workflow next --brief"),
+                           (["pulse"], "workflow pulse was removed: run 'workflow next --brief'")):
             proc = self.p.run(*args)
             self.assertIn(hint, proc.stderr)
             self.assertEqual(proc.stdout, "")
@@ -422,24 +431,33 @@ class ValidateTests(Base):
         code, data = self.p.validate()
         self.assertEqual(code, 2)
         self.assertIssue(data, "specs/core.md is marked done without a recorded acceptance")
-        retro = ".workflow/done/core/retrospective.md"
-        self.p.write(retro, "# Retrospective\n\n- **Accepted:** 2026-10-01 by Ada\n")
+        closeout = ".workflow/done/core/closeout.md"
+        self.p.write(closeout, "# Closeout\n\n- **Accepted:** 2026-10-01 by Ada\n")
         code, data = self.p.validate()
         self.assertEqual((code, data["issues"]), (0, []))
         # Every reopening needs a fresh acceptance.
-        self.p.write(retro, "# Retrospective\n\n- **Accepted:** 2026-10-01 by Ada\n\n"
-                            "## Reopened\n\nA bug surfaced.\n")
+        self.p.write(closeout, "# Closeout\n\n- **Accepted:** 2026-10-01 by Ada\n\n"
+                               "## Reopened\n\nA bug surfaced.\n")
         code, data = self.p.validate()
         self.assertEqual(code, 2)
         self.assertIssue(data, "without a recorded acceptance")
-        self.p.write(retro, "# Retrospective\n\n- **Accepted:** 2026-10-01 by Ada\n\n"
-                            "## Reopened\n\nA bug surfaced.\n\n"
-                            "**Accepted:** 2026-10-05 by Ada\n")
+        self.p.write(closeout, "# Closeout\n\n- **Accepted:** 2026-10-01 by Ada\n\n"
+                               "## Reopened\n\nA bug surfaced.\n\n"
+                               "**Accepted:** 2026-10-05 by Ada\n")
+        code, data = self.p.validate()
+        self.assertEqual((code, data["issues"]), (0, []))
+        self.p.write(closeout, "# Closeout\n\n- **Accepted:** 2026-10-01 by Ada\n\n"
+                               "## Reopened 2026-10-05\n\nAnother fix.\n")
+        code, data = self.p.validate()
+        self.assertEqual(code, 2)
+        self.p.write(closeout, "# Closeout\n\n- **Accepted:** 2026-10-01 by Ada\n\n"
+                               "## Reopened 2026-10-05\n\nAnother fix.\n\n"
+                               "**Accepted:** 2026-10-06 by Ada\n")
         code, data = self.p.validate()
         self.assertEqual((code, data["issues"]), (0, []))
         # A spec already done in HEAD is history, not this change's claim.
         self.commit_all("close")
-        os.remove(os.path.join(self.p.root, retro))
+        os.remove(os.path.join(self.p.root, closeout))
         code, data = self.p.validate()
         self.assertNotIn("without a recorded acceptance", " ".join(self.messages(data)))
 
@@ -760,7 +778,8 @@ class NextTests(Base):
         data = self.p.next()
         self.assertEqual(sorted(data), ["blocked_count", "blockers", "duplicate_claims",
                                         "file_overlaps", "in_progress", "integrating",
-                                        "ready_count", "ready_tasks", "task_count", "tree"])
+                                        "open_maps", "ready_count", "ready_tasks",
+                                        "task_count", "tree"])
 
     def test_missing_workflow(self):
         shutil.rmtree(os.path.join(self.p.root, ".workflow"))
@@ -820,16 +839,14 @@ class NextTests(Base):
         self.assertIn("Shared files across ready tasks (serialize or coordinate): "
                       "README.md (core/01, core/03)", text)
 
-    def test_pulse_idle_handoff_and_active(self):
-        idle = self.p.run("pulse", "--quiet-idle")
+    def test_next_brief_idle_handoff_and_active(self):
+        idle = self.p.run("next", "--brief")
         self.assertEqual((idle.returncode, idle.stdout), (0, ""))
-        plain_idle = self.p.run("pulse", "--no-color")
-        self.assertIn("Queue idle.", plain_idle.stdout)
 
         self.p.write(".workflow/HANDOFF.md", "# Handoff\nNext: finish spec.\n")
-        with_handoff = self.p.run("pulse", "--quiet-idle", "--no-color")
+        with_handoff = self.p.run("next", "--brief", "--no-color")
         self.assertIn(".workflow/HANDOFF.md present", with_handoff.stdout)
-        self.assertIn("Pulse:", with_handoff.stdout)
+        self.assertNotIn("Pulse:", with_handoff.stdout)
         os.remove(os.path.join(self.p.root, ".workflow/HANDOFF.md"))
 
         self.p.write(".workflow/tasks/core/01-a.md",
@@ -838,14 +855,26 @@ class NextTests(Base):
                      task("02", "B", "core", extra="**Files:** src/shared.py\n"))
         self.p.write(".workflow/tasks/core/03-c.md",
                      task("03", "C", "core", extra="**Status:** paused\n"))
-        snap = json.loads(self.p.run("pulse", "--effort", "core", "--format", "json").stdout)
-        self.assertTrue(snap["active"])
-        self.assertFalse(snap["handoff"])
-        self.assertEqual(snap["ready"], ["core/01", "core/02"])
-        self.assertEqual(snap["in_progress"], [{"task": "core/03", "status": "paused", "branch": None}])
-        self.assertEqual(snap["file_overlaps"], [{"path": "src/shared.py", "tasks": ["core/01", "core/02"]}])
-        self.assertEqual(len(snap["directives"]), 4)
+        brief = self.p.run("next", "--effort", "core", "--brief", "--no-color").stdout
+        self.assertIn("Started: core/03 [paused]", brief)
+        self.assertIn("Ready (2): core/01, core/02", brief)
+        self.assertIn("Overlaps: src/shared.py (core/01+core/02)", brief)
+        self.assertNotIn("Pulse:", brief)
 
+        self.p.write(".workflow/maps/auth-flow.md",
+                     "# Map: Auth flow\n\n## Goal\nClarify SSO.\n\n## Open Questions\n- [ ] OIDC vs SAML?\n")
+        self.p.write(".workflow/maps/done-legacy.md",
+                     "# Map: Old map\n**Status:** clear\n")
+        next_all = json.loads(self.p.run("next", "--format", "json").stdout)
+        self.assertEqual(next_all["open_maps"],
+                         [{"path": ".workflow/maps/auth-flow.md", "slug": "auth-flow", "title": "Auth flow"}])
+        next_scoped = json.loads(self.p.run("next", "--effort", "core", "--format", "json").stdout)
+        self.assertEqual(next_scoped["open_maps"], [])
+        next_text = self.p.run("next", "--no-color").stdout
+        self.assertIn("Open exploration maps (continue with flow-grill):", next_text)
+        self.assertIn(".workflow/maps/auth-flow.md — Auth flow", next_text)
+        brief_maps = self.p.run("next", "--brief", "--no-color").stdout
+        self.assertIn("Maps: .workflow/maps/auth-flow.md (continue with flow-grill)", brief_maps)
 class PerformanceTests(Base):
     def test_large_project_is_fast(self):
         for effort_index in range(4):

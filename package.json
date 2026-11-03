@@ -1,6 +1,6 @@
 {
   "name": "@shizuku-yume/workflow",
-  "version": "2.8.0",
+  "version": "2.9.0",
   "description": "Project-local workflow skills and CLI for coding agents",
   "repository": {
     "type": "git",

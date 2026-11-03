@@ -1,89 +1,44 @@
 ---
 name: flow-close
 description: >-
-  Close an effort after its last task has landed: check the assembled whole
-  against the spec, demo it, revisit its decisions, write the retrospective,
-  mark the spec done. Use when flow-implement finishes an effort's last task or
-  the user says "close the effort", "wrap up <effort>".
+  Wrap up a spec effort after its last task lands: run the spec checks and the main
+  user flow, get user sign-off, write the closeout note, and mark the spec done.
 argument-hint: "<effort>"
 ---
 
 # Flow: Close
 
-Read `.workflow/CONVENTIONS.md` §2, §4, §6, and §7, plus `.workflow/STYLE.md` first.
+Only for efforts with a spec. A spec-less effort ends when its last task lands.
 
-Tasks were checked separately. This close checks the assembled effort against its spec, demonstrates the real shipped path, and records acceptance and learning.
+## 1. Check readiness
 
-## 1. Confirm closable
+`.workflow/specs/<effort>.md` exists, `.workflow/tasks/<effort>/` has no open tasks, and every task has landed. If `closeout.md` already exists (reopened effort), review only tasks added since the last close.
 
-- Find `.workflow/specs/<effort>.md`. If absent, stop: a no-spec effort (lone bugfix, spike, `maintenance`) ends when its last task lands; no close or retrospective.
-- No task remains under `.workflow/tasks/<effort>/`; otherwise name it and stop, or drop it through `flow-break` amend. Every archived task must have landed on the landing branch (`merge-strategy.md`). Use its up-to-date head; on an integration branch merge main into it first and rerun tests.
-- If `.workflow/done/<effort>/retrospective.md` exists, this is a reopen: close only tasks added since the last close, appending at step 7. Compare from the earliest-started added task's `Base commit`; otherwise use the earliest-started archived task.
-- List commits once and reuse them: `git log --format='%h %s' <point>..HEAD -- .workflow/done/<effort>/`. On reopen, include newly archived tasks, not earlier closes.
-## 2. Run the spec checks and demo
+## 2. Run checks on what ships
 
-Run every check in “How we will know it works,” by ID, on the landing head and the actual shipping build/path (packaged app, deployed service, installed CLI), not a stand-in. Record pass, fail, or not runnable with reason; a stand-in run is not a pass. Checks absent from task `Covers` are still expected. Any failure blocks.
+On the landing branch head, built the way users get it, run every `W` check under `## How we will know it works` and walk the main user flow end to end. Run `flow-verify` in effort close mode. Small fixes may land with the close; larger gaps go through `flow-break` amend.
 
-Then use the feature once through the real entry point and dependencies, following “What it does” to completion. Note what happened for the user report.
+## 3. Get sign-off
 
-## 3. Review the whole
+Show the check results, the user-flow run, and review status. If the same friction recurred across tasks, suggest `flow-retro` in one line. The spec stays `in progress` until the user explicitly accepts.
 
-Run `flow-verify` in effort mode with step 1's comparison point and commit list. It reuses task review records in `## Progress` and checks assembly, without replaying unchanged task briefs. A spec-requested evidence or documentation pass is a separate invocation over the assembled whole, never a rerun of an unchanged brief.
+## 4. Record and mark done
 
-Handle findings per CONVENTIONS §7. Make and recheck a fix here only if it passes as a small task (§4); commit it with the close. Otherwise add a task through `flow-break` amend and wait to close. Report open hotfix follow-ups (`grep -rl 'Hotfix:' .workflow/tasks/`) touching this effort; they remain open until their task lands.
-## 4. Revisit decisions
-
-List decisions with `grep -n 'Effort:\*\* <effort>' .workflow/decisions.md` and those cited by the spec. Check each `Revisit when`; report triggers. Reversal requires a new entry made with the user (§2), not unilateral change.
-
-## 5. Show the user
-
-Send one message: each spec check by ID and result, demo observations, review status per brief, and triggered decisions. Ask whether the effort is accepted. Only the user's explicit yes accepts; silence or passing checks do not. Until then keep the spec `in progress` and report waiting for acceptance. If something is missing, add tasks through `flow-break` amend and wait.
-
-## 6. What changes
-
-Review findings repeated across multiple tasks are patterns. Convert a genuine mechanical pattern to an automated check, or a judgement pattern to one concise `.workflow/standards.md` line. Do not create one-off bureaucracy; if no pattern recurred, record none.
-
-## 7. Write the retrospective
-
-Write `.workflow/done/<effort>/retrospective.md`, using task/spec history (`git log --stat --follow -- <path>`) for plan versus actual and archived task `## Progress` for findings. Record patterns and their resulting check/standard, or why none recurred; include remaining debt and open hotfixes.
-
-On reopen append `## Reopened <date>` with the same headings and its own `**Accepted:**` line; keep the original shipment readable. `validate` requires one more `Accepted:` line than `## Reopened` headings.
+Write `.workflow/done/<effort>/closeout.md`. On a reopened effort, append a `## Reopened` section with a new `**Accepted:**` line instead:
 
 ```markdown
-# Retrospective: <effort>
+# Closeout: <effort>
 
-## Goal
-<one or two sentences from the spec>
+**Accepted:** <YYYY-MM-DD> by <who accepted>
 
-**Accepted:** <date> by <who said yes>
+## Shipped
+<what shipped, with W-check results>
 
-## What shipped
-<user-visible result; spec check results by ID>
+## Key decisions & plan changes
+<notable decisions or plan changes, or None>
 
-## Decisions that shaped it
-<entry headings, one line each on why they mattered>
-
-## Plan versus actual
-- Tasks at break: N. Added later: N. Split: N. Dropped: N, and why.
-- Spec changes after confirmation: N, sections and why.
-- Blocked tasks and what the plan got wrong.
-
-## Review findings
-<blocking findings by kind: correctness, missing deliverable, standards, process>
-
-## What changes
-<recurring patterns and resulting check/standard, or none>
-
-## Debt left behind
-<technical-debt.md entries by heading; open hotfix follow-ups>
+## Remaining debt & follow-ups
+<open technical-debt.md items or follow-up tasks, or None>
 ```
 
-## 8. Mark done and commit
-
-1. Set the spec to `**Status:** done`.
-2. Run `.workflow/bin/workflow validate`; errors block.
-3. Commit retrospective, spec status, checks/standards, decision entries, and step 3 fixes together. Land per `Landing:` (`merge-strategy.md`). On an integration branch, land the close commit by fast-forward or one merge commit, never replace main's tree; then delete the landed task branches.
-
-## 9. Report
-
-Report concisely: done or exactly what remains; spec check totals and failures/unrun checks; review findings and response; triggered decisions; checks/standards added or "none".
+Set `**Status:** done` in the spec, run `.workflow/bin/workflow validate`, commit `closeout.md` together with the spec, and land, including the integration branch if the effort has one (CONVENTIONS §7).

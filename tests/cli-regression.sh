@@ -303,7 +303,7 @@ EOF
   local suffix field
   local -a suffixes=($'\n  99' $'\n- 99' $'- [ ] 99\n  99' $'* [x] 99\n  99' \
       $'## Check\n  99' $'```\n99\n```\n  99')
-  for field in 'Task type' 'Base commit' 'Started' 'Finished' 'Status' 'Delivers' \
+  for field in 'Task type' 'Base commit' 'Covers' 'Status' 'Delivers' \
       'Files' 'Read first' 'Check' 'Question' 'Time box'; do
     case "$field" in
       'Base commit') suffix="<commit-sha>" ;;
@@ -383,7 +383,7 @@ EOF
 - **Decided:**
 - **Instead of:** foo
 - **Because:** bar
-- **Mine:** yes
+- **Decided by:** agent
 - **Revisit when:** never
 EOF
   if (cd "$repo" && "$WORKFLOW" doctor >/dev/null 2>&1); then
@@ -422,7 +422,7 @@ fake block inside entry
 ### Alternatives Considered
 - **Instead of:** approach B
 - **Because:** approach A is cleaner
-- **Mine:** no
+- **Decided by:** user
 - **Revisit when:** never
 EOF
 
@@ -557,95 +557,32 @@ EOF
   fi
 }
 
-# --- Scenario 13: stalled flow-map documents warn, active maps pass ---
-test_map_staleness() {
+# --- Scenario 13: open exploration maps surface in next and next --brief ---
+test_open_maps_cli() {
   local repo="$TMPDIR/repo1"
   mkdir -p "$repo/.workflow/maps"
 
-  # Active map with open questions: no warning
-  cat > "$repo/.workflow/maps/active.md" <<'EOF'
-# Map: Active Map
-**Destination:** Ship feature
-**Started:** 2026-10-01   **Status:** working
+  cat > "$repo/.workflow/maps/explore-api.md" <<'EOF'
+# Map: Explore API options
 
-## Route so far
+## Goal
+Pick streaming protocol.
 
-## Open questions
-## Q1: How to structure the model?
-**Blocks:** Implementation
-**Kind:** decide
-**Depends on:** none
-**Answer:**
-
-## Not yet clear
-- More details later
-
-## Ruled out
+## Open Questions
+- [ ] Benchmark SSE vs WebSocket
 EOF
 
-  local out
-  out="$(cd "$repo" && "$WORKFLOW" doctor 2>&1 || true)"
-  if [[ "$out" == *"map active.md:"* ]]; then
-    fail "active map with open questions should not trigger staleness warning: $out"
+  local out_next out_brief
+  out_next="$(cd "$repo" && "$WORKFLOW" next --no-color)"
+  out_brief="$(cd "$repo" && "$WORKFLOW" next --brief --no-color)"
+  if [[ "$out_next" == *"Open exploration maps (continue with flow-grill):"* ]] && \
+     [[ "$out_next" == *".workflow/maps/explore-api.md — Explore API options"* ]] && \
+     [[ "$out_brief" == *"Maps: .workflow/maps/explore-api.md"* ]]; then
+    pass "open exploration maps surface in workflow next and next --brief"
   else
-    pass "active map with open questions produces no warning"
+    fail "expected open map in next and next --brief, got next=$out_next brief=$out_brief"
   fi
-
-  # Stale map: Status: working, "## Open questions" empty, "## Not yet clear" with item -> doctor warns
-  cat > "$repo/.workflow/maps/stale.md" <<'EOF'
-# Map: Stale Map
-**Destination:** Ship feature
-**Started:** 2026-10-01   **Status:** working
-
-## Route so far
-
-## Open questions
-
-## Not yet clear
-- Unpromoted fog item
-
-## Ruled out
-EOF
-
-  out="$(cd "$repo" && "$WORKFLOW" doctor 2>&1 || true)"
-  if [[ "$out" == *"map stale.md: Status working but no open questions and fog remains"* ]]; then
-    pass "stale map warning issued when open questions empty and fog remains"
-  else
-    fail "expected warning for stale map, got: $out"
-  fi
-  rm -f "$repo/.workflow/maps/stale.md" "$repo/.workflow/maps/active.md"
-}
-
-test_draft_statistics() {
-  local repo="$TMPDIR/repo_draft_stats"
-  setup_repo "$repo"
-
-  local head_sha
-  head_sha="$(git -C "$repo" rev-parse HEAD)"
-
-  cat > "$repo/.workflow/tasks/01-draft.md" <<'EOF'
-# 01: Draft Task
-**Effort:** core-work
-**Check:** `true` passes
-**Base commit:** <commit-sha>
-**Blocked by:** None, can start now
-EOF
-
-  cat > "$repo/.workflow/tasks/02-started.md" <<EOF
-# 02: Started Task
-**Effort:** core-work
-**Check:** `true` passes
-**Base commit:** $head_sha
-**Blocked by:** None, can start now
-EOF
-
-  local out
-  out="$(cd "$repo" && "$WORKFLOW" doctor 2>&1 || true)"
-  if (cd "$repo" && "$WORKFLOW" doctor >/dev/null 2>&1) && [[ "$out" == *"Tasks: 2 active (1 draft, 1 started)"* ]]; then
-    pass "draft statistics reported in doctor output"
-  else
-    fail "expected 'Tasks: 2 active (1 draft, 1 started)' with exit 0, got: $out"
-  fi
+  rm -f "$repo/.workflow/maps/explore-api.md"
 }
 
 # --- Scenario 14: task filename and heading number mismatch rejected ---
@@ -894,204 +831,6 @@ EOF
   fi
 }
 
-# --- Scenario: glossary format validation ---
-test_glossary_malformed() {
-  local repo="$TMPDIR/repo_glossary"
-  [ -d "$repo" ] || setup_repo "$repo"
-
-  cat > "$repo/.workflow/glossary.md" <<'EOF'
-# Glossary
-
-This is an unexpected paragraph line instead of a list of terms.
-EOF
-
-  local out
-  out="$(cd "$repo" && "$WORKFLOW" doctor 2>&1 || true)"
-  if (cd "$repo" && "$WORKFLOW" doctor >/dev/null 2>&1); then
-    fail "glossary with paragraph instead of list should cause doctor to fail"
-  elif [[ "$out" == *"glossary.md: unexpected line format"* ]]; then
-    pass "glossary malformed paragraph reported and doctor fails"
-  else
-    fail "doctor failed but expected unexpected line format warning, got: $out"
-  fi
-  cat > "$repo/.workflow/glossary.md" <<'EOF'
-# Glossary
-
-- malformed list item without colon or dash
-EOF
-
-  out="$(cd "$repo" && "$WORKFLOW" doctor 2>&1 || true)"
-  if (cd "$repo" && "$WORKFLOW" doctor >/dev/null 2>&1); then
-    fail "glossary with malformed list item should cause doctor to fail"
-  elif [[ "$out" == *"glossary.md: malformed line"* ]]; then
-    pass "glossary malformed list line reported and doctor fails"
-  else
-    fail "doctor failed but expected malformed line warning, got: $out"
-  fi
-}
-
-
-test_glossary_duplicate() {
-  local repo="$TMPDIR/repo_glossary"
-  [ -d "$repo" ] || setup_repo "$repo"
-
-  cat > "$repo/.workflow/glossary.md" <<'EOF'
-# Glossary
-
-- **foo**: first definition of foo
-- **foo**: second definition of foo
-EOF
-
-  local out
-  out="$(cd "$repo" && "$WORKFLOW" doctor 2>&1 || true)"
-  if (cd "$repo" && "$WORKFLOW" doctor >/dev/null 2>&1); then
-    fail "glossary with duplicate terms should cause doctor to fail"
-  elif [[ "$out" == *"glossary.md: duplicate term: foo"* ]]; then
-    pass "glossary duplicate term reported and doctor fails"
-  else
-    fail "doctor failed but expected duplicate term warning, got: $out"
-  fi
-}
-
-test_glossary_valid() {
-  local repo="$TMPDIR/repo_glossary"
-  [ -d "$repo" ] || setup_repo "$repo"
-
-  cat > "$repo/.workflow/glossary.md" <<'EOF'
-# Glossary
-
-- **foo**: first definition of foo
-- **bar** - second definition of bar
-- plain_term: third definition plain colon
-- plain_dash - fourth definition plain dash
-  - **indented**: fifth definition with leading spaces
-EOF
-
-  local out
-  out="$(cd "$repo" && "$WORKFLOW" doctor 2>&1 || true)"
-  if (cd "$repo" && "$WORKFLOW" doctor >/dev/null 2>&1); then
-    pass "valid glossary format accepted by doctor"
-  else
-    fail "valid glossary format should pass doctor, got: $out"
-  fi
-}
-
-# --- Scenario: glossary with official wrapped definitions and repeated Avoid entries ---
-test_glossary_official_wrapped_avoid_repeats() {
-  local repo="$TMPDIR/repo_glossary_wrapped"
-  setup_repo "$repo"
-
-  cat > "$repo/.workflow/glossary.md" <<'EOF'
-# Glossary
-
-## Format
-
-```markdown
-- **Term**: what it means, in one sentence, ideally naming where it shows up in the
-  code.
-- _Avoid_: the words that mean the same thing but should not be used.
-```
-
-## Terms
-
-- **Order**: what it means, in one sentence, ideally naming where it shows up in the
-  codebase and domain logic.
-- _Avoid_: Purchase
-- _Avoid_: Checkout
-  when used to mean the persistent entity.
-- **Account**: user identity record with **important** context.
-- _Avoid_: do not use **Profile**
-- **Profile**: valid separate term defined here.
-EOF
-
-  local out
-  out="$(cd "$repo" && "$WORKFLOW" doctor 2>&1 || true)"
-  if (cd "$repo" && "$WORKFLOW" doctor >/dev/null 2>&1); then
-    pass "glossary official wrapped and repeated Avoid entries accepted by doctor"
-  else
-    fail "glossary official wrapped and repeated Avoid entries should pass doctor, got: $out"
-  fi
-}
-
-# --- Scenario: headings after Terms are not parsed as glossary entries ---
-test_glossary_terms_section_boundary() {
-  local repo="$TMPDIR/repo_glossary_sections"
-  setup_repo "$repo"
-
-  cat > "$repo/.workflow/glossary.md" <<'EOF'
-# Glossary
-
-## Terms
-
-- **Order**: a persistent order.
-- _Avoid_: Purchase
-
-## Notes
-
-Notes can contain ordinary prose and unrelated lists.
-- an unstructured note
-- _Avoid_: this is not attached to Order
-EOF
-
-  local out
-  out="$(cd "$repo" && "$WORKFLOW" doctor 2>&1 || true)"
-  if (cd "$repo" && "$WORKFLOW" doctor >/dev/null 2>&1); then
-    pass "glossary ignores sections following Terms"
-  else
-    fail "glossary Notes section should not be validated as terms, got: $out"
-  fi
-}
-
-# --- Scenario: glossary orphan Avoid entry rejected ---
-test_glossary_orphan_avoid_rejected() {
-  local repo="$TMPDIR/repo_glossary_orphan"
-  setup_repo "$repo"
-
-  cat > "$repo/.workflow/glossary.md" <<'EOF'
-# Glossary
-
-## Terms
-
-- _Avoid_: OrphanTerm
-- **RealTerm**: valid definition of real term
-EOF
-
-  local out
-  out="$(cd "$repo" && "$WORKFLOW" doctor 2>&1 || true)"
-  if (cd "$repo" && "$WORKFLOW" doctor >/dev/null 2>&1); then
-    fail "orphan Avoid entry should cause doctor to fail"
-  elif [[ "$out" == *"orphan Avoid"* ]]; then
-    pass "orphan Avoid entry rejected with warning"
-  else
-    fail "doctor failed but expected orphan Avoid warning, got: $out"
-  fi
-}
-
-# --- Scenario: glossary duplicate real terms still rejected with Avoid entries ---
-test_glossary_duplicate_real_terms_with_avoid() {
-  local repo="$TMPDIR/repo_glossary_dup_real"
-  setup_repo "$repo"
-
-  cat > "$repo/.workflow/glossary.md" <<'EOF'
-# Glossary
-
-## Terms
-
-- **Order**: first definition of order
-- _Avoid_: Purchase
-- **Order**: second definition of order
-EOF
-
-  local out
-  out="$(cd "$repo" && "$WORKFLOW" doctor 2>&1 || true)"
-  if (cd "$repo" && "$WORKFLOW" doctor >/dev/null 2>&1); then
-    fail "duplicate real terms with Avoid entries should cause doctor to fail"
-  elif [[ "$out" == *"glossary.md: duplicate term: Order"* ]]; then
-    pass "duplicate real term rejected even when Avoid entries present"
-  else
-    fail "doctor failed but expected duplicate term warning, got: $out"
-  fi
-}
 
 # --- Scenario: edited AGENTS.md workflow block retained on uninstall ---
 test_uninstall_edited_agents_block_retained() {
@@ -1368,8 +1107,9 @@ EOF
     fail "user documents deleted or corrupted on uninstall in non-git directory"
   fi
 
-  # Toolkit managed skills / manifest must be removed
-  if [ -d "$repo/.agents/skills" ] || [ -f "$repo/.workflow/.workflow-version" ]; then
+  # Toolkit managed skills, framework guides, and manifest must be removed
+  if [ -d "$repo/.agents/skills" ] || [ -f "$repo/.workflow/.workflow-version" ] || \
+     [ -f "$repo/.workflow/merge-strategy.md" ] || [ -f "$repo/.workflow/spike-tasks.md" ]; then
     fail "toolkit managed artifacts were not cleanly removed on uninstall in non-git directory"
   else
     pass "toolkit managed artifacts cleanly removed on uninstall in non-git directory"
@@ -1689,221 +1429,6 @@ EOF
   fi
 }
 
-# --- Scenario: map staleness edge cases (empty fog, multiline comments, code fences, answered Qs, end Qs, clear/charting) ---
-test_map_staleness_edge_cases() {
-  local repo="$TMPDIR/repo_map_edge_cases"
-  setup_repo "$repo"
-  mkdir -p "$repo/.workflow/maps"
-
-  # 1. Empty fog does not warn:
-  # 1a. Completely empty fog section
-  cat > "$repo/.workflow/maps/map_empty_fog.md" <<'EOF'
-# Map: Empty Fog
-**Destination:** Finish phase
-**Started:** 2026-10-01   **Status:** working
-
-## Route so far
-
-## Open questions
-
-## Not yet clear
-
-## Ruled out
-EOF
-
-  local out
-  out="$(cd "$repo" && "$WORKFLOW" doctor 2>&1 || true)"
-  if [[ "$out" == *"map_empty_fog.md"* ]]; then
-    fail "map with empty fog should not trigger staleness warning: $out"
-  else
-    pass "map with empty fog produces no staleness warning"
-  fi
-  rm -f "$repo/.workflow/maps/map_empty_fog.md"
-
-  # 1b. Official multiline HTML comment under ## Not yet clear
-  cat > "$repo/.workflow/maps/map_comment_fog.md" <<'EOF'
-# Map: Comment Fog
-**Destination:** Finish phase
-**Started:** 2026-10-01   **Status:** working
-
-## Route so far
-
-## Open questions
-
-## Not yet clear
-<!--
-Things you know you don't know, or hunches not ready to be questions.
-Promote to Open Questions as they sharpen.
--->
-
-## Ruled out
-EOF
-
-  out="$(cd "$repo" && "$WORKFLOW" doctor 2>&1 || true)"
-  if [[ "$out" == *"map_comment_fog.md"* ]]; then
-    fail "map with only multiline HTML comment in fog should not trigger staleness warning: $out"
-  else
-    pass "map with official multiline comment in fog produces no staleness warning"
-  fi
-  rm -f "$repo/.workflow/maps/map_comment_fog.md"
-
-  # 1c. Fenced code block example under ## Not yet clear
-  cat > "$repo/.workflow/maps/map_fenced_fog.md" <<'EOF'
-# Map: Fenced Fog
-**Destination:** Finish phase
-**Started:** 2026-10-01   **Status:** working
-
-## Route so far
-
-## Open questions
-
-## Not yet clear
-```markdown
-- Fenced example item that is not a real fog entry
-```
-
-## Ruled out
-EOF
-
-  out="$(cd "$repo" && "$WORKFLOW" doctor 2>&1 || true)"
-  if [[ "$out" == *"map_fenced_fog.md"* ]]; then
-    fail "map with fenced example in fog should not trigger staleness warning: $out"
-  else
-    pass "map with fenced example in fog produces no staleness warning"
-  fi
-  rm -f "$repo/.workflow/maps/map_fenced_fog.md"
-
-  # 2. Empty open + real fog + answered historical Q warns
-  cat > "$repo/.workflow/maps/map_answered_q.md" <<'EOF'
-# Map: Answered History
-**Destination:** Finish phase
-**Started:** 2026-10-01   **Status:** working
-
-## Route so far
-
-## Open questions
-
-## Not yet clear
-- Genuine fog item requiring clarity
-
-## Ruled out
-
-## Q1: Which database?
-**Blocks:** Storage
-**Kind:** decide
-**Depends on:** none
-**Answer:** SQLite
-EOF
-
-  out="$(cd "$repo" && "$WORKFLOW" doctor 2>&1 || true)"
-  if [[ "$out" == *"map map_answered_q.md: Status working but no open questions and fog remains"* ]]; then
-    pass "empty open + real fog + answered historical Q triggers staleness warning"
-  else
-    fail "expected staleness warning for map with answered historical Q, got: $out"
-  fi
-  rm -f "$repo/.workflow/maps/map_answered_q.md"
-
-  # 3. Official end-of-document Q unanswered does NOT warn
-  cat > "$repo/.workflow/maps/map_unanswered_end_q.md" <<'EOF'
-# Map: Unanswered End Q
-**Destination:** Finish phase
-**Started:** 2026-10-01   **Status:** working
-
-## Route so far
-
-## Open questions
-
-## Not yet clear
-- Genuine fog item requiring clarity
-
-## Ruled out
-
-## Q1: Which database?
-**Blocks:** Storage
-**Kind:** decide
-**Depends on:** none
-**Answer:**
-EOF
-
-  out="$(cd "$repo" && "$WORKFLOW" doctor 2>&1 || true)"
-  if [[ "$out" == *"map_unanswered_end_q.md"* ]]; then
-    fail "unanswered Q at end of map should count as open question and not warn: $out"
-  else
-    pass "unanswered Q at end of document produces no staleness warning"
-  fi
-  rm -f "$repo/.workflow/maps/map_unanswered_end_q.md"
-
-  # 4. Multiline Answer historical Q still triggers warning
-  cat > "$repo/.workflow/maps/map_multiline_answer.md" <<'EOF'
-# Map: Multiline Answer
-**Destination:** Finish phase
-**Started:** 2026-10-01   **Status:** working
-
-## Route so far
-
-## Open questions
-
-## Not yet clear
-- Lingering uncertainty item
-
-## Ruled out
-
-## Q1: Which architecture pattern?
-**Blocks:** Design
-**Kind:** decide
-**Depends on:** none
-**Answer:**
-We decided to adopt the pipeline architecture because it cleanly
-isolates transformation stages and simplifies regression testing.
-EOF
-
-  out="$(cd "$repo" && "$WORKFLOW" doctor 2>&1 || true)"
-  if [[ "$out" == *"map map_multiline_answer.md: Status working but no open questions and fog remains"* ]]; then
-    pass "multiline answered historical Q still triggers staleness warning when fog remains"
-  else
-    fail "expected staleness warning for multiline answered historical Q, got: $out"
-  fi
-  rm -f "$repo/.workflow/maps/map_multiline_answer.md"
-
-  # 5. Clear and charting maps do not trigger warning (even with empty open and fog)
-  cat > "$repo/.workflow/maps/map_clear.md" <<'EOF'
-# Map: Clear Map
-**Destination:** Finished milestone
-**Started:** 2026-10-01   **Status:** clear
-
-## Route so far
-
-## Open questions
-
-## Not yet clear
-- Leftover notes from earlier exploration
-
-## Ruled out
-EOF
-
-  cat > "$repo/.workflow/maps/map_charting.md" <<'EOF'
-# Map: Charting Map
-**Destination:** Exploration
-**Started:** 2026-10-01   **Status:** charting
-
-## Route so far
-
-## Open questions
-
-## Not yet clear
-- Initial unknowns being surveyed
-
-## Ruled out
-EOF
-
-  out="$(cd "$repo" && "$WORKFLOW" doctor 2>&1 || true)"
-  if [[ "$out" == *"map_clear.md"* ]] || [[ "$out" == *"map_charting.md"* ]]; then
-    fail "clear and charting maps should not trigger staleness warning: $out"
-  else
-    pass "clear and charting maps produce no staleness warning"
-  fi
-  rm -f "$repo/.workflow/maps/map_clear.md" "$repo/.workflow/maps/map_charting.md"
-}
 
 # --- 2.3: the CLI travels with the project in .workflow/bin ---
 test_vendored_cli() {
@@ -2205,6 +1730,12 @@ test_removed_commands_and_stale_copies() {
       fail "workflow $cmd should exit 2 with a removal hint (exit $status): $out"
     fi
   done
+  status=0; out="$(cd "$repo" && "$WORKFLOW" pulse 2>&1 >/dev/null)" || status=$?
+  if [ "$status" -eq 2 ] && [[ "$out" == "workflow pulse was removed: "* ]]; then
+    pass "workflow pulse exits 2 with a removal hint"
+  else
+    fail "workflow pulse should exit 2 with a removal hint (exit $status): $out"
+  fi
 
   local bin="$repo/.workflow/bin"
   printf '#!/usr/bin/env bash\necho old\n' > "$bin/workflow-tasks"
@@ -2214,23 +1745,37 @@ test_removed_commands_and_stale_copies() {
   printf '# local tweak\n' >> "$bin/workflow-deps"
   printf 'old thinking notes\n' > "$repo/.workflow/thinking.md"
   cksum < "$repo/.workflow/thinking.md" | cut -d' ' -f1 > "$repo/.workflow/.thinking.workflow-managed"
+  printf 'old phase notes\n' > "$repo/.workflow/phase-boundaries.md"
+  cksum < "$repo/.workflow/phase-boundaries.md" | cut -d' ' -f1 > "$repo/.workflow/.phase-boundaries.workflow-managed"
+  printf 'old merge notes\n' > "$repo/.workflow/merge-strategy.md"
+  cksum < "$repo/.workflow/merge-strategy.md" | cut -d' ' -f1 > "$repo/.workflow/.merge-strategy.workflow-managed"
+  printf 'old spike notes\n' > "$repo/.workflow/spike-tasks.md"
+  cksum < "$repo/.workflow/spike-tasks.md" | cut -d' ' -f1 > "$repo/.workflow/.spike-tasks.workflow-managed"
+  mkdir -p "$repo/.agents/skills/flow-map"
+  printf 'old map skill\n' > "$repo/.agents/skills/flow-map/SKILL.md"
+  cksum < "$repo/.agents/skills/flow-map/SKILL.md" | cut -d' ' -f1 > "$repo/.agents/skills/flow-map/.workflow-managed"
   out="$(cd "$repo" && "$WORKFLOW" update 2>&1)"
   if [ ! -e "$bin/workflow-tasks" ]; then pass "update deletes an unmodified stale .workflow/bin/workflow-tasks"; else fail "update should delete the stale workflow-tasks: $out"; fi
   if [ -f "$bin/workflow-deps" ] && [[ "$out" == *"kept .workflow/bin/workflow-deps"* ]]; then pass "update keeps an edited stale CLI file with a warning"; else fail "update should keep the edited workflow-deps: $out"; fi
-  if [ -f "$KIT/templates/project/.workflow/thinking.md" ]; then
-    pass "thinking.md still shipped; stale removal not applicable"
-  elif [ ! -e "$repo/.workflow/thinking.md" ] && [ ! -e "$repo/.workflow/.thinking.workflow-managed" ]; then
-    pass "update deletes an unmodified .workflow/thinking.md"
+  for retired in thinking phase-boundaries merge-strategy spike-tasks; do
+    if [ ! -e "$repo/.workflow/${retired}.md" ] && [ ! -e "$repo/.workflow/.${retired}.workflow-managed" ]; then
+      pass "update deletes an unmodified .workflow/${retired}.md"
+    else
+      fail "update should delete the unmodified ${retired}.md: $out"
+    fi
+  done
+  if [ ! -e "$repo/.agents/skills/flow-map" ]; then
+    pass "update deletes retired skill flow-map"
   else
-    fail "update should delete the unmodified thinking.md: $out"
+    fail "update should delete retired skill flow-map: $out"
   fi
 }
 
-test_pulse_and_next_flags_cli() {
-  local repo="$TMPDIR/repo_pulse_next" out
+test_next_flags_cli() {
+  local repo="$TMPDIR/repo_next_flags" out
   setup_repo "$repo"
-  out="$(cd "$repo" && ./.workflow/bin/workflow pulse --quiet-idle)"
-  if [ -z "$out" ]; then pass "workflow pulse --quiet-idle stays silent when queue is empty"; else fail "pulse --quiet-idle printed on idle queue: $out"; fi
+  out="$(cd "$repo" && ./.workflow/bin/workflow next --brief)"
+  if [ -z "$out" ]; then pass "workflow next --brief stays silent when queue is empty"; else fail "next --brief printed on idle queue: $out"; fi
   mkdir -p "$repo/.workflow/tasks/alpha" "$repo/.workflow/tasks/beta"
   for n in 01 02 03 04 05 06; do
     cat > "$repo/.workflow/tasks/alpha/${n}-slice.md" <<EOF
@@ -2253,11 +1798,38 @@ EOF
   else
     fail "unexpected workflow next --effort --all output: $out"
   fi
-  out="$(cd "$repo" && ./.workflow/bin/workflow pulse --effort alpha --no-color)"
-  if [[ "$out" == *"Ready wave (6):"* ]] && [[ "$out" == *"Overlaps: src/shared.ts"* ]] && [[ "$out" == *"Pulse:"* ]]; then
-    pass "workflow pulse --effort reports ready wave, overlaps, and directives"
+  out="$(cd "$repo" && ./.workflow/bin/workflow next --effort alpha --brief --no-color)"
+  if [[ "$out" == *"Ready (6):"* ]] && [[ "$out" == *"Overlaps: src/shared.ts"* ]] && [[ "$out" != *"Pulse:"* ]]; then
+    pass "workflow next --effort --brief reports ready tasks and overlaps without directives"
   else
-    fail "unexpected workflow pulse output: $out"
+    fail "unexpected workflow next --brief output: $out"
+  fi
+}
+
+# --- Standards placeholder check avoids false positives on generics/HTML ---
+test_standards_placeholder_precision() {
+  local repo="$TMPDIR/repo_standards_generics" out status=0
+  setup_repo "$repo"
+  cat > "$repo/.workflow/standards.md" <<'EOF'
+# Standards
+## Project
+CLI service returning Result<void> and Promise<string | null> over <div> output.
+## Landing
+Landing: direct
+EOF
+  out="$(cd "$repo" && ./.workflow/bin/workflow doctor 2>&1)" || status=$?
+  if [ "$status" -eq 0 ] && [[ "$out" != *"unfilled placeholders"* ]]; then
+    pass "doctor accepts generic types and HTML tags in filled standards.md"
+  else
+    fail "doctor false-positived on filled standards.md (exit $status): $out"
+  fi
+  printf '\nLanding: <TODO: direct | local-merge | pr>\n' >> "$repo/.workflow/standards.md"
+  status=0
+  out="$(cd "$repo" && ./.workflow/bin/workflow doctor 2>&1)" || status=$?
+  if [ "$status" -ne 0 ] && [[ "$out" == *"standards.md still contains unfilled placeholders"* ]]; then
+    pass "doctor catches <TODO: ...> placeholders in standards.md"
+  else
+    fail "doctor missed <TODO: ...> placeholder in standards.md (exit $status): $out"
   fi
 }
 
@@ -2274,8 +1846,7 @@ test_rulebook_update_behavior
 test_doctor_no_writes
 test_duplicate_task_number_same_effort
 test_different_efforts_same_number_ok
-test_map_staleness
-test_draft_statistics
+test_open_maps_cli
 test_task_heading_mismatch
 test_task_heading_match_ok
 test_agents_block_prepended
@@ -2284,13 +1855,6 @@ test_agents_block_force_overwrites
 test_cycle_detection_simple
 test_cycle_detection_three
 test_no_false_positive
-test_glossary_malformed
-test_glossary_duplicate
-test_glossary_valid
-test_glossary_official_wrapped_avoid_repeats
-test_glossary_terms_section_boundary
-test_glossary_orphan_avoid_rejected
-test_glossary_duplicate_real_terms_with_avoid
 test_uninstall_edited_agents_block_retained
 test_uninstall_unmodified_agents_block_preserves_outside_text
 test_uninstall_malformed_agents_markers_no_data_loss
@@ -2299,7 +1863,6 @@ test_uninstall_preexisting_empty_agents_preserved
 test_nongit_lifecycle_preserves_user_docs
 test_symlink_boundaries_rejected
 test_doctor_agents_markers_validation
-test_map_staleness_edge_cases
 test_vendored_cli
 test_claude_adapter
 test_pre_commit_hook
@@ -2309,7 +1872,8 @@ test_doctor_branch_version_drift
 test_doctor_uncommitted_update
 test_update_branch_guidance
 test_removed_commands_and_stale_copies
-test_pulse_and_next_flags_cli
+test_next_flags_cli
+test_standards_placeholder_precision
 
 printf '\nResults: %d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" -eq 0 ]

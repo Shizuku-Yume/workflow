@@ -17,13 +17,14 @@ ROOT = Path(__file__).resolve().parent.parent
 WORKFLOW = ROOT / 'bin/workflow'
 CONVENTIONS = ROOT / 'CONVENTIONS.md'
 FLOW_PATH = ROOT / 'skills/flow-break/SKILL.md'
-SPIKE_PATH = ROOT / 'templates/project/.workflow/spike-tasks.md'
 DECISION_PATH = ROOT / 'templates/project/.workflow/decisions.md'
 
-# Things removed in 2.5 that the shipped prose must not mention (CHANGELOG is exempt).
+# Things removed from the toolkit that the shipped prose must not mention (CHANGELOG is exempt).
 REMOVED = ['workflow tasks', 'workflow deps', 'workflow decisions', 'workflow effort',
-           'workflow debt', 'hotfix-review', 'mark-resolved', 'effort create',
-           'effort complete', '.workflow/efforts', 'thinking.md', 'workflow-process']
+           'workflow debt', 'workflow pulse', 'hotfix-review', 'mark-resolved',
+           'effort create', 'effort complete', '.workflow/efforts', 'thinking.md',
+           'phase-boundaries.md', 'merge-strategy.md', 'spike-tasks.md', 'flow-map',
+           'flow-help', 'flow-what', 'workflow-process', 'retrospective.md']
 
 passed = failed = 0
 
@@ -233,10 +234,10 @@ def check_file_tree():
 def check_skill_listing():
     skills = sorted(path.name for path in (ROOT / 'skills').iterdir() if path.is_dir())
     readmes = [p for p in (ROOT / 'README.md', ROOT / 'README_EN.md') if p.is_file()]
-    routing = section_text(CONVENTIONS, '5')
+    routing = section_text(CONVENTIONS, '3')
     initial = failed
     if routing is None:
-        fail(CONVENTIONS, 1, 'missing section "## 5." (skill routing)')
+        fail(CONVENTIONS, 1, 'missing section "## 3." (sizing and routing)')
         routing = ''
     for name in skills:
         pattern = re.compile(r'(?<![\w-])' + re.escape(name) + r'(?![\w-])')
@@ -244,9 +245,9 @@ def check_skill_listing():
             if not pattern.search(readme_path.read_text(encoding='utf-8')):
                 fail(readme_path, 1, f'skill {name!r} is not mentioned')
         if routing and not pattern.search(routing):
-            fail(CONVENTIONS, 1, f'skill {name!r} is not mentioned in §5')
+            fail(CONVENTIONS, 1, f'skill {name!r} is not mentioned in §3')
     if failed == initial:
-        ok(f'all {len(skills)} skills appear in READMEs and CONVENTIONS.md §5')
+        ok(f'all {len(skills)} skills appear in READMEs and CONVENTIONS.md §3')
 
 
 # Extract the live fenced blocks, retaining original line numbers for diagnostics.
@@ -347,9 +348,8 @@ REFERENCE_TASK = '''# {number}: Reference target
 
 def roundtrips(tmp):
     flow = example(FLOW_PATH, re.compile(r'^# <NN>:'))
-    spike = example(SPIKE_PATH, re.compile(r'^#\s*03:'))
     decision = example(DECISION_PATH, re.compile(r'^## \d{4}-\d{2}-\d{2} - '))
-    if flow is None or spike is None or decision is None:
+    if flow is None or decision is None:
         return
     repo = tmp / 'project'
     repo.mkdir()
@@ -407,7 +407,7 @@ def roundtrips(tmp):
         else:
             ok(f'{where}: no validate issues')
 
-    for path, block, number in [(FLOW_PATH, flow, '01'), (SPIKE_PATH, spike, '03')]:
+    for path, block, number in [(FLOW_PATH, flow, '01')]:
         for index, variant in enumerate(variants(path, block, replacements), 1):
             effort = 'demo'
             for _, text in variant:

@@ -1,11 +1,10 @@
 # Technical Debt
 
-Track costly code so reviews retain evidence and the reason it remains. `flow-architect`
-or any skill that finds debt may add an entry.
+Track code friction worth fixing later, backed by concrete evidence. Remove entries in the commit that fixes them. If the user declines a fix, delete the entry; log in `decisions.md` (`Decided by: user`) only if future agents are likely to re-propose the same cleanup.
 
 ## Format
 
-Use a level-two heading naming the concrete symptom under `## Entries`; cite by heading.
+Add `## <Concrete symptom>` headings under `## Entries`:
 
 ```markdown
 ## Order total computed in three places
@@ -14,13 +13,8 @@ Use a level-two heading naming the concrete symptom under `## Entries`; cite by 
 - **Added:** <YYYY-MM-DD>
 - **Priority:** fix-now | worth-doing | only-if-grows
 - **Problem:** <what is wrong, with evidence>
-- **Impact:** <what gets harder while it stays>
-- **Solution:** <the change, in plain terms>
-- **Cost:** <what the fix risks, how big it is>
+- **Solution:** <plain-language fix and rough cost>
 ```
-
-Remove entries when fixed (in the fixing commit). If the user declines a fix, delete the
-entry and append a `decisions.md` entry (`Mine: no`) recording the choice and when to revisit.
 
 ## Entries
 

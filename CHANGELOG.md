@@ -3,6 +3,69 @@
 What changed in each version and what an existing project has to do about it.
 Usage lives in the README and in `--help`.
 
+## 2.9.0
+
+### Upgrade
+
+Run `npm install --global @shizuku-yume/workflow`, then on the main branch with a
+clean tree run:
+
+```sh
+workflow update   # add --force if AGENTS.md was edited locally and you want the updated block
+git add .workflow .agents AGENTS.md && git commit   # plus .claude CLAUDE.md if used
+```
+
+Merge the main branch into active branches and worktrees so every environment uses the
+updated rules and CLI.
+
+- If `standards.md` cites `CONVENTIONS.md` section numbers, renumber them: sizing and
+  routing is now §3, state and handoff §4, review §5, bugs §6, branches §7, lean code §8.
+- If you reopen an older closed spec effort, rename `done/<effort>/retrospective.md` to
+  `done/<effort>/closeout.md` before running `flow-close`.
+
+### Changes
+
+- **Consolidated rulebook and skills**:
+  - Folded `phase-boundaries.md`, `merge-strategy.md`, and `spike-tasks.md` into
+    `CONVENTIONS.md`; `workflow update` deletes unedited copies.
+  - Retired `flow-map`: `flow-grill` now writes `maps/<slug>.md` directly when open
+    questions span sessions.
+  - Added user-invoked `flow-retro` to turn concrete session friction into automated
+    checks, layout pointers, or rule reductions (`flow-architect` also stays
+    user-invoked; `flow-spec`, `flow-break`, and `flow-close` are agent-invocable again
+    so hand-offs work in Claude Code).
+  - Dropped the `thorough` argument from `flow-implement`; run `flow-architect` directly
+    for audits.
+- **Leaner templates, routing, and review**:
+  - Separated requirement clarity (`flow-grill` when scope is open) from change size
+    (small edit, 1–3 tasks without spec/`flow-close`, multi-task spec effort) across
+    `AGENTS.md`, `CONVENTIONS.md`, and READMEs.
+  - Renamed `flow-close`'s acceptance record from `done/<effort>/retrospective.md` to
+    `done/<effort>/closeout.md` (`# Closeout: <effort>`), avoiding confusion with
+    `flow-retro`.
+  - Simplified `flow-break`: removed redundant `Delivers:` from the default task
+    template (`validate` still accepts it), removed `Question:` / `Time box:` ceremony
+    from `spike` tasks, and set specs to `in progress` on the landing branch when
+    writing tasks to avoid parallel worktree conflicts.
+  - Streamlined `standards.md` with `<TODO: ...>` placeholders (dropping `Evidence` and
+    `What we do not do` boilerplate) and removed `glossary.md`'s stale `doctor` syntax
+    note.
+  - Calibrated `workflow-reviewer` with plain `Requirements & proof` and `Code quality`
+    sections (replacing `Brief A`/`Brief B`), flagging docs only when a change leaves
+    existing statements stale or contradicted.
+- **CLI**:
+  - Replaced `workflow pulse` with `workflow next --brief` (compact snapshot, silent
+    when idle, no repeated prompt directives).
+  - Replaced `**Mine:** yes | no` in `decisions.md` with `**Decided by:** user | agent`
+    (existing `Mine:` lines remain accepted).
+  - Dropped unused legacy task/spec fields and aliases in `workflow validate` (`started`,
+    `finished`, `done when`, `scope`, `spec`, `dependencies`, `notes`, `goal`, `urgent`,
+    `Base:`, `Type:`) and dropped glossary syntax linting and task-draft counters in
+    `workflow doctor`.
+  - Narrowed `workflow doctor` placeholder detection on `standards.md` so code generics
+    and HTML tags (`Result<void>`, `<div>`) no longer trigger false positives, and
+    cleaned up `workflow update` summary output.
+
 ## 2.8.0
 
 ### Upgrade

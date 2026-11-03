@@ -2,54 +2,86 @@
 
 English | [简体中文](README.md)
 
-Project-local workflow skills and CLI for coding agents and developers.
-
-Injects conventions, skills, document layouts, and a task scheduling CLI directly into the target Git repository, giving coding agents structured engineering capabilities for planning, decomposition, implementation, verification, and retrospectives.
+Lightweight, repo-local workflow skills and CLI for coding agents and developers. Running `workflow init` writes conventions, skills, templates, and a task-queue CLI directly into your Git repository so planning, task breakdown, implementation, and review stay consistent without heavy project-management overhead.
 
 ---
 
-## Key Features
+## Design Principles
 
-- **Project-Local & Zero Extra Setup**: All conventions, skills, templates, and scheduling tools are copied and committed into the repository root (`.workflow/`, `.agents/`, and optionally `.claude/`). Any teammate, CI runner, or cloud agent cloning the repository gets the identical workflow without global environment dependencies or PATH configuration.
-- **Evidence Before Questions & Momentum (§0, §1)**: Agents autonomously investigate codebase evidence (patterns, existing behaviors, APIs, constraints) before interrupting the user. Reversible choices take reasonable defaults to maintain momentum; only questions involving user decision ownership (intent, scope, expensive reversals) are batched and asked.
-- **DAG Task Queue & Scope Routing (§5)**: Clear 1–3 task work goes straight to `flow-break` without spec or close ceremony, while multi-task or architecturally non-obvious efforts use `flow-spec` and `flow-close`. Ready tasks in `.workflow/tasks/<effort>/` are scheduled topologically by `workflow next` based on priority and dependencies.
-- **Observable Verification (§2.1, §8)**: Every task requires an explicit `Check` command. Features and bug fixes must reproduce or fail before changes and pass afterward; unverified deliverables are rejected. A check against a fixture or mock proves only the stand-in: behaviour that depends on a real service is checked against it.
-- **Real-Path Acceptance (§6)**: `flow-close` reruns every spec check on the build that will ship and walks the main use as a user would. An effort is done only when the user says yes, recorded as `**Accepted:**` in its retrospective.
-- **Proportional Scope & Anti-OverDefense (§10)**: Bounds fixes and implementation without suppressing bug discovery. Real defects reachable through supported use are reported directly; avoids unpaid hashes, unreachable corner-case hardening, rubric or audit loops, unrequested wrappers or flags, and trial-and-error or AI traces in deliverables (`STYLE.md`).
-- **Parallel Work with Integration Branches (§9)**: Parallel tasks run in separate worktrees. `flow-implement <effort>` coordinates whole-effort DAG execution in waves, serializing file overlaps and harvesting completed deliverables immediately. An effort that can't land piece by piece names an integration branch in its spec; its tasks land there and the whole effort lands on main at close. Delegating a task to a subagent keeps its proof with the session that archives it.
-- **Append-Only Decision Log**: Significant architectural decisions are appended to `.workflow/decisions.md` with five structured fields (`Decided`, `Instead of`, `Because`, `Mine`, `Revisit when`). Git union merge configuration prevents merge conflicts across parallel branches.
-- **Independent Two-Brief Reviews (§7)**: Built-in `workflow-reviewer` agent conducts independent reviews covering process adherence and code implementation quality (`security-reviewer` reviews boundary closure on trust boundaries); localized leaf tasks can use a single combined review pass. Findings are batched for fixes and affected checks rerun; in-scope fixes without new files, callers, or sinks skip redundant re-review.
+- **Committed to the Repo**: Rules, skills, and the CLI live inside the repository (`.workflow/`, `.agents/`, and optional `.claude/`). Collaborators and CI clone and run without global configuration.
+- **Check Code Before Asking**: Search code, configs, and git history before asking questions. Pick sensible defaults for reversible details; bring only user-owned direction or costly architectural trade-offs to the user.
+- **Real-Path Verification**: Every task carries a runnable `Check` command. Reproduce bugs before fixing them, and verify changes through the real CLI or application entry point rather than mocks alone.
+- **Lean Implementation**: Reuse existing code and standard libraries before adding new code. Fix real reachable bugs without speculative defenses, passthrough wrappers, or unrequested compatibility flags.
+- **Fresh-Context Review**: A fresh `workflow-reviewer` subagent inspects requirement completion and code quality together, triggering `security-reviewer` at trust boundaries like auth or external input.
+- **Parallel Worktrees & Logged Decisions**: `workflow next` schedules ready tasks and flags shared-file overlaps. Parallel tasks run in isolated Git worktrees. Difficult-to-reverse technical decisions append to `.workflow/decisions.md` (Git union merge prevents conflicts), while project terms live in `glossary.md`.
+
+---
+
+## How It Works in Practice
+
+Pick the shortest path for the size and clarity of the change:
+
+1. **Small change or bugfix**: edit code directly → run tests and the real entry point → commit. No task files, no review ceremonies.
+2. **1–3 clear tasks**: `flow-break` writes task cards → `flow-implement` builds and archives them. No spec, no `flow-close`.
+3. **Multi-task feature or contract/schema change**: `flow-spec` → `flow-break` → `flow-implement` → `flow-close`.
+
+**When scope or design is unsettled** (regardless of size), run `flow-grill` first to clarify trade-offs, then take the matching path above. Record unknowns that require multi-session exploration in `maps/<slug>.md`, which `workflow next` lists until resolved.
+
+---
+
+## The 9 Workflow Skills
+
+Most days only require 2–4 skills. The toolkit divides skills into **daily core skills** and **on-demand supporting skills**:
+
+### Daily Core Skills
+
+| Skill | When to Use | What It Does |
+| :--- | :--- | :--- |
+| `flow-start` | Session start / resuming / unsure what's next | Loads project standards, inspects queue state, and recommends or resumes the next step. |
+| `flow-grill` | Unclear requirements / open scope | Clarifies requirements and trade-offs against code facts. Moves directly to `flow-spec` or `flow-break` once settled, or saves a `maps/<slug>.md` note for multi-session exploration. |
+| `flow-spec` | Unsettled architecture / complex multi-task effort | Writes a concise technical spec (`specs/<effort>.md`); skipped for 1–3 clear tasks. |
+| `flow-break` | Splitting scope into tasks | Breaks specs or clear goals into task files with `Blocked by` dependencies and runnable `Check` commands. |
+| `flow-implement` | Building a task or an effort queue | Builds, verifies, reviews, and archives tasks; coordinates parallel waves across worktrees when given `<effort>`. |
+| `flow-verify` | Pre-merge code review | Runs a fresh `workflow-reviewer` subagent for requirements and code quality, plus security review at trust boundaries. |
+
+### On-Demand Supporting Skills
+
+| Skill | When to Use | What It Does |
+| :--- | :--- | :--- |
+| `flow-close` | Wrapping up a spec effort | Runs all spec checks and the main flow on the delivery build, records acceptance upon user sign-off, and marks the spec done. |
+| `flow-retro` | Rough session / workflow friction | Reviews session friction and proposes concrete automated checks, layout notes, or rule reductions (requires user approval). |
+| `flow-architect` | High change friction / technical debt | Audits high-friction modules for duplication, dead code, and leaky abstractions, tracking actionable cleanup tasks. |
 
 ---
 
 ## Installation & Setup
 
-### 1. Install CLI Globally
+### 1. Install the CLI
 
-Recommended via npm:
+Via npm:
 
 ```bash
 npm install --global @shizuku-yume/workflow
 ```
 
-Alternatively, clone this repository and use `bin/workflow`.
+Or clone this repository and run `bin/workflow` directly.
 
 ### 2. Initialize a Project
 
-Run from the root of any target Git repository:
+From the root of your Git repository:
 
 ```bash
 workflow init
 ```
 
-Common options:
-- `--claude`: Force-install Claude Code adapter files (`.claude/skills/`, `.claude/agents/`, and `CLAUDE.md` importing `AGENTS.md`). Enabled automatically if `CLAUDE.md` or `.claude/` exists.
-- `--no-claude`: Install standard `.agents/` and `AGENTS.md` only.
-- `--force`: Overwrite modified managed files.
+Options:
+- `--claude`: Also install Claude Code adapter files (`.claude/` and `CLAUDE.md`; auto-enabled when already present).
+- `--no-claude`: Install `.agents/` and `AGENTS.md` only.
+- `--force`: Overwrite locally edited managed files.
 
-### 3. Install Pre-Commit Hook (Optional)
+### 3. Optional Pre-Commit Hook
 
-Prevent committing malformed tasks or broken dependencies:
+Validate task files and decision formatting before each commit:
 
 ```bash
 workflow hook install
@@ -57,91 +89,65 @@ workflow hook install
 
 ---
 
-## Skills Overview
-
-The toolkit provides 9 standard skills covering distinct development phases (routed per §5):
-
-| Skill | When to Use | Description |
-| :--- | :--- | :--- |
-| `flow-start` | Session start / context lost / resuming work | Loads project standards, classifies request (clarification, small task, or complex work). |
-| `flow-grill` | Requirements vague / design options open | Clarifies scope, categorizes decisions, batches user questions, and logs decisions. |
-| `flow-map` | Foggy projects / multi-session exploration | Charts dependencies and open questions across sessions when requirements are unclear. |
-| `flow-spec` | Settled design / multi-task effort needing a spec | Records consensus into a structured effort specification (`.workflow/specs/<effort>.md`); clear 1–3 task work skips this step. |
-| `flow-break` | Splitting spec or clear scope into tasks | Decomposes a spec or clear 1–3 task scope into task files with dependencies (`Blocked by`) and observable checks (`Check`). |
-| `flow-implement` | Building a single task or orchestrating an effort | End-to-end task execution (audit, implementation, verification, review, archive); accepts `<effort>` to coordinate DAG waves across parallel worktrees. |
-| `flow-verify` | Reviewing completed work before merging | Invokes `workflow-reviewer` for process and quality review; localized leaf tasks can use a single combined review pass. |
-| `flow-close` | All tasks of an effort with a spec landed | Verifies against spec, demonstrates behavior, logs retrospective, and marks spec done (efforts without a spec finish on last task land). |
-| `flow-architect` | High code friction / auditing technical debt | Detects duplication, dead code, leaky modules, and tracks technical debt. |
-
----
-
 ## CLI Reference
 
-Run `workflow <command>` via the global CLI or call `.workflow/bin/workflow <command>` committed inside the project.
+Use `workflow <command>` globally, or `.workflow/bin/workflow <command>` inside any initialized repository.
 
 ### Daily Commands
 
-- `workflow next [--effort SLUG] [--all] [--format text|json]`
-  Inspects task dependency graphs and displays up to 5 ready tasks by priority (or all ready tasks with `--all`, optionally scoped with `--effort`), along with paused and blocked tasks, detecting shared file path overlaps across ready tasks (`file_overlaps`). Off the main branch it names the branch it read and how far main is ahead; it lists tasks landed on main but still open in this tree, shows an effort integrating on another branch as one line, and names tasks that several branches claim.
-- `workflow pulse [--effort SLUG] [--quiet-idle] [--format text|json]`
-  Compact queue snapshot and anti-drift execution reminder for long autonomous runs, displaying active, ready, and blocked task state (supports `--effort`, and stays silent when idle under `--quiet-idle`).
+- `workflow next [--effort SLUG] [--all] [--brief] [--format text|json]`
+  Lists ready tasks by priority, shows active/paused/blocked tasks, and warns on shared files; `--brief` prints a compact snapshot and stays silent when idle.
 - `workflow validate [--strict] [--format text|json]`
-  Statically validates schemas, field grammar, dependency references, and decision logs across `tasks/`, `done/`, and `specs/`. A task being archived must have every checklist item ticked and a `Check after:` record; a spec can't be marked done while one of its tasks is open or before the user's acceptance is recorded.
+  Validates task files, archived tasks, specs, and `decisions.md`.
 - `workflow doctor`
-  Diagnoses repository health, validating managed files, symlink safety, AGENTS markers, glossary integrity, and task dependency cycles. It warns when this branch runs a different workflow version than main, or when the last update is not committed.
+  Checks installed workflow files, branch version sync, and `validate`.
 - `workflow hook install|uninstall|status [--force|--append]`
-  Manages the Git pre-commit hook that runs validation before commits (`--append` adds a managed block to an existing hook).
+  Manages the Git pre-commit validation hook.
 - `workflow version`
-  Prints current toolkit version.
+  Prints the toolkit version.
 
 ### Setup & Maintenance
 
-- `workflow init [--force] [--claude|--no-claude]`
-  Installs workflow skills, rules, and the committed CLI into the current repository.
-- `workflow update [--force] [--claude|--no-claude]`
-  Re-copies skills, rules, and CLI updates while preserving custom user files and edits. Commit the result on the main branch: other branches and worktrees keep the old rules until they merge it.
-- `workflow uninstall`
-  Cleanly removes workflow-managed files while retaining user code and data.
+- `workflow init [--force] [--claude|--no-claude]` — Install workflow files and CLI into the current repo.
+- `workflow update [--force] [--claude|--no-claude]` — Refresh unmodified skills, rules, and CLI while preserving local edits.
+- `workflow uninstall` — Remove unmodified managed files while keeping project standards, specs, tasks, and decisions.
 
 ---
 
-## Project Structure
+## Project Layout
 
-Layout created after `workflow init` (see §2):
+Created by `workflow init`:
 
 ```
-AGENTS.md                          # Primary agent rules entry point (workflow markers)
+AGENTS.md                        # Entry rules for agents (marked block)
 .agents/
-  skills/<name>/SKILL.md           # Implementation steps for the 9 workflow skills
-  agents/workflow-reviewer.md      # Reviewer agent briefs (process & quality)
-  agents/security-reviewer.md      # Security brief (trust-boundary closure)
+  skills/<name>/SKILL.md         # 9 workflow skill definitions
+  agents/workflow-reviewer.md    # Requirements and code quality reviewer
+  agents/security-reviewer.md    # Trust-boundary security reviewer
 .workflow/
-  bin/workflow                     # Committed CLI executable (Bash)
-  bin/workflow-core.py             # Committed validator and queue engine (Python 3 stdlib)
-  CONVENTIONS.md                   # Complete workflow conventions rulebook
-  STYLE.md                         # Writing and communication style guidelines
-  standards.md                     # Project-specific configuration (build, test, landing)
-  glossary.md                      # Domain glossary (Git union merge)
-  decisions.md                     # Append-only architectural decisions (Git union merge)
-  technical-debt.md                # Architectural findings backlog
-  merge-strategy.md                # Git branch and landing strategies
-  phase-boundaries.md              # Context boundaries and phase management
-  spike-tasks.md                   # Guidelines for exploratory spike tasks
-  specs/<effort>.md                # Effort specifications
-  tasks/<effort>/<NN>-<slug>.md    # Individual task files
-  maps/<slug>.md                   # Multi-session fog maps
-  done/<effort>/                   # Archived tasks and retrospectives
+  bin/workflow                   # Repo-local CLI (Bash)
+  bin/workflow-core.py           # Validator and queue engine (Python 3 stdlib)
+  CONVENTIONS.md                 # Shared workflow conventions
+  STYLE.md                       # Writing and reporting rules
+  standards.md                   # Project commands, layout, and Landing mode
+  glossary.md                    # Domain terms (Git union merge)
+  decisions.md                   # Consequential decisions log (Git union merge)
+  technical-debt.md              # Tracked technical debt
+  specs/<effort>.md              # Technical specifications
+  tasks/<effort>/<NN>-<slug>.md  # Open task cards
+  maps/<slug>.md                 # Multi-session exploration notes from flow-grill
+  done/<effort>/                 # Archived tasks and closeout notes
 ```
 
 ---
 
 ## Requirements
 
-- **OS**: POSIX-compliant system (Linux / macOS).
-- **Shell**: Bash 3.2+ (standard on macOS).
-- **Python**: Python 3.8+ (standard library only, for `validate` and `next`).
-- **Git**: Version control and path resolution.
-- **Node.js** (Optional): Node.js 14+ (only required if installing via npm global package).
+- **OS**: Linux / macOS (POSIX)
+- **Shell**: Bash 3.2+ (stock macOS Bash compatible)
+- **Python**: Python 3.8+ (standard library only, for `validate` and `next`)
+- **Git**: Version control and branch inspection
+- **Node.js** (Optional): Node.js 14+ (only for global npm installation)
 
 ---
 

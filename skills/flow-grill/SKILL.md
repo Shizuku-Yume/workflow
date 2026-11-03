@@ -1,43 +1,39 @@
 ---
 name: flow-grill
 description: >-
-  Align on what to build before building it. Batch questions, decide small things,
-  log choices. Use when requirements are vague or design unclear.
+  Settle open requirements and trade-offs before planning or building. Entry point
+  whenever scope has unconfirmed choices or unresolved unknowns.
 ---
 
 # Flow: Grill
 
-Resolve only decisions still open after checking the repo. Read `.workflow/CONVENTIONS.md`
-§0 and §1.1–§1.3, plus `.workflow/STYLE.md`, first.
+Settle open product and design choices with the user before any spec or task is written.
 
-## 1. Find facts and map choices
+## 1. Find what is actually open
 
-Check code, tests, configs, docs, and prior decisions before asking. For a port, migration,
-rewrite, or replacement, map each user-visible flow and old concept to its new counterpart;
-read the new system's own model and identify behavioral differences for a decision.
+Read the relevant code, tests, configs, and `.workflow/decisions.md` first; never ask for facts the repo answers (CONVENTIONS §1). If `.workflow/maps/<slug>.md` exists for this topic, resume from it.
 
-List privately what the work is for, must not do, where it fits, data shape, failure
-behavior, and observable outcome. Separate settled decisions, findable facts (look them
-up), and genuine open choices.
+Look for open choices in four areas:
+1. **User flow:** how the feature is triggered and used.
+2. **Failure behavior:** invalid input, errors, limits.
+3. **State and data:** what persists; schema or API changes.
+4. **Non-goals:** what is out of scope.
 
-For expensive choices—architecture shifts, infrastructure, breaking changes, or new
-dependencies—start from the problem and hard constraints. Test each proposed piece by
-asking what breaks if removed; choose the cheapest experiment that resolves uncertainty.
+## 2. Ask in short rounds
 
-## 2. Triage and ask
+Ask up to 5 user-owned questions per round, each with options and a recommendation so that "yes" is a complete answer:
 
-Apply CONVENTIONS §1.1 and §1.2: resolve facts; for Bucket B, choose the reasonable,
-reversible option and state its trade-off in one line instead of offering a menu. Log only
-decisions that meet the convention's criteria. Ask only Bucket C questions: genuine
-user-owned trade-offs about what gets built or expensive-to-reverse choices.
-Batch independent questions in one ranked message (up to CONVENTIONS §1.3's limit). Include
-a recommendation and one-line reason. Stop grilling immediately when the next step is
-unblocked; proceed to `flow-spec` or `flow-break` as appropriate. If the work remains too
-foggy to plan, use `flow-map`.
+```
+Q1 - <title>: <1-2 sentences of context; 2-3 options>
+My pick: <option>, because <reason>
+```
 
-## 3. Record and continue
+Ask another round only if an answer opens a new real trade-off. Stop once scope is clear or you hit something the chat cannot answer.
 
-Add only shared project terms to `.workflow/glossary.md`. Append qualifying choices to
-`.workflow/decisions.md` using its format; cite the entry as `decisions.md: <date> - <title>`.
-Commit planning records if the session ends here, per CONVENTIONS §2. When proceeding to
-`flow-spec` or `flow-break`, carry decisions forward without reopening settled choices.
+## 3. Exit
+
+- **Settled, 1–3 clear tasks:** go to `flow-break`.
+- **Settled, multi-task design:** go to `flow-spec`.
+- **Cannot settle now** (needs prototype data, outside information, or more sessions): write or update `.workflow/maps/<slug>.md` with `# Map: <goal>`, `## Settled & ruled out`, and `## Open questions` (`- [ ]` items). If an experiment can run now, cut a `spike` task with `flow-break`.
+
+Before leaving: if new domain terms or costly-to-reverse choices were settled, add them to `.workflow/glossary.md` or `.workflow/decisions.md`. Delete the map once its topic becomes a spec or tasks, and commit planning files if the session stops here.
