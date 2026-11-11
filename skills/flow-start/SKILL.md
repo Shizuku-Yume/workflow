@@ -17,9 +17,9 @@ Skip mid-session when context is already loaded and the next step is clear.
 
 ## 2. Read state
 
-Run `git status --short` and `.workflow/bin/workflow next --no-color` (`git fetch -q` first under `Landing: pr`). `next` shows paused, blocked, and ready tasks, open maps, and tasks started on other branches. Name the branch if you are not on the main branch. Also note open specs in `.workflow/specs/` and `fix-now` entries in `.workflow/technical-debt.md`.
+Run `git status --short` and `.workflow/bin/workflow next --no-color` (`git fetch -q` first under `Landing: pr`). `next` reports paused, blocked, and ready tasks; research notes with open questions; finished-but-unarchived tasks; efforts ready to close; specs without tasks; stale worktrees; and tasks started on other branches. Name the branch if you are not on the main branch. Also note `fix-now` entries in `.workflow/technical-debt.md`.
 
 ## 3. Route
 
-- **User only asked what to do next:** name one step and stop. Order: resume `paused` → amend `blocked` (`flow-break`) → continue an open map (`flow-grill`) → `flow-implement` a ready task → `flow-close` a finished spec effort.
+- **User only asked what to do next:** name one step and stop. Order: resume `paused` → amend `blocked` (`flow-break`) → archive a finished task (`workflow task archive`) → `flow-close` an effort ready to close → continue an open research note (`flow-grill`) → `flow-break` a spec without tasks → `flow-implement` a ready task. Remove stale worktrees `next` lists (`git worktree remove <path>`).
 - **Otherwise:** size the request (CONVENTIONS §3) and act in the same turn.

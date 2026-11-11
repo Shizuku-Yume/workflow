@@ -7,6 +7,7 @@ Each test builds its project in a temporary git repository.
 
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -255,6 +256,37 @@ class ValidateTests(Base):
         self.assertNotIn("decision field outside an entry", msgs)  # before ## Entries is ignored
         self.assertEqual(len([m for m in msgs if "decision" in m or "Decided by" in m]), 5, msgs)
 
+    def test_decision_effort_field(self):
+        self.p.write(".workflow/decisions.md", VALID_DECISIONS + textwrap.dedent("""\
+            ## 2026-04-01 - Tie a decision to an effort
+
+            - **Effort:** core
+            - **Decided:** Keep the queue in Python.
+            - **Instead of:** Rewriting in Bash.
+            - **Because:** Bash 3.2 cannot parse JSON.
+            """))
+        code, data = self.p.validate()
+        self.assertEqual((code, data["issues"]), (0, []))
+        # Present but empty is an error; absent is fine.
+        self.p.write(".workflow/decisions.md", textwrap.dedent("""\
+            # Decisions
+
+            ## Entries
+
+            - **Effort:**
+
+            ## 2026-04-02 - Empty effort
+
+            - **Effort:**
+            - **Decided:** x
+            - **Instead of:** y
+            - **Because:** z
+            """))
+        code, data = self.p.validate()
+        self.assertEqual(code, 2)
+        self.assertIssue(data, "decision field outside an entry")
+        self.assertIssue(data, "missing or empty decision field Effort")
+
     def test_decisions_missing_entries_and_outside_field(self):
         self.p.write(".workflow/decisions.md", "# Decisions\n")
         code, data = self.p.validate()
@@ -371,6 +403,7 @@ class ValidateTests(Base):
             ## Progress
 
             Check after: passed
+            Review: pass (base abcdef)
             """))
         self.commit_all("plan")
         os.makedirs(os.path.join(self.p.root, ".workflow/done/core"), exist_ok=True)
@@ -400,7 +433,8 @@ class ValidateTests(Base):
                      task("04", "Draft", "core", extra="**Files:** <where work happens>\n"))
         self.p.write(".workflow/done/core/00-old.md",
                      task("00", "Archived prose", "core",
-                          extra="**Files:** legacy prose\n\n## Progress\n\nCheck after: ok\n"))
+                          extra="**Files:** legacy prose\n\n## Progress\n\nCheck after: ok\n"
+                                "Review: pass (base abcdef)\n"))
         code, data = self.p.validate()
         self.assertEqual((code, data["errors"], data["warnings"]), (1, 0, 1), data["issues"])
         self.assertIssue(data, "Files field lists no recognizable paths", "WARNING")
@@ -474,6 +508,7 @@ class ValidateTests(Base):
             - [x] Wrote it
             - [ ] Ship it
             Check after: ran on the final code
+            Review: pass (base abcdef)
             """))
         code, data = self.p.validate()
         self.assertEqual(code, 2)
@@ -488,9 +523,118 @@ class ValidateTests(Base):
         self.p.write(".workflow/done/core/01-a.md", body)
         code, data = self.p.validate()
         self.assertEqual(code, 2)
-        self.assertIssue(data, "archived without a Check after record")
+        self.assertIssue(data, "archived without a Check after or Check waived record")
+        self.assertIssue(data, "archived without a Review record")
         self.p.write(".workflow/done/core/01-a.md",
-                     body + "\n## Progress\n\nCheck after: ran it on the final code\n")
+                     body + "\n## Progress\n\nCheck after: ran it on the final code\n"
+                            "Review: pass (base abcdef)\n")
+        code, data = self.p.validate()
+        self.assertEqual((code, data["issues"]), (0, []))
+        # A user waiver of the Check replaces Check after.
+        self.p.write(".workflow/done/core/01-a.md",
+                     body + "\n## Progress\n\nCheck waived: user; Ada; 2026-11-11\n"
+                            "Review: waived — finding B2; user, 2026-11-11\n")
+        code, data = self.p.validate()
+        self.assertEqual((code, data["issues"]), (0, []))
+
+    def test_new_archive_check_after_must_record_a_result(self):
+        self.p.write(".workflow/tasks/core/01-a.md", task("01", "A", "core"))
+        self.commit_all("plan")
+        os.remove(os.path.join(self.p.root, ".workflow/tasks/core/01-a.md"))
+        body = ("# 01: A\n\n**Effort:** core\n**Check:** Run.\n**Blocked by:** None\n"
+                "\n## Progress\n\nReview: pass (base abcdef)\nCheck after: %s\n")
+        for value in ("n/a", "TODO", "`*not run*", "pending", "deferred", "未运行", "跳过"):
+            self.p.write(".workflow/done/core/01-a.md", body % value)
+            code, data = self.p.validate()
+            self.assertEqual(code, 2, value)
+            self.assertIssue(data, "Check after records no result")
+            self.assertIn("Run the Check and record its result",
+                          data["issues"][0]["suggestion"])
+        # Values that merely contain a no-result word later in the text pass.
+        for value in ("120 passed", "tests skipped nothing", "boot log clean"):
+            self.p.write(".workflow/done/core/01-a.md", body % value)
+            code, data = self.p.validate()
+            self.assertEqual((code, data["issues"]), (0, []), value)
+        # The rule is literal: a leading no-result word decides, even with a suffix.
+        for value in ("pending-free", "Not Run: build only"):
+            self.p.write(".workflow/done/core/01-a.md", body % value)
+            code, data = self.p.validate()
+            self.assertEqual(code, 2, value)
+            self.assertIssue(data, "Check after records no result")
+        # The continuation lines are part of the value: an empty first line followed
+        # by a no-result word records no result.
+        self.p.write(".workflow/done/core/01-a.md", (body % "") + "  pending\n")
+        code, data = self.p.validate()
+        self.assertEqual(code, 2)
+        self.assertIssue(data, "Check after records no result")
+
+    def test_new_archive_check_after_cites_no_temp_path(self):
+        self.p.write(".workflow/tasks/core/01-a.md", task("01", "A", "core"))
+        self.commit_all("plan")
+        os.remove(os.path.join(self.p.root, ".workflow/tasks/core/01-a.md"))
+        body = ("# 01: A\n\n**Effort:** core\n**Check:** Run.\n**Blocked by:** None\n"
+                "\n## Progress\n\nCheck after: %s\nReview: pass (base abcdef)\n")
+        for value in ("/tmp/run.log shows PASS", "see /var/tmp/log",
+                      "log at /tmp/x.log — 120 passed"):
+            self.p.write(".workflow/done/core/01-a.md", body % value)
+            code, data = self.p.validate()
+            self.assertEqual(code, 2, value)
+            self.assertIssue(data, "Check after cites a temporary path")
+            self.assertIn("Evidence directory", data["issues"][0]["suggestion"])
+        # A repository path that merely contains "tmp-notes" is not a temporary path.
+        for value in ("evidence/tmp-notes/a.log shows PASS", "/repo/tmp/a.log",
+                      "./tmp.log — 120 passed", "~/tmp/a.log"):
+            self.p.write(".workflow/done/core/01-a.md", body % value)
+            code, data = self.p.validate()
+            self.assertEqual((code, data["issues"]), (0, []), value)
+
+    def test_new_archive_review_outcomes(self):
+        self.p.write(".workflow/tasks/core/01-a.md", task("01", "A", "core"))
+        self.commit_all("plan")
+        os.remove(os.path.join(self.p.root, ".workflow/tasks/core/01-a.md"))
+        body = ("# 01: A\n\n**Effort:** core\n**Check:** Run.\n**Blocked by:** None\n"
+                "\n## Progress\n\nCheck after: passed\n%s\n")
+        cases = (("", "archived without a Review record"),
+                 ("Review: blocked (base abcdef)", "archived with Review: blocked"),
+                 ("Review: skipped", "Review: skipped needs a reason"),
+                 ("Review: waived", "Review: waived needs a reason"),
+                 ("Review: maybe (base abcdef)", "invalid Review outcome 'maybe'"))
+        for review, message in cases:
+            self.p.write(".workflow/done/core/01-a.md", body % review)
+            code, data = self.p.validate()
+            self.assertEqual(code, 2, review)
+            self.assertIssue(data, message)
+        # The last Review line wins; an earlier blocked record stops mattering.
+        self.p.write(".workflow/done/core/01-a.md",
+                     body % "Review: blocked (base abcdef)\nReview: PASS (base abcdef)")
+        code, data = self.p.validate()
+        self.assertEqual((code, data["issues"]), (0, []))
+        # skipped with a reason is accepted.
+        self.p.write(".workflow/done/core/01-a.md",
+                     body % "Review: skipped — reviewer subagent unavailable")
+        code, data = self.p.validate()
+        self.assertEqual((code, data["issues"]), (0, []))
+
+    def test_new_archive_base_commit_and_status(self):
+        self.p.write(".workflow/tasks/core/01-a.md", task("01", "A", "core"))
+        self.commit_all("plan")
+        os.remove(os.path.join(self.p.root, ".workflow/tasks/core/01-a.md"))
+        body = ("# 01: A\n\n**Effort:** core\n**Blocked by:** None\n**Check:** Run.\n"
+                "%s\n## Progress\n\nCheck after: passed\nReview: pass (base abcdef)\n")
+        self.p.write(".workflow/done/core/01-a.md", body % "**Base commit:** <commit-sha>\n")
+        code, data = self.p.validate()
+        self.assertEqual(code, 2)
+        self.assertIssue(data, "archived with a placeholder Base commit")
+        self.p.write(".workflow/done/core/01-a.md", body % "**Status:** active\n")
+        code, data = self.p.validate()
+        self.assertEqual(code, 2)
+        self.assertIssue(data, "archived task still has a Status")
+        # A real Base commit and no Status pass; a missing one is not a placeholder.
+        self.p.write(".workflow/done/core/01-a.md",
+                     body % ("**Base commit:** " + self.head_short() + "\n"))
+        code, data = self.p.validate()
+        self.assertEqual((code, data["issues"]), (0, []))
+        self.p.write(".workflow/done/core/01-a.md", body % "")
         code, data = self.p.validate()
         self.assertEqual((code, data["issues"]), (0, []))
 
@@ -530,7 +674,8 @@ class ValidateTests(Base):
         os.remove(os.path.join(self.p.root, ".workflow/tasks/core/01-a.md"))
         self.p.write(".workflow/done/core/01-a.md",
                      "# 01: A\n\n**Effort:** core\n**Check:** Run.\n**Blocked by:** None\n"
-                     "\n## Progress\n\nCheck after: ran on the final code\n")
+                     "\n## Progress\n\nCheck after: ran on the final code\n"
+                     "Review: pass (base abcdef)\n")
         code, data = self.p.validate()
         self.assertNotIn("still open", " ".join(self.messages(data)))
         self.assertEqual(code, 0)
@@ -579,56 +724,66 @@ class ValidateTests(Base):
         os.remove(os.path.join(self.p.root, ".workflow/tasks/core/01-a.md"))
 
         base_body = "# 01: A\n\n**Effort:** core\n**Check:** Run.\n**Blocked by:** None\n"
+        review = "\nReview: pass (base abcdef)\n"
+        missing = "archived without a Check after or Check waived record"
 
         # Misleading: substring in prose
         self.p.write(".workflow/done/core/01-a.md",
-                     base_body + "\n## Progress\n\nWe will check after deployment.\n")
+                     base_body + "\n## Progress\n\nWe will check after deployment." + review)
         code, data = self.p.validate()
         self.assertEqual(code, 2)
-        self.assertIssue(data, "archived without a Check after record")
+        self.assertIssue(data, missing)
 
         # Misleading: substring in another field
         self.p.write(".workflow/done/core/01-a.md",
-                     base_body + "\n## Progress\n\nNotes: check after deploy\n")
+                     base_body + "\n## Progress\n\nNotes: check after deploy" + review)
         code, data = self.p.validate()
         self.assertEqual(code, 2)
-        self.assertIssue(data, "archived without a Check after record")
+        self.assertIssue(data, missing)
 
         # Misleading: Check after outside ## Progress
         self.p.write(".workflow/done/core/01-a.md",
-                     base_body + "\n## Notes\n\nCheck after: ran tests\n")
+                     base_body + "\n## Notes\n\nCheck after: ran tests" + review)
         code, data = self.p.validate()
         self.assertEqual(code, 2)
-        self.assertIssue(data, "archived without a Check after record")
+        self.assertIssue(data, missing)
 
         # Misleading: empty Check after without continuation
         self.p.write(".workflow/done/core/01-a.md",
-                     base_body + "\n## Progress\n\nCheck after:\n\nOther: field\n")
+                     base_body + "\n## Progress\n\nCheck after:\n\nOther: field" + review)
         code, data = self.p.validate()
         self.assertEqual(code, 2)
-        self.assertIssue(data, "archived without a Check after record")
+        self.assertIssue(data, missing)
+
+        # Misleading: a Check after inside a code fence does not count.
+        self.p.write(".workflow/done/core/01-a.md",
+                     base_body + "\n## Progress\n\n```\nCheck after: ran tests\n```" + review)
+        code, data = self.p.validate()
+        self.assertEqual(code, 2)
+        self.assertIssue(data, missing)
 
         # Valid: plain field
         self.p.write(".workflow/done/core/01-a.md",
-                     base_body + "\n## Progress\n\nCheck after: `true` passes\n")
+                     base_body + "\n## Progress\n\nCheck after: `true` passes" + review)
         code, data = self.p.validate()
         self.assertEqual((code, data["issues"]), (0, []))
 
         # Valid: bold field
         self.p.write(".workflow/done/core/01-a.md",
-                     base_body + "\n## Progress\n\n**Check after:** ran tests\n")
+                     base_body + "\n## Progress\n\n**Check after:** ran tests" + review)
         code, data = self.p.validate()
         self.assertEqual((code, data["issues"]), (0, []))
 
         # Valid: bulleted bold field
         self.p.write(".workflow/done/core/01-a.md",
-                     base_body + "\n## Progress\n\n- **Check after:** ran tests\n")
+                     base_body + "\n## Progress\n\n- **Check after:** ran tests" + review)
         code, data = self.p.validate()
         self.assertEqual((code, data["issues"]), (0, []))
 
         # Valid: multiline continuation
         self.p.write(".workflow/done/core/01-a.md",
-                     base_body + "\n## Progress\n\nCheck after:\n  ran test suite on final code\n")
+                     base_body + "\n## Progress\n\nCheck after:\n  ran test suite on final code"
+                     + review)
         code, data = self.p.validate()
         self.assertEqual((code, data["issues"]), (0, []))
 
@@ -704,6 +859,36 @@ class ValidateTests(Base):
                      "# Standards\n\nRun: npm test\nLanding: direct\n")
         clean_code, clean_data = self.p.validate()
         self.assertEqual((clean_code, clean_data["issues"]), (0, []))
+
+    def test_oversized_standards_and_task_file_warn(self):
+        self.p.write(".workflow/standards.md",
+                     "\n".join("line %d" % n for n in range(1, 82)) + "\n")
+        self.p.write(".workflow/tasks/core/01-a.md",
+                     task("01", "A", "core", extra="## Progress\n\n" + "log line\n" * 1900))
+        self.p.write(".workflow/tasks/core/02-b.md", task("02", "B", "core"))
+        code, data = self.p.validate()
+        self.assertEqual((code, data["errors"]), (1, 0), data["issues"])
+        self.assertIssue(data, "standards.md is 81 lines; keep it under one screen (80 lines)",
+                         "WARNING")
+        self.assertIn("Move long-form material to docs/ or .workflow/research/",
+                      data["issues"][0]["suggestion"])
+        big = [i for i in data["issues"] if i["severity"] == "WARNING"
+               and re.search(r"task file is \d+ KB; ## Progress holds current state, not a log",
+                             i["message"])]
+        self.assertEqual(len(big), 1, data["issues"])
+        self.assertIn("Summarise superseded attempts in one line each", big[0]["suggestion"])
+        self.assertEqual(len(data["issues"]), 2, data["issues"])
+        # At the thresholds both stay quiet, and a done/ file is never measured.
+        self.p.write(".workflow/standards.md",
+                     "\n".join("line %d" % n for n in range(1, 81)) + "\n")
+        self.p.write(".workflow/tasks/core/01-a.md",
+                     task("01", "A", "core", extra="## Progress\n\n" + "log line\n" * 1000))
+        code, data = self.p.validate()
+        self.assertEqual((code, data["issues"]), (0, []))
+        self.p.write(".workflow/done/core/03-c.md",
+                     task("03", "C", "core", extra="## Progress\n\n" + "log line\n" * 1900))
+        code, data = self.p.validate()
+        self.assertEqual((code, data["issues"]), (0, []))
 
     def test_symlink_outside_root_ignored(self):
         outside_dir = tempfile.mkdtemp(prefix="wf-outside-")
@@ -1040,8 +1225,10 @@ class NextTests(Base):
         data = self.p.next()
         self.assertEqual(sorted(data), ["blocked_count", "blockers", "duplicate_claims",
                                         "file_overlaps", "in_progress", "integrating",
-                                        "open_maps", "ready_count", "ready_tasks",
-                                        "task_count", "tree"])
+                                        "open_research", "ready_count", "ready_tasks",
+                                        "ready_to_close", "resource_overlaps",
+                                        "specs_without_tasks", "stale_worktrees",
+                                        "task_count", "tree", "unarchived"])
 
     def test_missing_workflow(self):
         shutil.rmtree(os.path.join(self.p.root, ".workflow"))
@@ -1165,20 +1352,26 @@ class NextTests(Base):
         self.assertIn("Overlaps: src/shared.py (core/01+core/02)", brief)
         self.assertNotIn("Pulse:", brief)
 
-        self.p.write(".workflow/maps/auth-flow.md",
-                     "# Map: Auth flow\n\n## Goal\nClarify SSO.\n\n## Open Questions\n- [ ] OIDC vs SAML?\n")
-        self.p.write(".workflow/maps/done-legacy.md",
-                     "# Map: Old map\n**Status:** clear\n")
+        self.p.write(".workflow/research/auth-flow.md",
+                     "# Research: Auth flow\n\n## Open questions\n- [ ] OIDC vs SAML?\n"
+                     "- [ ] Session lifetime?\n")
+        self.p.write(".workflow/research/settled.md",
+                     "# Research: Settled\n\n## Open questions\n- [x] Done.\n")
+        self.p.write(".workflow/research/nested/auth.md",
+                     "# Research: Nested\n\n## Open questions\n- [ ] Not scanned.\n")
         next_all = json.loads(self.p.run("next", "--format", "json").stdout)
-        self.assertEqual(next_all["open_maps"],
-                         [{"path": ".workflow/maps/auth-flow.md", "slug": "auth-flow", "title": "Auth flow"}])
+        self.assertEqual(next_all["open_research"],
+                         [{"path": ".workflow/research/auth-flow.md", "slug": "auth-flow",
+                           "title": "Auth flow", "open": 2}])
+        self.assertNotIn("open_maps", next_all)
         next_scoped = json.loads(self.p.run("next", "--effort", "core", "--format", "json").stdout)
-        self.assertEqual(next_scoped["open_maps"], [])
+        self.assertEqual(next_scoped.get("open_research", []), [])
         next_text = self.p.run("next", "--no-color").stdout
-        self.assertIn("Open exploration maps (continue with flow-grill):", next_text)
-        self.assertIn(".workflow/maps/auth-flow.md — Auth flow", next_text)
-        brief_maps = self.p.run("next", "--brief", "--no-color").stdout
-        self.assertIn("Maps: .workflow/maps/auth-flow.md (continue with flow-grill)", brief_maps)
+        self.assertIn("Open research questions (continue with flow-grill):", next_text)
+        self.assertIn(".workflow/research/auth-flow.md — Auth flow (2 open)", next_text)
+        brief_text = self.p.run("next", "--brief", "--no-color").stdout
+        self.assertIn("Research: .workflow/research/auth-flow.md (continue with flow-grill)",
+                      brief_text)
 
     def test_flat_done_tree_git_parsing(self):
         self.git("symbolic-ref", "HEAD", "refs/heads/main")
@@ -1201,6 +1394,193 @@ class NextTests(Base):
         proc2 = self.p.run("next", "--format=json", "--brief")
         self.assertEqual(proc2.returncode, 2)
         self.assertIn("Error: --brief cannot be combined with --format json", proc2.stderr)
+
+    def test_open_research_sections_text_and_json(self):
+        self.p.write(".workflow/research/audit.md",
+                     "# Research: Auth audit\n\n## Open questions\n\n- [ ] A\n- [ ] B\n- [x] C\n\n"
+                     "## Notes\n\n- [ ] Not a question.\n")
+        self.p.write(".workflow/research/settled.md",
+                     "# Research: Settled\n\n## Open questions\n\n- [x] Done\n")
+        self.p.write(".workflow/research/no-heading.md", "# Research: Plain\n\n- [ ] Top level\n")
+        self.p.write(".workflow/research/sub/nested.md",
+                     "# Research: Nested\n\n## Open questions\n\n- [ ] Hidden\n")
+        self.p.write(".workflow/research/untitled.md", "## Open questions\n\n- [ ] No title\n")
+        json_out = self.p.next()
+        self.assertEqual(json_out["open_research"],
+                         [{"path": ".workflow/research/audit.md", "slug": "audit",
+                           "title": "Auth audit", "open": 2},
+                          {"path": ".workflow/research/untitled.md", "slug": "untitled",
+                           "title": "untitled", "open": 1}])
+        text = self.p.run("next", "--no-color").stdout
+        self.assertIn("Open research questions (continue with flow-grill):", text)
+        self.assertIn(".workflow/research/audit.md — Auth audit (2 open)", text)
+        brief = self.p.run("next", "--brief", "--no-color").stdout
+        self.assertEqual(brief.strip(),
+                         "Research: .workflow/research/audit.md, .workflow/research/untitled.md "
+                         "(continue with flow-grill)")
+        scoped = json.loads(self.p.run("next", "--effort", "core", "--format", "json").stdout)
+        self.assertNotIn("open_research", scoped)
+        self.assertEqual(self.p.run("next", "--effort", "core", "--brief").stdout, "")
+
+    def test_unarchived_tasks_are_not_ready(self):
+        self.p.write(".workflow/tasks/core/01-done.md",
+                     task("01", "Done", "core", extra="- [x] one\n- [x] two\n"))
+        self.p.write(".workflow/tasks/core/02-open.md",
+                     task("02", "Open", "core", extra="- [x] one\n- [ ] two\n"))
+        self.p.write(".workflow/tasks/core/03-empty.md", task("03", "Empty", "core"))
+        self.p.write(".workflow/tasks/core/04-started.md",
+                     task("04", "Started", "core",
+                          extra="**Status:** active\n- [x] one\n"))
+        data = self.p.next()
+        self.assertEqual(data["unarchived"],
+                         [{"task": "core/01", "title": "Done"},
+                          {"task": "core/04", "title": "Started"}])
+        ready_refs = [t["task"] for t in data["ready_tasks"]]
+        self.assertEqual(ready_refs, ["core/02", "core/03"])
+        self.assertNotIn("core/01", ready_refs)
+        self.assertNotIn("core/04", ready_refs)
+        self.assertEqual([t["task"] for t in data["in_progress"]], ["core/04"])
+        text = self.p.run("next", "--no-color").stdout
+        self.assertIn("Checklist complete, not archived "
+                      "(record proof, then workflow task archive):\n  core/01 Done", text)
+        brief = self.p.run("next", "--brief", "--no-color").stdout
+        self.assertIn("Unarchived: core/01, core/04", brief)
+        scoped = json.loads(self.p.run("next", "--effort", "core", "--format", "json").stdout)
+        self.assertEqual(scoped["unarchived"], data["unarchived"])
+
+    def test_ready_to_close_and_specs_without_tasks(self):
+        self.p.write(".workflow/specs/closed.md", "# Spec: closed\n\n**Status:** in progress\n")
+        self.p.write(".workflow/done/closed/01-a.md",
+                     task("01", "A", "closed", extra="## Progress\n\nCheck after: ok\n"
+                          "Review: pass (base abcdef)\n"))
+        self.p.write(".workflow/specs/finished.md", "# Spec: finished\n\n**Status:** done\n")
+        self.p.write(".workflow/done/finished/01-b.md", task("01", "B", "finished"))
+        self.p.write(".workflow/specs/unplanned.md", "# Spec: unplanned\n\n**Status:** proposed\n")
+        self.p.write(".workflow/specs/unplanned-later.md",
+                     "# Spec: later\n\n**Status:** in progress\n")
+        self.p.write(".workflow/specs/busy.md", "# Spec: busy\n\n**Status:** in progress\n")
+        self.p.write(".workflow/tasks/busy/01-d.md", task("01", "D", "busy"))
+        data = self.p.next()
+        self.assertEqual(data["ready_to_close"], ["closed"])
+        self.assertEqual(data["specs_without_tasks"], ["unplanned", "unplanned-later"])
+        text = self.p.run("next", "--no-color").stdout
+        self.assertIn("Ready to close (flow-close <effort>): closed\n", text)
+        self.assertIn("Specs without tasks (flow-break): unplanned, unplanned-later\n", text)
+        brief = self.p.run("next", "--brief", "--no-color").stdout
+        self.assertIn("Close: closed", brief)
+        self.assertIn("Unplanned specs: unplanned, unplanned-later", brief)
+        scoped = json.loads(self.p.run("next", "--effort", "busy", "--format", "json").stdout)
+        self.assertEqual((scoped["ready_to_close"], scoped["specs_without_tasks"]), ([], []))
+        # A spec integrating on another branch is not ready to close in this tree.
+        self.p.write(".workflow/specs/elsewhere.md",
+                     "# Spec: elsewhere\n\n**Status:** in progress\n"
+                     "**Integration branch:** elsewhere/integration\n")
+        self.p.write(".workflow/done/elsewhere/01-e.md", task("01", "E", "elsewhere"))
+        self.commit_all("plan")
+        self.git("branch", "elsewhere/integration")
+        data = self.p.next()
+        self.assertEqual([i["effort"] for i in data["integrating"]], ["elsewhere"])
+        self.assertEqual(data["ready_to_close"], ["closed"])
+        self.assertEqual(data["specs_without_tasks"], ["unplanned", "unplanned-later"])
+
+    def test_resource_overlaps(self):
+        self.p.write(".workflow/tasks/core/01-board.md",
+                     task("01", "Board", "core", extra="**Resources:** Board, `device`\n"))
+        self.p.write(".workflow/tasks/core/02-device.md",
+                     task("02", "Device", "core", extra="**Resources:** `DEVICE`\n"))
+        self.p.write(".workflow/tasks/core/03-none.md",
+                     task("03", "None", "core", extra="**Resources:** None\n"))
+        self.p.write(".workflow/tasks/core/04-none-list.md",
+                     task("04", "None list", "core", extra="**Resources:** n/a\n"))
+        data = self.p.next()
+        self.assertEqual(data["resource_overlaps"],
+                         [{"resource": "device", "tasks": ["core/01", "core/02"]}])
+        self.assertEqual([t["resources"] for t in data["ready_tasks"]],
+                         [["board", "device"], ["device"], [], []])
+        text = self.p.run("next", "--no-color").stdout
+        self.assertIn("Shared resources across ready tasks (run one at a time): "
+                      "device (core/01, core/02)", text)
+        brief = self.p.run("next", "--brief", "--no-color").stdout
+        self.assertIn("Resources: device (core/01+core/02)", brief)
+
+    def test_stale_worktrees(self):
+        self.git("symbolic-ref", "HEAD", "refs/heads/main")
+        self.p.write(".workflow/specs/core.md",
+                     "# Spec: core\n\n**Status:** in progress\n"
+                     "**Integration branch:** core/integration\n")
+        self.commit_all("base")
+        outside = tempfile.mkdtemp(prefix="wf-wt-")
+        merged = os.path.join(outside, "merged")
+        ahead = os.path.join(outside, "ahead")
+        detached = os.path.join(outside, "detached")
+        try:
+            self.git("worktree", "add", "-q", "-b", "feature-merged", merged)
+            subprocess.run(["git", "-C", merged, "-c", "user.email=t@t", "-c", "user.name=t",
+                            "commit", "-q", "--allow-empty", "-m", "feature"],
+                           check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            self.git("merge", "-q", "--no-ff", "feature-merged", "-m", "merge feature")
+            self.git("worktree", "add", "-q", "-b", "feature-ahead", ahead)
+            subprocess.run(["git", "-C", ahead, "-c", "user.email=t@t", "-c", "user.name=t",
+                            "commit", "-q", "--allow-empty", "-m", "ahead"],
+                           check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            self.git("worktree", "add", "-q", "--detach", detached)
+            # An integration target branch that already merged a task branch with its own work.
+            self.git("worktree", "add", "-q", "-b", "task/one", os.path.join(self.p.root, "task", "one-wt"))
+            subprocess.run(["git", "-C", os.path.join(self.p.root, "task", "one-wt"),
+                            "-c", "user.email=t@t", "-c", "user.name=t",
+                            "commit", "-q", "--allow-empty", "-m", "task one"],
+                           check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            self.git("checkout", "-q", "-b", "core/integration")
+            self.git("merge", "-q", "--no-ff", "task/one", "-m", "merge one")
+            self.git("checkout", "-q", "main")
+            data = self.p.next()
+            by_branch = {i["branch"]: i for i in data["stale_worktrees"]}
+            self.assertEqual(sorted(by_branch), ["feature-merged", "task/one"])
+            self.assertEqual(by_branch["feature-merged"]["merged_into"], "main")
+            self.assertEqual(by_branch["task/one"]["merged_into"], "core/integration")
+            self.assertNotIn("feature-ahead", by_branch)
+            text = self.p.run("next", "--no-color").stdout
+            self.assertIn("Stale worktrees (branch already merged; git worktree remove <path>): ",
+                          text)
+            self.assertIn(by_branch["feature-merged"]["path"], text)
+            self.assertIn(by_branch["task/one"]["path"], text)
+            brief = self.p.run("next", "--brief", "--no-color").stdout
+            self.assertIn("Stale worktrees: 2", brief)
+            # --effort omits the tree-wide worktree section.
+            scoped = json.loads(self.p.run("next", "--effort", "core", "--format", "json").stdout)
+            self.assertNotIn("stale_worktrees", scoped)
+        finally:
+            self.git("worktree", "remove", "--force", merged)
+            self.git("worktree", "remove", "--force", ahead)
+            self.git("worktree", "remove", "--force", detached)
+            self.git("worktree", "remove", "--force", os.path.join(self.p.root, "task", "one-wt"))
+            shutil.rmtree(outside, ignore_errors=True)
+
+    def test_stale_worktrees_cap_and_all(self):
+        self.git("symbolic-ref", "HEAD", "refs/heads/main")
+        self.commit_all("base")
+        outside = tempfile.mkdtemp(prefix="wf-wt-")
+        dirs = []
+        base = self.head_short()
+        try:
+            for n in range(6):
+                path = os.path.join(outside, "wt%d" % n)
+                self.git("worktree", "add", "-q", "-b", "merged-%d" % n, path, base)
+                subprocess.run(["git", "-C", path, "-c", "user.email=t@t", "-c", "user.name=t",
+                                "commit", "-q", "--allow-empty", "-m", "work %d" % n],
+                               check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                self.git("merge", "-q", "--no-ff", "merged-%d" % n, "-m", "merge %d" % n)
+                dirs.append(path)
+            data = self.p.next()
+            self.assertEqual(len(data["stale_worktrees"]), 6)
+            text = self.p.run("next", "--no-color").stdout
+            self.assertIn("(+1 more)", text)
+            all_text = self.p.run("next", "--all", "--no-color").stdout
+            self.assertNotIn("(+1 more)", all_text)
+        finally:
+            for path in dirs:
+                self.git("worktree", "remove", "--force", path)
+            shutil.rmtree(outside, ignore_errors=True)
 
 
 class TaskLifecycleTests(Base):
@@ -1244,6 +1624,102 @@ class TaskLifecycleTests(Base):
             content2 = fh.read()
         self.assertEqual(content2.count("Status:"), 1)
         self.assertEqual(content2.count("Base commit:"), 1)
+
+    def test_task_start_checklist_items_do_not_make_fields_bulleted(self):
+        self.commit_all("initial")
+        task_body = (
+            "# 01: Checklist first\n\n"
+            "**Effort:** core\n"
+            "**Blocked by:** None\n"
+            "**Check:** pytest\n\n"
+            "- [ ] write the code\n"
+            "- [ ] run the tests\n\n"
+            "## Context\n\n"
+            "- a body bullet\n"
+        )
+        path = self.p.write(".workflow/tasks/core/01-check.md", task_body)
+        proc = self.p.run("task", "start", "core/01")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        with open(path, "r") as fh:
+            started = fh.read()
+        self.assertIn("**Base commit:** ", started)
+        self.assertIn("**Status:** active", started)
+        self.assertNotIn("- **Base commit:**", started)
+        self.assertNotIn("- **Status:** active", started)
+        self.assertIn("- [ ] write the code", started)
+        self.assertIn("- a body bullet", started)
+        # Bulleted header fields still get bulleted inserts.
+        bulleted = (
+            "# 02: Bullet header\n\n"
+            "- **Effort:** core\n"
+            "- **Blocked by:** None\n"
+            "- **Check:** pytest\n\n"
+            "- [x] one\n"
+        )
+        path2 = self.p.write(".workflow/tasks/core/02-bullet.md", bulleted)
+        proc2 = self.p.run("task", "start", "core/02")
+        self.assertEqual(proc2.returncode, 0, proc2.stderr)
+        with open(path2, "r") as fh:
+            started2 = fh.read()
+        self.assertIn("- **Base commit:** ", started2)
+        self.assertIn("- **Status:** active", started2)
+
+    def test_task_start_dirty_tree_warning(self):
+        self.commit_all("initial")
+        self.p.write(".workflow/tasks/core/01-start.md",
+                     "# 01: Start work\n\n**Effort:** core\n**Blocked by:** None\n**Check:** pytest\n")
+        proc = self.p.run("task", "start", "core/01")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("Started task core/01", proc.stdout)
+        # The new task file is under .workflow/, so nothing outside it is dirty yet.
+        self.assertEqual(proc.stderr, "")
+        self.p.write("src/app.py", "print('dirty')\n")
+        self.p.write("README.md", "edited\n")
+        self.p.write(".workflow/tasks/core/02-second.md",
+                     "# 02: Second\n\n**Effort:** core\n**Blocked by:** None\n**Check:** pytest\n")
+        proc2 = self.p.run("task", "start", "core/02")
+        self.assertEqual(proc2.returncode, 0, proc2.stderr)
+        self.assertIn("Warning: 2 uncommitted file(s) outside .workflow at Base commit; "
+                      "flow-verify will review them as part of this task. Commit or stash "
+                      "earlier work first.", proc2.stderr)
+        self.assertIn("Started task core/02", proc2.stdout)
+
+    def test_task_archive_prints_last_open_task_hint(self):
+        self.commit_all("initial")
+        self.p.write(".workflow/specs/core.md",
+                     "# Spec: core\n\n**Status:** in progress\n**Priority:** normal\n")
+        body = (
+            "# 01: Only\n\n**Effort:** core\n**Blocked by:** None\n**Check:** echo ok\n"
+            "**Base commit:** " + self.head_short() + "\n**Status:** active\n\n"
+            "- [x] done\n\n## Progress\n\nCheck after: passed\nReview: pass (base abcdef)\n"
+        )
+        self.p.write(".workflow/tasks/core/01-only.md", body)
+        proc = self.p.run("task", "archive", "core/01")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("Archived task core/01", proc.stdout)
+        self.assertIn("Last open task of core: run flow-close core\n", proc.stdout)
+        # No hint while another task stays open.
+        for number, slug in (("02", "more"), ("03", "last")):
+            self.p.write(".workflow/tasks/core/%s-%s.md" % (number, slug),
+                         "# %s: Task\n\n**Effort:** core\n**Blocked by:** None\n"
+                         "**Check:** echo ok\n**Status:** active\n\n- [x] done\n\n"
+                         "## Progress\n\nCheck after: passed\nReview: pass (base abcdef)\n"
+                         % number)
+        proc2 = self.p.run("task", "archive", "core/02")
+        self.assertEqual(proc2.returncode, 0, proc2.stderr)
+        self.assertNotIn("flow-close", proc2.stdout)
+        proc3 = self.p.run("task", "archive", "core/03")
+        self.assertEqual(proc3.returncode, 0, proc3.stderr)
+        self.assertIn("Last open task of core: run flow-close core\n", proc3.stdout)
+        # No hint without a spec.
+        os.remove(os.path.join(self.p.root, ".workflow/specs/core.md"))
+        self.p.write(".workflow/tasks/core/04-last.md",
+                     "# 04: Last\n\n**Effort:** core\n**Blocked by:** None\n**Check:** echo ok\n"
+                     "**Status:** active\n\n- [x] done\n\n## Progress\n\nCheck after: passed\n"
+                     "Review: pass (base abcdef)\n")
+        proc4 = self.p.run("task", "archive", "core/04")
+        self.assertEqual(proc4.returncode, 0, proc4.stderr)
+        self.assertNotIn("flow-close", proc4.stdout)
 
     def test_task_start_no_head_error(self):
         # Brand new repo with no commits
@@ -1290,6 +1766,7 @@ class TaskLifecycleTests(Base):
             "- [x] completed work item\n\n"
             "## Progress\n\n"
             "Check after: tests passed on live machine\n"
+            "Review: pass (base abcdef)\n"
         )
         self.p.write(".workflow/tasks/core/01-start.md", task_body)
 
@@ -1322,11 +1799,12 @@ class TaskLifecycleTests(Base):
             "- [ ] pending item\n\n"
             "## Progress\n\n"
             "Check after: ok\n"
+            "Review: pass (base abcdef)\n"
         )
         src = self.p.write(".workflow/tasks/core/01-start.md", task_body)
         proc = self.p.run("task", "archive", "core/01")
         self.assertEqual(proc.returncode, 1)
-        self.assertIn("unticked checkbox", proc.stderr)
+        self.assertIn("archived with an unticked item: pending item", proc.stderr)
         self.assertTrue(os.path.isfile(src))
         self.assertFalse(os.path.exists(os.path.join(self.p.root, ".workflow/done/core/01-start.md")))
 
@@ -1345,7 +1823,8 @@ class TaskLifecycleTests(Base):
         src = self.p.write(".workflow/tasks/core/01-start.md", task_body)
         proc = self.p.run("task", "archive", "core/01")
         self.assertEqual(proc.returncode, 1)
-        self.assertIn("task missing 'Check after:' in ## Progress", proc.stderr)
+        self.assertIn("archived without a Check after or Check waived record", proc.stderr)
+        self.assertIn("archived without a Review record", proc.stderr)
         self.assertTrue(os.path.isfile(src))
         self.assertFalse(os.path.exists(os.path.join(self.p.root, ".workflow/done/core/01-start.md")))
 
@@ -1363,7 +1842,7 @@ class TaskLifecycleTests(Base):
         src = self.p.write(".workflow/tasks/core/01-spike.md", task_body)
         proc = self.p.run("task", "archive", "core/01")
         self.assertEqual(proc.returncode, 1)
-        self.assertIn("spike task missing ## Findings section", proc.stderr)
+        self.assertIn("spike archived without ## Findings", proc.stderr)
 
         # Adding Findings allows archive to succeed
         with open(src, "a") as fh:
@@ -1384,6 +1863,7 @@ class TaskLifecycleTests(Base):
             "- [x] item\n\n"
             "## Progress\n\n"
             "Check after: ok\n"
+            "Review: pass (base abcdef)\n"
         )
         src = self.p.write(".workflow/tasks/core/01-start.md", task_body)
         proc = self.p.run("task", "archive", "core/01")
@@ -1408,6 +1888,7 @@ class TaskLifecycleTests(Base):
             "- [x] item\n\n"
             "## Progress\n\n"
             "Check after: ok\n"
+            "Review: pass (base abcdef)\n"
         )
         src = self.p.write(".workflow/tasks/core/01-start.md", task_body)
         proc = self.p.run("task", "archive", "core/01")
@@ -1439,6 +1920,7 @@ class TaskLifecycleTests(Base):
             "Details about this complex task.\n\n"
             "## Progress\n\n"
             "Check after: passes 100%\n"
+            "Review: pass (base abcdef)\n"
         )
         src = self.p.write(".workflow/tasks/core/01-complex.md", complex_task)
         proc = self.p.run("task", "start", "core/01")
@@ -1464,6 +1946,7 @@ class TaskLifecycleTests(Base):
         self.assertIn("Status = 'fake'", archived)
         self.assertIn("Details about this complex task.", archived)
         self.assertIn("Check after: passes 100%", archived)
+        self.assertIn("Review: pass (base abcdef)", archived)
 
     def test_task_rejects_tasks_backup_and_symlink_escape(self):
         self.commit_all("initial")
@@ -1544,6 +2027,7 @@ class TaskLifecycleTests(Base):
             "- [x] item\n\n"
             "## Progress\n\n"
             "Check after: passed\n"
+            "Review: pass (base abcdef)\n"
         )
         self.p.write(".workflow/tasks/02-valid.md", valid_flat)
         self.p.write(".workflow/specs/core.md",
@@ -1616,6 +2100,7 @@ class TaskLifecycleTests(Base):
             "- [x] completed\n\n"
             "## Progress\n\n"
             "Check after: ok\n"
+            "Review: pass (base abcdef)\n"
         )
         task_path = self.p.write(".workflow/tasks/core/01-done.md", task_content)
 
@@ -1680,6 +2165,7 @@ class TaskLifecycleTests(Base):
             "- [x] legacy item\n\n"
             "## Progress\n\n"
             "Check after: ok\n"
+            "Review: pass (base abcdef)\n"
         )
         self.p.write(".workflow/done/core/00-old.md", old_archive)
 
@@ -1693,6 +2179,7 @@ class TaskLifecycleTests(Base):
             "- [x] item\n\n"
             "## Progress\n\n"
             "Check after: ok\n"
+            "Review: pass (base abcdef)\n"
         )
         self.p.write(".workflow/tasks/core/01-valid.md", valid_content)
         proc_ok = self.p.run("task", "archive", "core/01")
@@ -1708,6 +2195,7 @@ class TaskLifecycleTests(Base):
             "- [x] item\n\n"
             "## Progress\n\n"
             "Check after: ok\n"
+            "Review: pass (base abcdef)\n"
         )
         bad_path = self.p.write(".workflow/tasks/core/02-bad.md", bad_content)
         proc_bad = self.p.run("task", "archive", "core/02")
@@ -1729,6 +2217,7 @@ class TaskLifecycleTests(Base):
             "- [x] done\n\n"
             "## Progress\n\n"
             "Check after: ok\n"
+            "Review: pass (base abcdef)\n"
         )
         task_path = self.p.write(".workflow/tasks/core/01-perms.md", task_content)
         spec_content = (

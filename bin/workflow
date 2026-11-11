@@ -5,7 +5,7 @@
 # tracked by git in that repository, so a teammate who clones the repo gets the
 # same workflow with no extra step.
 #
-#   workflow init        install into the current project
+#   workflow init        install into the current project, and its pre-commit hook
 #   workflow update      re-copy the skills after this toolkit changes
 #   workflow doctor      check what is installed and what is missing
 #   workflow uninstall   remove everything it installed
@@ -25,7 +25,7 @@
 # need no checkout of this toolkit and nothing on PATH.
 set -euo pipefail
 
-VERSION="2.10.0"
+VERSION="2.11.0"
 BIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 KIT="$(cd "$BIN_DIR/.." && pwd)"
 
@@ -137,6 +137,84 @@ current_branch() {
 # The version: line of a .workflow-version manifest, empty when absent.
 manifest_version() {
   sed -n 's/^version: //p' "$1" 2>/dev/null | head -n 1
+}
+
+# version_cmp A B - print -1, 0 or 1 for two dotted versions (missing parts
+# count as 0, non-numeric tails are ignored). Pure Bash 3.2, no external sort.
+version_cmp() {
+  local a="$1" b="$2" i=1 x y
+  while :; do
+    x="$(version_part "$a" "$i")"
+    y="$(version_part "$b" "$i")"
+    [ -n "$x" ] || [ -n "$y" ] || break
+    if [ "${x:-0}" -gt "${y:-0}" ]; then printf '1\n'; return 0; fi
+    if [ "${x:-0}" -lt "${y:-0}" ]; then printf '%s\n' '-1'; return 0; fi
+    i=$((i + 1))
+  done
+  printf '0\n'
+}
+
+# version_part V N - the Nth dotted component of V as an integer, empty when absent.
+version_part() {
+  local v="$1" n="$2" rest i part
+  i=1; rest="$v"
+  while [ "$i" -lt "$n" ]; do
+    case "$rest" in *.*) rest="${rest#*.}" ;; *) return 0 ;; esac
+    i=$((i + 1))
+  done
+  [ -n "$rest" ] || return 0
+  part="${rest%%.*}"
+  part="${part%%[!0-9]*}"
+  [ -n "$part" ] || part=0
+  printf '%s\n' "$part"
+}
+
+# The project's own committed copy lives in <root>/.workflow/bin. Both paths
+# are normalised: git reports physical paths (/private/var on macOS) while
+# BIN_DIR may keep the logical one.
+running_from_project_copy() {
+  local root="$1" here there
+  there="$(normalize_path "$root/.workflow/bin" 2>/dev/null || printf '%s\n' "$root/.workflow/bin")"
+  here="$(normalize_path "$BIN_DIR" 2>/dev/null || printf '%s\n' "$BIN_DIR")"
+  [ "$here" = "$there" ]
+}
+
+# Version drift nudge (stderr only, never changes exit codes): the project's
+# manifest and this CLI disagree on the version.
+version_drift_nudge() {
+  local root="$1" vf="$1/.workflow/.workflow-version" project cmp
+  [ -f "$vf" ] || return 0
+  if running_from_project_copy "$root"; then return 0; fi
+  project="$(manifest_version "$vf")"
+  [ -n "$project" ] || return 0
+  if [ "$project" = "$VERSION" ]; then return 0; fi
+  cmp="$(version_cmp "$project" "$VERSION")"
+  if [ "$cmp" = "1" ]; then
+    warn "project workflow is $project, this CLI is $VERSION: upgrade the CLI (npm install --global @shizuku-yume/workflow)"
+  else
+    warn "project workflow is $project, this CLI is $VERSION: run 'workflow update'"
+  fi
+  return 0
+}
+
+# warn_toolkit_on_path - another workflow on PATH (not this script) that is
+# newer than what the project carries. Returns 1 when it warns, so doctor can
+# count it; doctor only.
+warn_toolkit_on_path() {
+  local root="$1" other other_real other_version self_real cmp installed
+  other="$(command -v workflow 2>/dev/null || true)"
+  [ -n "$other" ] || return 0
+  self_real="$(normalize_path "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s\n' "${BASH_SOURCE[0]}")"
+  other_real="$(normalize_path "$other" 2>/dev/null || printf '%s\n' "$other")"
+  if [ "$other_real" = "$self_real" ]; then return 0; fi
+  other_version="$("$other" version 2>/dev/null | sed -n '1p')" || return 0
+  [ -n "$other_version" ] || return 0
+  installed="$(manifest_version "$root/.workflow/.workflow-version")"
+  [ -n "$installed" ] || installed="$VERSION"
+  cmp="$(version_cmp "$other_version" "$installed")"
+  if [ "$cmp" != "1" ]; then return 0; fi
+  warn "toolkit $other_version on PATH is newer than the installed $installed: run 'workflow update'"
+  return 1
 }
 
 # Find the project root with Git, falling back to the requested directory.
@@ -330,10 +408,11 @@ check_symlink_safety() {
   done
   check_path_symlink_safety "$root" "$root/.gitattributes" || return 1
 
-  for d in specs tasks maps done; do
+  for d in specs tasks research done; do
     check_path_symlink_safety "$root" "$root/.workflow/$d" || return 1
   done
 
+  check_path_symlink_safety "$root" "$root/.workflow/.gitignore" || return 1
   check_path_symlink_safety "$root" "$root/.workflow/.workflow-version" || return 1
   check_path_symlink_safety "$root" "$root/AGENTS.md" || return 1
   check_path_symlink_safety "$root" "$root/.workflow/.agents-block.workflow-managed" || return 1
@@ -933,6 +1012,74 @@ remove_gitattributes() {
   rm -f "$tmp"
 }
 
+# The project-local .gitignore for .workflow/ (CONVENTIONS §2). It is generated
+# here rather than shipped as a template file: npm strips .gitignore files from
+# published tarballs.
+workflow_gitignore_content() {
+  cat <<'EOF'
+# workflow: local-only state
+worktrees/
+HANDOFF.md
+EOF
+}
+
+# ensure_workflow_gitignore ROOT - create .workflow/.gitignore, or append the
+# patterns a hand-edited one is missing. Project-local state, not a managed file.
+ensure_workflow_gitignore() {
+  local root="$1" file="$1/.workflow/.gitignore" pattern added=0
+  assert_symlink_safety "$root" "$file"
+  if [ ! -f "$file" ]; then
+    workflow_gitignore_content > "$file"
+    ok ".workflow/.gitignore (ignores worktrees/ and HANDOFF.md)"
+    return 0
+  fi
+  for pattern in 'worktrees/' 'HANDOFF.md'; do
+    if grep -qxF "$pattern" "$file"; then continue; fi
+    if [ -s "$file" ] && [ -n "$(tail -c 1 "$file")" ]; then printf '\n' >> "$file"; fi
+    printf '%s\n' "$pattern" >> "$file"
+    added=$((added + 1))
+  done
+  if [ "$added" -gt 0 ]; then
+    ok ".workflow/.gitignore (added $added missing pattern(s))"
+  else
+    skip ".workflow/.gitignore (worktrees/ and HANDOFF.md already ignored)"
+  fi
+}
+
+# migrate_maps_to_research ROOT - maps/ became research/ in 2.11. Move entries,
+# keep git history for tracked ones, never overwrite, and drop maps/ when empty.
+migrate_maps_to_research() {
+  local root="$1" maps="$1/.workflow/maps" research="$1/.workflow/research"
+  [ -d "$maps" ] || return 0
+  if ! check_path_symlink_safety "$root" "$maps"; then
+    warn "skipped .workflow/maps/: it resolves outside the project; move its notes into .workflow/research/ by hand"
+    return 0
+  fi
+  local is_git=0 entry name rel moved=0
+  if git -C "$root" rev-parse --is-inside-work-tree >/dev/null 2>&1; then is_git=1; fi
+  mkdir -p "$research"
+  for entry in "$maps"/* "$maps"/.[!.]*; do
+    [ -e "$entry" ] || continue
+    name="${entry##*/}"
+    rel=".workflow/maps/$name"
+    if [ -e "$research/$name" ]; then
+      warn "kept $rel: .workflow/research/$name already exists"
+      continue
+    fi
+    if [ "$is_git" = 1 ] && git -C "$root" ls-files --error-unmatch -- "$rel" >/dev/null 2>&1; then
+      git -C "$root" mv -- "$rel" ".workflow/research/$name" 2>/dev/null || true
+    fi
+    if [ ! -e "$research/$name" ]; then
+      mv "$entry" "$research/$name" 2>/dev/null || { warn "could not move $rel; move it by hand"; continue; }
+    fi
+    moved=$((moved + 1))
+  done
+  if [ "$moved" -gt 0 ]; then
+    ok "moved $moved map(s) from .workflow/maps/ to .workflow/research/"
+  fi
+  rmdir "$maps" 2>/dev/null || true
+}
+
 # Write a file only if it does not exist. Never clobbers user edits.
 install_file() {
   local dest="$1" src="$2"
@@ -1049,12 +1196,13 @@ prune_stale_files() {
 # ---------------------------------------------------------------- commands
 
 parse_install_args() {
-  FORCE=0; CLAUDE_CHOICE=""
+  FORCE=0; CLAUDE_CHOICE=""; NO_HOOK=0
   for arg in "$@"; do
     case "$arg" in
       --force) FORCE=1 ;;
       --claude) CLAUDE_CHOICE=on ;;
       --no-claude) CLAUDE_CHOICE=off ;;
+      --no-hook) NO_HOOK=1 ;;
       -h|--help) usage; exit 0 ;;
       *) die "unknown argument: $arg" ;;
     esac
@@ -1072,8 +1220,10 @@ cmd_init() {
   say ""
 
   mkdir -p "$root/.workflow/specs" "$root/.workflow/tasks" \
-           "$root/.workflow/maps" "$root/.workflow/done"
+           "$root/.workflow/research" "$root/.workflow/done"
   MANIFEST_STAGE="$(wf_mktemp)"
+
+  ensure_workflow_gitignore "$root"
 
   install_skills "$root" "$force"
   install_agents "$root" "$force"
@@ -1090,6 +1240,7 @@ cmd_init() {
   if claude_enabled "$root" "$CLAUDE_CHOICE"; then
     install_claude "$root" "$force"; claude=yes; commit_paths=".workflow/, .agents/, AGENTS.md, .gitattributes, .claude/ and CLAUDE.md"
   fi
+  if [ "$NO_HOOK" != 1 ]; then init_hook "$root"; else skip "pre-commit hook not installed (--no-hook)"; fi
   write_manifest "$root" "$claude"
   rm -f "$MANIFEST_STAGE"; MANIFEST_STAGE=""
   cat >&2 <<EOF
@@ -1100,8 +1251,7 @@ ${C_OK}Done.${C_OFF} Next step:
      on first use and confirm what it found.
   2. Commit ${commit_paths}.
      .workflow/bin/workflow is the CLI the skills call; it travels with the repo.
-  3. Optional: .workflow/bin/workflow hook install, to run validate before each commit.
-  4. Open your agent and ask it to grill you about what you want to build.
+  3. Open your agent and ask it to grill you about what you want to build.
 
 EOF
 }
@@ -1115,6 +1265,8 @@ cmd_update() {
   say "Updating the workflow in $root"
   mkdir -p "$root/.workflow"
   MANIFEST_STAGE="$(wf_mktemp)"
+  ensure_workflow_gitignore "$root"
+  migrate_maps_to_research "$root"
   install_skills "$root" "$force"
   install_agents "$root" "$force"
   local rulebooks_mode="update"
@@ -1139,7 +1291,7 @@ cmd_update() {
     fi
   fi
   say ""
-  say "Your own files (standards, glossary, decisions, technical-debt, specs, tasks) were not touched."
+  say "Your own files (standards, glossary, decisions, technical-debt, specs, tasks, research) were not touched."
 }
 
 # Doctor reports what is installed. Task and decision checks are not
@@ -1337,6 +1489,13 @@ cmd_doctor() {
     problems=$((problems + 1))
   fi
 
+  if git -C "$root" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    if ! git -C "$root" check-ignore -q .workflow/worktrees/x 2>/dev/null; then
+      warn ".workflow/worktrees/ is not ignored by git; run 'workflow update' to add .workflow/.gitignore"
+      problems=$((problems + 1))
+    fi
+  fi
+
   if have_python; then
     ok "python3 available ($(python3 -c 'import platform; print(platform.python_version())' 2>/dev/null))"
   else
@@ -1366,7 +1525,13 @@ cmd_doctor() {
   local hook; hook="$(hook_path "$root" 2>/dev/null || true)"
   if [ -n "$hook" ] && [ -f "$hook" ] && grep -qF "$HOOK_MARKER" "$hook"; then
     ok "pre-commit hook runs workflow validate"
+  elif [ -n "$hook" ] && [ -f "$hook" ]; then
+    skip "pre-commit hook exists but is not workflow's; run 'workflow hook install --append' to add validate to it"
+  elif [ -n "$hook" ]; then
+    skip "pre-commit hook not installed; run 'workflow hook install'"
   fi
+
+  warn_toolkit_on_path "$root" || problems=$((problems + 1))
 
   say ""
   if [ "$problems" -eq 0 ]; then
@@ -1559,9 +1724,25 @@ cmd_uninstall() {
       fi
     fi
   done
-  for d in specs tasks maps done; do
+  for d in specs tasks research done; do
     rmdir "$root/.workflow/$d" 2>/dev/null || true
   done
+
+  # .gitignore is project-local state, not a managed file: remove it only when
+  # it still holds exactly what init wrote, byte for byte.
+  local gi="$root/.workflow/.gitignore" gi_expected
+  if [ -f "$gi" ]; then
+    gi_expected="$(wf_mktemp)"
+    workflow_gitignore_content > "$gi_expected"
+    if cmp -s "$gi" "$gi_expected"; then
+      rm -f "$gi"
+      ok "removed .workflow/.gitignore"
+      removed=$((removed + 1))
+    else
+      warn "kept .workflow/.gitignore: edited locally, yours to keep"
+    fi
+    rm -f "$gi_expected"
+  fi
 
   remove_marked_block "$root" AGENTS.md "$KIT/templates/project/AGENTS.md" \
     "$root/.workflow/.agents-block.workflow-managed" removed
@@ -1583,7 +1764,7 @@ cmd_uninstall() {
   say ""
   say "Removed $removed file(s)."
   say "Your own files are untouched: .workflow/standards.md, glossary.md,"
-  say "decisions.md, technical-debt.md, specs/, tasks/, maps/ and done/."
+  say "decisions.md, technical-debt.md, specs/, tasks/, research/ and done/."
   if [ -d "$root/.workflow" ] && [ -z "$(ls -A "$root/.workflow")" ]; then
     rmdir "$root/.workflow"
   fi
@@ -1694,6 +1875,47 @@ remove_hook_file_or_block() {
   fi
 }
 
+# hook_install_at HOOK FORCE APPEND - write the workflow pre-commit hook.
+# Returns 0 on success, 1 when a foreign hook is in the way, 2 when writing fails.
+hook_install_at() {
+  local hook="$1" force="$2" append="$3"
+  mkdir -p "$(dirname "$hook")" 2>/dev/null || return 2
+  if [ -f "$hook" ] && [ "$force" != 1 ]; then
+    if [ "$append" = 1 ] || grep -qxF "$HOOK_BLOCK_START" "$hook"; then
+      append_hook_block "$hook" || return 2
+      ok "pre-commit hook updated (appended block): $hook"
+      say "Commits are blocked when workflow validate reports errors; warnings pass."
+      return 0
+    elif ! grep -qF "$HOOK_MARKER" "$hook"; then
+      return 1
+    fi
+  fi
+  hook_script > "$hook" || return 2
+  chmod +x "$hook" 2>/dev/null || return 2
+  ok "pre-commit hook installed: $hook"
+  say "Commits are blocked when workflow validate reports errors; warnings pass."
+  return 0
+}
+
+# init_hook ROOT - install the pre-commit hook for init. Never fails init: no
+# git, a foreign hook, or a write error each report one line and move on.
+init_hook() {
+  local root="$1" hook
+  if ! git -C "$root" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    return 0
+  fi
+  hook="$(hook_path "$root" 2>/dev/null || true)"
+  [ -n "$hook" ] || return 0
+  local rc=0
+  hook_install_at "$hook" 0 0 || rc=$?
+  case "$rc" in
+    0) ;;
+    1) skip "pre-commit hook left alone: it exists and is not ours; run 'workflow hook install --append' to add workflow validate to it" ;;
+    *) warn "could not install the pre-commit hook at $hook; run 'workflow hook install' later" ;;
+  esac
+  return 0
+}
+
 cmd_hook() {
   local action="${1:-status}" force=0 append=0
   [ "$#" -gt 0 ] && shift
@@ -1710,20 +1932,13 @@ cmd_hook() {
   case "$action" in
     install)
       mkdir -p "$(dirname "$hook")"
-      if [ -f "$hook" ] && [ "$force" != 1 ]; then
-        if [ "$append" = 1 ] || grep -qxF "$HOOK_BLOCK_START" "$hook"; then
-          append_hook_block "$hook"
-          ok "pre-commit hook updated (appended block): $hook"
-          say "Commits are blocked when workflow validate reports errors; warnings pass."
-          return 0
-        elif ! grep -qF "$HOOK_MARKER" "$hook"; then
-          die "$hook already exists and is not ours; use --append to add workflow validate to it, or --force to replace it"
-        fi
-      fi
-      hook_script > "$hook"
-      chmod +x "$hook"
-      ok "pre-commit hook installed: $hook"
-      say "Commits are blocked when workflow validate reports errors; warnings pass."
+      local rc=0
+      hook_install_at "$hook" "$force" "$append" || rc=$?
+      case "$rc" in
+        0) ;;
+        1) die "$hook already exists and is not ours; use --append to add workflow validate to it, or --force to replace it" ;;
+        *) die "could not write the pre-commit hook: $hook" ;;
+      esac
       ;;
     uninstall)
       if [ -f "$hook" ] && grep -qF "$HOOK_MARKER" "$hook"; then
@@ -1749,8 +1964,10 @@ usage() {
 workflow $VERSION - a project workflow for coding agents
 
 Setup (from a toolkit checkout):
-  workflow init [--force] [--claude|--no-claude]    install into the current project
-  workflow update [--force] [--claude|--no-claude]  re-copy skills, rules and CLI
+  workflow init [--force] [--claude|--no-claude] [--no-hook]
+                               install into the current project, with its pre-commit hook
+  workflow update [--force] [--claude|--no-claude] [--no-hook]
+                               re-copy skills, rules and CLI; never installs the hook
   workflow uninstall           remove the installed skills, agents, rulebook and CLI
 
 Anywhere, including the project's own copy, .workflow/bin/workflow:
@@ -1773,7 +1990,9 @@ project. Symlinks escaping that project are rejected. Skills are copied into
 the CLI into .workflow/bin/. --claude also writes .claude/skills/,
 .claude/agents/ and a CLAUDE.md that imports AGENTS.md; it is on by default when
 the project already has CLAUDE.md or .claude/. A block in .gitattributes gives
-.workflow/decisions.md and glossary.md git's union merge.
+.workflow/decisions.md and glossary.md git's union merge. .workflow/.gitignore
+keeps worktrees/ and HANDOFF.md out of git. Research notes live in
+.workflow/research/.
 EOF
 }
 
@@ -1811,15 +2030,23 @@ removed_command() {
 }
 
 
+# Daily commands warn first when the project's workflow version and this CLI
+# disagree; the nudge is stderr-only and never changes the exit code.
+nudge_project_version() {
+  local root
+  root="$(project_root)"
+  version_drift_nudge "$root" || true
+}
+
 case "${1:-}" in
   init) shift; cmd_init "$@" ;;
   update) shift; cmd_update "$@" ;;
-  doctor) shift; cmd_doctor "$@" ;;
+  doctor) shift; nudge_project_version; cmd_doctor "$@" ;;
   uninstall) shift; cmd_uninstall "$@" ;;
-  hook) shift; cmd_hook "$@" ;;
+  hook) shift; nudge_project_version; cmd_hook "$@" ;;
   version|--version|-v) printf '%s\n' "$VERSION" ;;
   ""|-h|--help|help) usage ;;
-  validate|next|task) run_core "$@" ;;
+  validate|next|task) nudge_project_version; run_core "$@" ;;
   pulse|tasks|deps|decisions|effort|debt|hotfix-review) removed_command "$1" ;;
   *) die "unknown command: $1 (try 'workflow help')" ;;
 esac

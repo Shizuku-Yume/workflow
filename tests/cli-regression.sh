@@ -24,6 +24,19 @@ portable_sed() {
   fi
 }
 
+# Every `workflow` call below uses $WORKFLOW, never a copy on PATH. doctor warns
+# (and fails) when another workflow on PATH is newer than the project's (contract
+# §6), so a developer's global install must not leak into these scenarios: PATH
+# keeps only directories without a workflow binary. The PATH scenario at the end
+# builds its own to test that warning.
+TEST_PATH="$(printf '%s' "$PATH" | tr ':' '\n' | while IFS= read -r p; do
+  [ -n "$p" ] || continue
+  if [ -x "$p/workflow" ]; then continue; fi
+  printf '%s:' "$p"
+done)"
+PATH="${TEST_PATH%:}"
+export PATH
+
 # Helper to initialize a clean git repo with workflow
 setup_repo() {
   local dir="$1"
@@ -34,7 +47,9 @@ setup_repo() {
   echo "root" > "$dir/README.md"
   git -C "$dir" add README.md
   git -C "$dir" commit -q -m "initial"
-  (cd "$dir" && "$WORKFLOW" init >/dev/null 2>&1)
+  # --no-hook: most scenarios are not about the hook, and a hook would run on
+  # the commits they make. The hook scenarios install it explicitly.
+  (cd "$dir" && "$WORKFLOW" init --no-hook >/dev/null 2>&1)
   # Fill template placeholders in standards.md so standards.md passes doctor
   portable_sed 's/<[^>]*>/placeholder/g' "$dir/.workflow/standards.md"
 }
@@ -179,16 +194,20 @@ test_explicit_archived_cross_effort() {
   local repo="$TMPDIR/repo1"
 
   mkdir -p "$repo/.workflow/done/archived-effort"
-  cat > "$repo/.workflow/done/archived-effort/01-done.md" <<'EOF'
+  # An archived task may not carry a placeholder Base commit; use the real HEAD.
+  local head_sha
+  head_sha="$(git -C "$repo" rev-parse HEAD)"
+  cat > "$repo/.workflow/done/archived-effort/01-done.md" <<EOF
 # 01: Done Task
 **Effort:** archived-effort
-**Check:** `true` passes
-**Base commit:** <commit-sha>
+**Check:** \`true\` passes
+**Base commit:** $head_sha
 **Blocked by:** None, can start now
 
 ## Progress
 
-Check after: `true` passed on the final code
+Check after: \`true\` passed on the final code
+Review: pass (base abc1234)
 EOF
 
   cat > "$repo/.workflow/tasks/01-draft.md" <<'EOF'
@@ -567,32 +586,35 @@ EOF
   fi
 }
 
-# --- Scenario 13: open exploration maps surface in next and next --brief ---
-test_open_maps_cli() {
+# --- Scenario 13: open research notes surface in next and next --brief ---
+test_open_research_cli() {
   local repo="$TMPDIR/repo1"
-  mkdir -p "$repo/.workflow/maps"
+  mkdir -p "$repo/.workflow/research"
 
-  cat > "$repo/.workflow/maps/explore-api.md" <<'EOF'
-# Map: Explore API options
+  cat > "$repo/.workflow/research/explore-api.md" <<'EOF'
+# Research: Explore API options
 
 ## Goal
 Pick streaming protocol.
 
-## Open Questions
+## Open questions
 - [ ] Benchmark SSE vs WebSocket
+- [ ] Check browser support
 EOF
 
-  local out_next out_brief
+  local out_next out_brief out_json
   out_next="$(cd "$repo" && "$WORKFLOW" next --no-color)"
   out_brief="$(cd "$repo" && "$WORKFLOW" next --brief --no-color)"
-  if [[ "$out_next" == *"Open exploration maps (continue with flow-grill):"* ]] && \
-     [[ "$out_next" == *".workflow/maps/explore-api.md — Explore API options"* ]] && \
-     [[ "$out_brief" == *"Maps: .workflow/maps/explore-api.md"* ]]; then
-    pass "open exploration maps surface in workflow next and next --brief"
+  out_json="$(cd "$repo" && "$WORKFLOW" next --format json)"
+  if [[ "$out_next" == *"Open research questions (continue with flow-grill):"* ]] && \
+     [[ "$out_next" == *".workflow/research/explore-api.md — Explore API options (2 open)"* ]] && \
+     [[ "$out_brief" == *"Research: .workflow/research/explore-api.md (continue with flow-grill)"* ]] && \
+     [[ "$out_json" == *'"open_research":[{"path":".workflow/research/explore-api.md","slug":"explore-api","title":"Explore API options","open":2}]'* ]]; then
+    pass "open research notes surface in workflow next, next --brief and next JSON"
   else
-    fail "expected open map in next and next --brief, got next=$out_next brief=$out_brief"
+    fail "expected open research note in next, next --brief and next JSON, got next=$out_next brief=$out_brief json=$out_json"
   fi
-  rm -f "$repo/.workflow/maps/explore-api.md"
+  rm -f "$repo/.workflow/research/explore-api.md"
 }
 
 # --- Scenario 14: task filename and heading number mismatch rejected ---
@@ -1046,7 +1068,7 @@ test_nongit_lifecycle_preserves_user_docs() {
   mkdir -p "$repo"
   echo "User Project Readme" > "$repo/README.md"
 
-  # 1. init in non-git directory
+  # 1. init in non-git directory (the hook is skipped silently there)
   local out_init
   if out_init="$(cd "$repo" && "$WORKFLOW" init 2>&1)"; then
     pass "workflow init succeeds in non-git directory"
@@ -1055,7 +1077,7 @@ test_nongit_lifecycle_preserves_user_docs() {
     return
   fi
 
-  if [ -d "$repo/.workflow" ] && [ -d "$repo/.agents/skills" ]; then
+  if [ -d "$repo/.workflow" ] && [ -d "$repo/.agents/skills" ] && [ -d "$repo/.workflow/research" ]; then
     pass "workflow init created expected structure in non-git directory"
   else
     fail "workflow init missing structure in non-git directory"
@@ -1538,6 +1560,7 @@ test_pre_commit_hook() {
   local repo="$TMPDIR/repo_hook"
   setup_repo "$repo"
   local cli="$repo/.workflow/bin/workflow"
+  if [ ! -e "$repo/.git/hooks/pre-commit" ]; then pass "setup_repo leaves the pre-commit hook out"; else fail "setup_repo should not install a hook"; fi
   (cd "$repo" && "$cli" hook install >/dev/null 2>&1)
   if [ -x "$repo/.git/hooks/pre-commit" ] && grep -q 'workflow:pre-commit' "$repo/.git/hooks/pre-commit"; then pass "hook install writes the pre-commit hook"; else fail "hook install should write the hook"; fi
   mkdir -p "$repo/.workflow/tasks/core"
@@ -1548,7 +1571,7 @@ test_pre_commit_hook() {
 **Blocked by:** None
 EOF
   mkdir -p "$repo/.workflow/done/core"
-  printf '# 02: Old\n\n**Effort:** core\n\n## Progress\n\nCheck after: ran on the final code\n' \
+  printf '# 02: Old\n\n**Effort:** core\n\n## Progress\n\nCheck after: ran on the final code\nReview: pass (base abc1234)\n' \
     > "$repo/.workflow/done/core/02-old.md"
   local status=0
   (cd "$repo" && "$cli" validate --no-color >/dev/null 2>&1) || status=$?
@@ -2057,7 +2080,7 @@ EOF
 
   status=0
   out="$(cd "$repo" && "$cli" task archive core/01 2>&1)" || status=$?
-  if [ "$status" -ne 0 ] && [[ "$out" == *"unticked checkbox"* ]] && [ -f "$repo/.workflow/tasks/core/01-init.md" ]; then
+  if [ "$status" -ne 0 ] && [[ "$out" == *"unticked"* ]] && [ -f "$repo/.workflow/tasks/core/01-init.md" ]; then
     pass "cli task archive refuses task with unticked checkboxes and retains source"
   else
     fail "cli task archive should refuse unticked checkbox (exit $status): $out"
@@ -2069,14 +2092,14 @@ EOF
 
   status=0
   out="$(cd "$repo" && "$cli" task archive core/01 2>&1)" || status=$?
-  if [ "$status" -ne 0 ] && [[ "$out" == *"missing 'Check after:' in ## Progress"* ]] && [ -f "$repo/.workflow/tasks/core/01-init.md" ]; then
+  if [ "$status" -ne 0 ] && [[ "$out" == *"archived without a Check after or Check waived record"* ]] && [ -f "$repo/.workflow/tasks/core/01-init.md" ]; then
     pass "cli task archive refuses missing Check after proof"
   else
     fail "cli task archive should refuse missing Check after (exit $status): $out"
   fi
 
   # 5. Task archive refuses to clobber existing destination
-  printf '\nCheck after: verified\n' >> "$repo/.workflow/tasks/core/01-init.md"
+  printf '\nCheck after: verified\nReview: pass (base %s)\n' "$head_sha" >> "$repo/.workflow/tasks/core/01-init.md"
   mkdir -p "$repo/.workflow/done/core"
   printf 'EXISTING_ARCHIVE_CONTENT\n' > "$repo/.workflow/done/core/01-init.md"
 
@@ -2103,7 +2126,8 @@ EOF
      [ -f "$repo/.workflow/done/core/01-init.md" ] && \
      ! grep -q 'Status:' "$repo/.workflow/done/core/01-init.md" && \
      grep -q 'Preserved task body text.' "$repo/.workflow/done/core/01-init.md" && \
-     grep -q 'Check after: verified' "$repo/.workflow/done/core/01-init.md"; then
+     grep -q 'Check after: verified' "$repo/.workflow/done/core/01-init.md" && \
+     grep -q "Review: pass (base $head_sha)" "$repo/.workflow/done/core/01-init.md"; then
     pass "cli task archive moved file to done/, removed Status, and preserved body"
   else
     fail "cli task archive file state incorrect: $(cat "$repo/.workflow/done/core/01-init.md" 2>/dev/null || true)"
@@ -2115,6 +2139,329 @@ EOF
     fail "validate failed after task archive: $(cd "$repo" && "$cli" validate --no-color 2>&1 || true)"
   fi
 }
+
+# --- 2.11: .workflow/.gitignore is generated, topped up, and removed only unedited ---
+test_workflow_gitignore() {
+  local repo="$TMPDIR/repo_gitignore" out
+  setup_repo "$repo"
+  local expected
+  expected="$(printf '# workflow: local-only state\nworktrees/\nHANDOFF.md')"
+
+  if [ -f "$repo/.workflow/.gitignore" ] && [ "$(cat "$repo/.workflow/.gitignore")" = "$expected" ]; then
+    pass "init writes .workflow/.gitignore"
+  else
+    fail "init should write .workflow/.gitignore: $(cat "$repo/.workflow/.gitignore" 2>/dev/null || true)"
+  fi
+  if git -C "$repo" check-ignore -q .workflow/worktrees/x; then
+    pass "git check-ignore accepts .workflow/worktrees/x after init"
+  else
+    fail ".workflow/worktrees/x should be git-ignored after init"
+  fi
+  if ! grep -q ' .workflow/.gitignore$' "$repo/.workflow/.workflow-version"; then
+    pass ".workflow/.gitignore is not recorded in the managed manifest"
+  else
+    fail ".workflow/.gitignore must stay out of the managed: manifest"
+  fi
+
+  # update appends the patterns a hand-edited file lost, and keeps the user's lines
+  printf '# local notes\nmy-notes/\nworktrees/\n' > "$repo/.workflow/.gitignore"
+  out="$(cd "$repo" && "$WORKFLOW" update 2>&1)"
+  if grep -qxF 'HANDOFF.md' "$repo/.workflow/.gitignore" &&
+     grep -qxF 'my-notes/' "$repo/.workflow/.gitignore" &&
+     [[ "$out" == *"added 1 missing pattern(s)"* ]]; then
+    pass "update appends the missing .gitignore pattern and keeps user lines"
+  else
+    fail "update should append HANDOFF.md and keep user lines: $out"
+  fi
+  if git -C "$repo" check-ignore -q .workflow/worktrees/x; then
+    pass "edited .gitignore still ignores worktrees/"
+  else
+    fail "edited .gitignore should still ignore .workflow/worktrees/x"
+  fi
+
+  # uninstall keeps an edited file and says so
+  out="$(cd "$repo" && "$WORKFLOW" uninstall 2>&1)"
+  if [ -f "$repo/.workflow/.gitignore" ] && grep -qxF 'my-notes/' "$repo/.workflow/.gitignore" &&
+     [[ "$out" == *"kept .workflow/.gitignore: edited locally, yours to keep"* ]]; then
+    pass "uninstall keeps an edited .workflow/.gitignore"
+  else
+    fail "uninstall should keep the edited .workflow/.gitignore: $out"
+  fi
+
+  # uninstall removes it when it is still exactly what init wrote
+  repo="$TMPDIR/repo_gitignore_unmodified"
+  setup_repo "$repo"
+  (cd "$repo" && "$WORKFLOW" update >/dev/null 2>&1)
+  out="$(cd "$repo" && "$WORKFLOW" uninstall 2>&1)"
+  if [ ! -e "$repo/.workflow/.gitignore" ] && [[ "$out" == *"removed .workflow/.gitignore"* ]]; then
+    pass "uninstall removes an unmodified .workflow/.gitignore"
+  else
+    fail "uninstall should remove the unmodified .workflow/.gitignore: $out"
+  fi
+
+  # a .workflow/.gitignore symlinked outside the project is rejected
+  repo="$TMPDIR/repo_gitignore_symlink"
+  setup_repo "$repo"
+  rm -f "$repo/.workflow/.gitignore"
+  ln -s "$TMPDIR/outside_gitignore_target" "$repo/.workflow/.gitignore"
+  local sym_status=0
+  out="$(cd "$repo" && "$WORKFLOW" update 2>&1)" || sym_status=$?
+  if [ "$sym_status" -ne 0 ] && [[ "$out" == *"symlink safety violation"* ]] &&
+     [ -L "$repo/.workflow/.gitignore" ]; then
+    pass "a .workflow/.gitignore symlink escaping the project is rejected"
+  else
+    fail "update should reject an escaping .workflow/.gitignore (exit $sym_status): $out"
+  fi
+
+  # doctor points at update when the file is gone, and fails
+  repo="$TMPDIR/repo_gitignore_doctor"
+  setup_repo "$repo"
+  rm -f "$repo/.workflow/.gitignore"
+  local status=0
+  out="$(cd "$repo" && "$WORKFLOW" doctor 2>&1)" || status=$?
+  if [ "$status" -ne 0 ] &&
+     [[ "$out" == *".workflow/worktrees/ is not ignored by git; run 'workflow update' to add .workflow/.gitignore"* ]]; then
+    pass "doctor warns when .workflow/worktrees/ is not ignored"
+  else
+    fail "doctor should warn about the missing .gitignore (exit $status): $out"
+  fi
+}
+
+# --- 2.11: update migrates maps/ into research/ without losing history ---
+test_maps_research_migration() {
+  local repo="$TMPDIR/repo_maps_migration" out
+  setup_repo "$repo"
+  mkdir -p "$repo/.workflow/maps" "$repo/.workflow/research"
+  printf '# Map: tracked note\n' > "$repo/.workflow/maps/tracked.md"
+  printf '# Research: existing note\n' > "$repo/.workflow/research/collide.md"
+  printf '# Map: colliding note\n' > "$repo/.workflow/maps/collide.md"
+  git -C "$repo" add .workflow/maps .workflow/research
+  git -C "$repo" commit -q -m "maps"
+  printf '# Map: untracked note\n' > "$repo/.workflow/maps/untracked.md"
+
+  out="$(cd "$repo" && "$WORKFLOW" update 2>&1)"
+  if [ -f "$repo/.workflow/research/tracked.md" ] && [ ! -e "$repo/.workflow/maps/tracked.md" ] &&
+     git -C "$repo" status --porcelain | grep -q 'R  .workflow/maps/tracked.md -> .workflow/research/tracked.md'; then
+    pass "update git-mv's a tracked map so history follows"
+  else
+    fail "update should git mv the tracked map: $out $(git -C "$repo" status --porcelain)"
+  fi
+  if [ -f "$repo/.workflow/research/untracked.md" ] && [ ! -e "$repo/.workflow/maps/untracked.md" ]; then
+    pass "update moves an untracked map with a plain mv"
+  else
+    fail "update should move the untracked map: $out"
+  fi
+  if [ -f "$repo/.workflow/maps/collide.md" ] && grep -qxF '# Research: existing note' "$repo/.workflow/research/collide.md" &&
+     [[ "$out" == *"kept .workflow/maps/collide.md: .workflow/research/collide.md already exists"* ]]; then
+    pass "update warns and leaves a colliding map without overwriting research"
+  else
+    fail "update should leave the colliding map and keep research/collide.md: $out"
+  fi
+  if [[ "$out" == *"moved 2 map(s) from .workflow/maps/ to .workflow/research/"* ]]; then
+    pass "update says how many maps moved"
+  else
+    fail "update should report the moved count: $out"
+  fi
+  if [ ! -d "$repo/.workflow/maps" ]; then
+    fail "maps/ should stay while a colliding entry is unaccounted for"
+  else
+    pass "maps/ is kept while an entry remains"
+  fi
+
+  rm -f "$repo/.workflow/maps/collide.md"
+  (cd "$repo" && "$WORKFLOW" update >/dev/null 2>&1)
+  if [ ! -d "$repo/.workflow/maps" ]; then
+    pass "update removes maps/ once it is empty"
+  else
+    fail "update should remove the emptied maps/ directory"
+  fi
+}
+
+# --- 2.11: init installs the pre-commit hook by default ---
+test_init_hook_default() {
+  local repo="$TMPDIR/repo_init_hook" out
+  mkdir -p "$repo"
+  git -C "$repo" init -q
+  git -C "$repo" config user.email "test@example.com"
+  git -C "$repo" config user.name "Test User"
+  echo "root" > "$repo/README.md"
+  git -C "$repo" add README.md
+  git -C "$repo" commit -q -m "initial"
+
+  out="$(cd "$repo" && "$WORKFLOW" init --no-claude 2>&1)"
+  if [ -x "$repo/.git/hooks/pre-commit" ] && grep -qF 'workflow:pre-commit' "$repo/.git/hooks/pre-commit" &&
+     [[ "$out" == *"pre-commit hook installed"* ]]; then
+    pass "init installs the pre-commit hook by default"
+  else
+    fail "init should install the pre-commit hook: $out"
+  fi
+
+  repo="$TMPDIR/repo_init_hook_off"
+  mkdir -p "$repo"
+  git -C "$repo" init -q
+  git -C "$repo" config user.email "test@example.com"
+  git -C "$repo" config user.name "Test User"
+  echo "root" > "$repo/README.md"
+  git -C "$repo" add README.md
+  git -C "$repo" commit -q -m "initial"
+  out="$(cd "$repo" && "$WORKFLOW" init --no-claude --no-hook 2>&1)"
+  if [ ! -e "$repo/.git/hooks/pre-commit" ] && [[ "$out" == *"pre-commit hook not installed (--no-hook)"* ]]; then
+    pass "init --no-hook leaves the hook out"
+  else
+    fail "init --no-hook should not install the hook: $out"
+  fi
+
+  # update accepts --no-hook and never installs one
+  if out="$(cd "$repo" && "$WORKFLOW" update --no-claude --no-hook 2>&1)" && [ ! -e "$repo/.git/hooks/pre-commit" ]; then
+    pass "update accepts --no-hook and does not install the hook"
+  else
+    fail "update --no-hook should succeed without installing a hook: $out"
+  fi
+  (cd "$repo" && "$WORKFLOW" update --no-claude >/dev/null 2>&1)
+  if [ ! -e "$repo/.git/hooks/pre-commit" ]; then
+    pass "update never installs the hook"
+  else
+    fail "update must not install the pre-commit hook"
+  fi
+
+  # a foreign pre-commit hook is left alone, with a hint
+  repo="$TMPDIR/repo_init_hook_foreign"
+  mkdir -p "$repo"
+  git -C "$repo" init -q
+  echo "root" > "$repo/README.md"
+  git -C "$repo" add README.md
+  printf '#!/bin/sh\nexit 0\n' > "$repo/.git/hooks/pre-commit"
+  chmod +x "$repo/.git/hooks/pre-commit"
+  if out="$(cd "$repo" && "$WORKFLOW" init --no-claude 2>&1)"; then
+    if grep -qF 'exit 0' "$repo/.git/hooks/pre-commit" &&
+       ! grep -qF 'workflow:pre-commit' "$repo/.git/hooks/pre-commit" &&
+       [[ "$out" == *"workflow hook install --append"* ]]; then
+      pass "init leaves a foreign pre-commit hook untouched and names --append"
+    else
+      fail "init should not touch a foreign hook and should hint at --append: $out"
+    fi
+  else
+    fail "init must not fail because of a foreign hook: $out"
+  fi
+
+  # non-git directory: init succeeds and silently skips the hook
+  repo="$TMPDIR/repo_init_hook_nongit"
+  mkdir -p "$repo"
+  echo "root" > "$repo/README.md"
+  out="$(cd "$repo" && "$WORKFLOW" init --no-claude 2>&1)" || true
+  if [ -d "$repo/.workflow" ] && [ ! -e "$repo/.git" ] && [[ "$out" != *"pre-commit hook"* ]]; then
+    pass "init skips the hook silently outside a git repository"
+  else
+    fail "init outside git should succeed without a hook line: $out"
+  fi
+}
+
+# --- 2.11: version drift nudge on daily commands ---
+test_version_drift_nudge() {
+  local repo="$TMPDIR/repo_version_nudge" out err status
+  setup_repo "$repo"
+  git -C "$repo" branch -M main
+  git -C "$repo" add -A
+  git -C "$repo" commit -q -m "workflow install"
+  mkdir -p "$repo/.workflow/tasks/core"
+  cat > "$repo/.workflow/tasks/core/01-nudge.md" <<'EOF'
+# 01: Nudge
+**Effort:** core
+**Check:** `true` passes
+**Blocked by:** None
+EOF
+  git -C "$repo" add -A
+  git -C "$repo" commit -q -m "one task"
+  local kit_version
+  kit_version="$("$WORKFLOW" version)"
+
+  # Older project: point at update, on all five daily commands, on stderr only and
+  # with the same exit code the project's own (non-nudging) copy returns.
+  portable_sed 's/^version: .*/version: 1.0.0/' "$repo/.workflow/.workflow-version"
+  local nudge="project workflow is 1.0.0, this CLI is $kit_version: run 'workflow update'"
+  local cmd own_status nudge_err="$TMPDIR/nudge.err"
+  for cmd in "next --no-color" "validate --no-color" "task start core/01" "doctor" "hook status"; do
+    status=0
+    out="$(cd "$repo" && "$WORKFLOW" $cmd 2>"$nudge_err")" || status=$?
+    err="$(cat "$nudge_err")"; rm -f "$nudge_err"
+    own_status=0
+    (cd "$repo" && ./.workflow/bin/workflow $cmd >/dev/null 2>&1) || own_status=$?
+    if [[ "$err" == *"$nudge"* ]] && [[ "$out" != *"project workflow is"* ]] &&
+       [ "$status" -eq "$own_status" ]; then
+      pass "workflow $cmd nudges an older project on stderr and keeps the exit code ($status)"
+    else
+      fail "workflow $cmd should nudge on stderr only (exit $status, own copy $own_status): err=$err"
+    fi
+  done
+
+  # Newer project: point at upgrading the CLI.
+  portable_sed 's/^version: .*/version: 99.0.0/' "$repo/.workflow/.workflow-version"
+  status=0
+  out="$(cd "$repo" && "$WORKFLOW" next --no-color 2>"$nudge_err")" || status=$?
+  err="$(cat "$nudge_err")"; rm -f "$nudge_err"
+  if [ "$status" -eq 0 ] &&
+     [[ "$err" == *"project workflow is 99.0.0, this CLI is $kit_version: upgrade the CLI (npm install --global @shizuku-yume/workflow)"* ]] &&
+     [[ "$out" != *"project workflow is"* ]]; then
+    pass "newer project manifest gets the upgrade-CLI nudge"
+  else
+    fail "newer project should be nudged to upgrade the CLI (exit $status): $err"
+  fi
+
+  # The project's own copy never nudges.
+  err="$(cd "$repo" && ./.workflow/bin/workflow next --no-color 2>&1 >/dev/null)" || true
+  if [[ "$err" != *"project workflow is"* ]]; then
+    pass "no nudge when the running script is the project's own copy"
+  else
+    fail "the project's own copy should not nudge: $err"
+  fi
+
+  # Not a workflow project: nothing to compare.
+  repo="$TMPDIR/repo_version_nudge_nongit"
+  mkdir -p "$repo"
+  err="$(cd "$repo" && "$WORKFLOW" doctor 2>&1 >/dev/null)" || true
+  if [[ "$err" != *"project workflow is"* ]]; then
+    pass "no nudge without .workflow/.workflow-version"
+  else
+    fail "no manifest should mean no nudge: $err"
+  fi
+}
+
+
+# --- 2.11: doctor warns about a newer toolkit on PATH ---
+test_doctor_path_toolkit_newer() {
+  local repo="$TMPDIR/repo_path_toolkit" out status
+  setup_repo "$repo"
+  if (cd "$repo" && "$WORKFLOW" doctor >/dev/null 2>&1); then
+    pass "doctor is quiet with no other workflow on PATH"
+  else
+    fail "doctor should pass with no other workflow on PATH: $(cd "$repo" && "$WORKFLOW" doctor 2>&1 | grep '!')"
+  fi
+
+  # A newer standalone workflow earlier on PATH: doctor warns and fails.
+  local fake="$TMPDIR/path_toolkit_bin"
+  mkdir -p "$fake"
+  printf '#!/bin/sh\nprintf "99.0.0\\n"\n' > "$fake/workflow"
+  chmod +x "$fake/workflow"
+  status=0
+  out="$(cd "$repo" && PATH="$fake:$PATH" "$WORKFLOW" doctor 2>&1)" || status=$?
+  if [ "$status" -ne 0 ] &&
+     [[ "$out" == *"toolkit 99.0.0 on PATH is newer than the installed"*"run 'workflow update'"* ]]; then
+    pass "doctor warns about a newer toolkit on PATH and fails"
+  else
+    fail "doctor should warn about the newer PATH toolkit (exit $status): $out"
+  fi
+
+  # An older one is not a problem.
+  printf '#!/bin/sh\nprintf "0.0.1\\n"\n' > "$fake/workflow"
+  status=0
+  out="$(cd "$repo" && PATH="$fake:$PATH" "$WORKFLOW" doctor 2>&1)" || status=$?
+  if [ "$status" -eq 0 ] && [[ "$out" != *"on PATH is newer"* ]]; then
+    pass "an older toolkit on PATH is not reported"
+  else
+    fail "an older PATH toolkit should be ignored (exit $status): $out"
+  fi
+}
+
 
 test_draft_placeholder_accepted
 test_invalid_concrete_sha_rejected
@@ -2129,7 +2476,7 @@ test_rulebook_update_behavior
 test_doctor_no_writes
 test_duplicate_task_number_same_effort
 test_different_efforts_same_number_ok
-test_open_maps_cli
+test_open_research_cli
 test_task_heading_mismatch
 test_task_heading_match_ok
 test_agents_block_prepended
@@ -2160,6 +2507,11 @@ test_standards_placeholder_precision
 test_single_manifest_and_legacy_marker_migration
 test_bash_temp_files_cleanup
 test_task_lifecycle_cli
+test_workflow_gitignore
+test_maps_research_migration
+test_init_hook_default
+test_version_drift_nudge
+test_doctor_path_toolkit_newer
 
 printf '\nResults: %d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" -eq 0 ]

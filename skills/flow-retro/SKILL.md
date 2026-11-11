@@ -12,7 +12,7 @@ Improve agent setup after a session that hit avoidable friction. Propose changes
 
 ## 1. Find concrete friction
 
-Inspect the session (or user-named task `## Progress` / review findings) alongside repo scripts, CI config, `.workflow/standards.md`, `AGENTS.md`, and `.workflow/bin/workflow hook status`. Every proposal must cite a specific failure or slowdown that actually happened—skip generic best practices.
+Inspect the session (or user-named task `## Progress` / review findings) alongside repo scripts, CI config, `.workflow/standards.md`, `AGENTS.md`, and `.workflow/bin/workflow hook status`. Include tasks with `Check waived:` or `Review: skipped`, repeated environment failures in `## Progress`, and stale worktrees named by `workflow next`. Every proposal must cite a specific failure or slowdown that actually happened—skip generic best practices.
 
 ## 2. Pick the lightest fix
 
@@ -24,6 +24,9 @@ Keep `AGENTS.md` short and `.workflow/standards.md` under one screen (CONVENTION
 | Reviewer missed a project-specific convention | Add 1–2 clear lines under `## Code conventions` in `.workflow/standards.md` |
 | Slow file search or non-obvious directory | Add a one-line pointer under `## Layout` in `.workflow/standards.md` |
 | Bloated or ignored rules in `AGENTS.md` / `CLAUDE.md` | Delete unused lines or move enforceable rules into automated checks |
+| Evidence cited from temp paths or missing | Set `Evidence:` in `standards.md` and cite receipts there |
+| Tasks fighting over one device, port, or app | Declare it under `Shared resources:` (claim and release); tasks list it in `Resources:` |
+| `standards.md` or `AGENTS.md` past one screen | Move material to `docs/` or `.workflow/research/` with a one-line pointer |
 
 ## 3. Propose and wait for approval
 

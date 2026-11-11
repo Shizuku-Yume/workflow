@@ -3,6 +3,106 @@
 What changed in each version and what an existing project has to do about it.
 Usage lives in the README and in `--help`.
 
+## 2.11.0
+
+### Upgrade
+
+Run `npm install --global @shizuku-yume/workflow`, then on the main branch with a
+clean tree run:
+
+```sh
+workflow update   # add --force if AGENTS.md was edited locally and you want the updated block
+git add .workflow .agents AGENTS.md && git commit   # plus .claude CLAUDE.md if used
+```
+
+Merge the main branch into active branches and worktrees so every environment uses the
+updated rules and CLI.
+
+- `workflow update` moves `.workflow/maps/` to `.workflow/research/` (an entry whose name
+  already exists there stays in `maps/` with a warning) and creates `.workflow/.gitignore`,
+  or adds whichever of `worktrees/` and `HANDOFF.md` it is missing.
+- Run `workflow hook install` if the project never installed the hook: only `workflow init`
+  installs it by default.
+- `standards.md` is project-owned, so add by hand what applies: `Evidence: <path>` for check
+  logs and receipts, `Worktrees:` for the worktree root, and `Shared resources:` for devices,
+  ports, or anything else only one task can use at a time.
+- Tasks archived from now on need a `Review:` line and a `Check after:` or `Check waived:`
+  in `## Progress`. Archives already committed are not re-judged unless `--audit` is passed.
+- User waivers are recorded in the task (`Check waived: …`, `Review: waived …`) instead of
+  `decisions.md`.
+- Research notes list unresolved items as `- [ ]` under `## Open questions`; a migrated map
+  that already uses that heading keeps showing in `workflow next`.
+- JSON consumers of `workflow next --format json` rename `open_maps` to `open_research`.
+- The `decisions.md` header is project-owned: add the optional `Effort:` field and drop
+  `newest last` by hand if wanted.
+
+### Changes
+
+- **Proof and review records (`CONVENTIONS §2.1, §5`)**:
+  - One archive gate now serves `workflow task archive` and `workflow validate` (new archives,
+    or all with `--audit`): it requires a `Check after:` or `Check waived:` with a real value,
+    a `Review:` outcome of `pass | blocked | skipped | waived` with a reason for `skipped` and
+    `waived`, a `Check after` that does not cite `/tmp` or `/var/tmp`, and no `<...>`
+    placeholder `Base commit`. Spike tasks are exempt from the proof and review rules but still
+    need every item ticked and a filled-in `## Findings`.
+  - `Check after` values that record no result (`n/a`, `not run`, `pending`, `跳过`, …) are
+    rejected. A narrower observation such as a passing build does not satisfy a Check that
+    asked for more.
+  - `Review:` outcomes live in `## Progress` (`pass`/`blocked` with the base SHA,
+    `skipped — <reason>`, `waived — <finding>; user, <date>`); the last line wins.
+  - Degraded mode: when a reviewer subagent cannot be spawned or fails, record
+    `Review: skipped — <reason>` and tell the user. `flow-close` reviews every skipped task
+    before the effort can close.
+  - The closeout gains a section listing tasks with `Check waived` or `Review: skipped|waived`.
+  - Two failed attempts at the same `Check` now force a replan for every task type, not only
+    bugfixes.
+  - When the work ports or must match an existing reference, at least one spec `W` check
+    compares against the reference itself instead of an item list derived from it.
+- **`workflow next` reports more (`CONVENTIONS §2, §7`)**:
+  - New sections: open research questions, checklist-complete tasks not yet archived, efforts
+    ready to close, specs without tasks, shared-resource overlaps across ready tasks, and
+    stale worktrees whose branch is already merged (first five, all with `--all`), each naming
+    the `git worktree remove` command.
+  - JSON gains `open_research`, `unarchived`, `ready_to_close`, `specs_without_tasks`,
+    `resource_overlaps`, and `stale_worktrees`; `open_maps` is gone.
+  - These sections print even when there are no task files, respect `--effort`, and count as
+    activity for `--brief`.
+  - `workflow task archive` prints `Last open task of <effort>: run flow-close <effort>` when
+    the last task of an unfinished effort is archived.
+- **Evidence, worktrees, shared resources, research notes (`CONVENTIONS §2, §7`)**:
+  - `standards.md` names one `Evidence:` directory; `Check after` cites receipts there, never
+    `/tmp` or another temporary directory.
+  - The worktree root is `Worktrees:` in `standards.md`, defaulting to `.workflow/worktrees/`
+    and ignored through `.workflow/.gitignore`.
+  - `Shared resources:` declares things only one task can use at a time, with how to claim and
+    release them; tasks list them in `Resources:` and run one after another.
+  - `research/<slug>.md` replaces `maps/<slug>.md` for durable notes that specs and tasks
+    cite in `Read first`; unresolved items are `- [ ]` under `## Open questions`.
+- **Bounded files (`CONVENTIONS §2.1, §5`)**:
+  - `validate` warns on a `standards.md` over 80 lines and on an open task file over 16384
+    bytes.
+  - `## Progress` holds current state: superseded attempts collapse to one line each and long
+    logs move to the Evidence directory.
+  - `decisions.md` accepts an optional `Effort:` field; entries are cited by date and title
+    because union merge interleaves them.
+- **Fixes**:
+  - `init` and `update` create `.workflow/.gitignore` (`worktrees/`, `HANDOFF.md`) or add
+    whichever pattern is missing. It is generated rather than shipped because npm strips
+    `.gitignore` files from tarballs. `uninstall` removes it only when it still matches.
+  - `workflow task start` no longer prefixes inserted header fields with `- ` unless the
+    existing header is a bullet list, and warns about uncommitted files outside `.workflow/`
+    that `flow-verify` will review as part of the task.
+  - A new archive with a placeholder `Base commit` is rejected by both `workflow task archive`
+    and `workflow validate`; a leftover `Status` under `done/` is rejected by `validate`.
+- **Install and upgrade**:
+  - `workflow init` installs the pre-commit hook unless `--no-hook` is passed; a foreign hook
+    is left untouched with a hint naming `workflow hook install --append`. `workflow hook
+    install` remains for fresh clones and existing projects.
+  - `next`, `validate`, `task`, `doctor`, and `hook` warn on stderr when the project's
+    `.workflow/.workflow-version` differs from the running CLI. `doctor` also reports a newer
+    toolkit on `PATH`, an unignored worktree directory, and — as an informational line, not a
+    problem — a missing hook.
+
 ## 2.10.0
 
 ### Upgrade

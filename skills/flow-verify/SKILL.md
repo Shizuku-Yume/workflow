@@ -21,11 +21,12 @@ Use the task's `Base commit`, or `git merge-base <landing branch> HEAD` after a 
 
 ## 3. Act on findings
 
-Record the base SHA and outcome (`pass` or `blocked`) in `## Progress`. Any `blocking` finding means not ready.
+Record `Review: pass (base <sha>)` or `Review: blocked (base <sha>)` in `## Progress`; use that exact shape, since the CLI parses it. Any `blocking` finding means not ready.
 - Fix the whole round's findings together, then rerun the affected checks once.
 - Rerun the reviewer only if a `blocking` finding was fixed or the fixes added files, callers, or trust boundaries.
-- **Round cap & escalation:** cap review-fix cycles at at most 2 rounds (initial review + one re-review). If blocking findings remain after round 2, stop automatically: do not keep looping or guessing. Present the remaining blocking findings, evidence, and failed attempts to the user. Do not land or proceed until the user either waives the finding (recorded in `.workflow/decisions.md` with `Decided by: user` per CONVENTIONS §5), provides explicit direction, or marks the task `paused` / `blocked` to replan.
+- **Round cap & escalation:** cap review-fix cycles at 2 rounds (initial review + one re-review). If blocking findings remain after round 2, stop: do not keep looping or guessing. Present the findings, evidence, and failed attempts. Do not land until the user waives the finding (recorded as `Review: waived — <finding>; user, <YYYY-MM-DD>` in the task, CONVENTIONS §5), gives direction, or marks the task `paused` / `blocked` to replan.
+- **Degraded mode:** if a reviewer subagent cannot be spawned or fails to run, never review in the authoring context: record `Review: skipped — <reason>`, tell the user, and continue. `flow-close` reviews it.
 
 ## 4. Effort close mode
 
-When called from `flow-close`, run `workflow-reviewer` on requirements & proof plus cross-task integration, from the first task's base commit. Reuse recorded reviews for tasks unchanged since. Run `security-reviewer` if the effort as a whole touched a trust boundary.
+When called from `flow-close`, run `workflow-reviewer` on requirements & proof plus cross-task integration, from the first task's base commit, and review every task recorded as `Review: skipped`. Reuse recorded reviews for tasks unchanged since. Run `security-reviewer` if the effort as a whole touched a trust boundary.

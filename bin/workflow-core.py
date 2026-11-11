@@ -12,6 +12,12 @@ previous field (`Blocked by` joins with ", ", other fields with a space);
 blank lines, headings, checklists and new fields end a continuation.
 `## Check` starts a section whose lines join the same way. The first
 occurrence of a field wins; later ones are duplicates.
+
+`## Progress` carries the proof lines `Check before:`, `Check after:`,
+`Check waived:` and `Review:`; the last occurrence of each line wins.
+`workflow validate` and `workflow task archive` judge archives through the
+same gate (see `archive_proof_problems`). Research notes live under
+`.workflow/research/`; `next` lists notes with open questions.
 """
 
 import json
@@ -22,11 +28,11 @@ import subprocess
 import sys
 import tempfile
 
-VERSION = "2.10.0"
+VERSION = "2.11.0"
 KNOWN_FIELDS = {
     "task", "effort", "task type", "base commit", "base branch", "delivers", "blocked by",
     "files", "read first", "check", "covers", "question", "time box", "priority",
-    "status", "integration branch",
+    "status", "integration branch", "resources",
 }
 TASK_TYPES = ("feature", "bugfix", "spike", "refactor")
 PRIORITY_RANK = {"critical": 0, "high": 1, "normal": 2, "low": 3}
@@ -34,7 +40,8 @@ SPEC_STATUSES = ("proposed", "in progress", "done")
 TASK_STATUSES = ("active", "paused", "blocked")
 FINISHED_STATUSES = ("done", "completed", "archived")
 DECISION_REQUIRED_FIELDS = ("Decided", "Instead of", "Because")
-DECISION_FIELDS = ("Decided", "Instead of", "Because", "Decided by", "Revisit when", "Supersedes")
+DECISION_FIELDS = ("Decided", "Instead of", "Because", "Decided by", "Revisit when",
+                   "Supersedes", "Effort")
 SLUG_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 TASK_FILE_RE = re.compile(r"^([0-9]+)-.+\.md$")
 FENCE_OPEN_RE = re.compile(r"^\s*(`{3,}|~{3,})(.*)$")
@@ -241,31 +248,36 @@ def section_has_content(shown, heading):
             return True
     return False
 
-def check_after_in_progress(shown):
-    """True if shown lines contain a valid Check after field under ## Progress."""
+REVIEW_OUTCOMES = ("pass", "blocked", "skipped", "waived")
+NO_RESULT_WORDS = ("n/a", "na", "none", "todo", "tbd", "pending", "skip", "skipped",
+                   "not run", "not executed", "waived", "deferred", "未运行", "未执行", "跳过")
+TEMP_PATH_RE = re.compile(r"(?<![\w.~-])/(?:var/)?tmp/")
+
+
+def progress_proofs(shown):
+    """The proof lines of `## Progress`, parsed outside fences and comments.
+
+    Returns a dict keyed by `check after`, `check waived` and `review`, each
+    `{"line": int, "value": str}` or `None` when absent. The last occurrence of
+    each line wins; indented or bulleted lines continue the previous one.
+    """
+    proofs = {"check after": None, "check waived": None, "review": None}
     in_progress = False
-    in_field = False
-    for _, line in shown:
+    current = None
+    for lineno, line in shown:
         raw = line
         text = line.strip()
-        m2 = H2_RE.match(text)
-        if m2:
-            heading = m2.group(1).strip().rstrip(":").strip().lower()
-            in_progress = (heading == "progress")
-            in_field = False
+        m = H2_RE.match(text)
+        if m:
+            heading = m.group(1).strip().rstrip(":").strip().lower()
+            in_progress = heading == "progress"
+            current = None
             continue
         if not in_progress:
             continue
-        if text.startswith("#"):
-            in_field = False
+        if text.startswith("#") or not text or CHECKLIST_RE.match(text):
+            current = None
             continue
-        if not text:
-            in_field = False
-            continue
-        if CHECKLIST_RE.match(text):
-            in_field = False
-            continue
-
         clean = text
         bm = BULLET_RE.match(clean)
         if bm:
@@ -273,19 +285,106 @@ def check_after_in_progress(shown):
         fm = BOLD_FIELD_RE.match(clean) or PLAIN_FIELD_RE.match(clean)
         if fm:
             key = fm.group(1).lower().rstrip(":").strip()
-            val = fm.group(2).strip()
-            if key == "check after":
-                in_field = True
-                if val:
-                    return True
-                continue
+            if key in proofs:
+                proofs[key] = {"line": lineno, "value": fm.group(2).strip()}
+                current = key
             else:
-                in_field = False
-                continue
-        if in_field and (raw[:1].isspace() or BULLET_RE.match(text)):
-            if text:
-                return True
+                current = None
+            continue
+        if current and (raw[:1].isspace() or BULLET_RE.match(text)):
+            value = proofs[current]["value"]
+            proofs[current]["value"] = (value + " " + text) if value else text
+            continue
+        current = None
+    return proofs
+
+
+def review_outcome(value):
+    """(outcome, detail) of a Review value; the outcome is its first word, lower-cased."""
+    text = value.strip()
+    if not text:
+        return "", ""
+    word = text.split()[0]
+    outcome = word.lower().rstrip(",.;:—-")
+    detail = text[len(word):].strip().lstrip(",.;:—-").strip()
+    return outcome, detail
+
+
+def no_result_value(value):
+    """True when a Check after value starts with a no-result word (CONVENTIONS §2).
+
+    Leading backticks, `*` and spaces are stripped first; the comparison is
+    case-insensitive and literal, so `pending` and `pending-free` both count.
+    """
+    text = value.strip().lstrip("`* \t").strip().lower()
+    for word in NO_RESULT_WORDS:
+        if text.startswith(word):
+            return True
     return False
+
+
+def archive_proof_problems(shown, meta, spike=False):
+    """[(line, message, fix)] for the archive gate in CONVENTIONS §2.
+
+    Shared by `workflow validate` and `workflow task archive`, so the two cannot
+    drift. Rules 1, 2, 3-6 and 8 live here, in that order; rule 9 (a Status
+    under done/) is validate-only. A spike answers only rules 1, 2 and 8.
+    """
+    problems = []
+    unticked_fix = ("Tick it if it is done; otherwise finish it, or delete it "
+                    "and say in ## Progress why it no longer applies.")
+    for lineno, line in shown:
+        m = UNTICKED_RE.match(line.strip())
+        if m:
+            item = m.group(1).strip()
+            if len(item) > 60:
+                item = item[:57] + "..."
+            problems.append((lineno, "archived with an unticked item: %s" % item, unticked_fix))
+    if spike:
+        if not section_has_content(shown, "findings"):
+            problems.append((1, "spike archived without ## Findings",
+                             "Record what the spike found under ## Findings."))
+    else:
+        proofs = progress_proofs(shown)
+        after, waived, review = proofs["check after"], proofs["check waived"], proofs["review"]
+        after_value = after["value"] if after else ""
+        if not after_value and not (waived and waived["value"]):
+            line = after["line"] if after else (waived["line"] if waived else 1)
+            problems.append((line, "archived without a Check after or Check waived record",
+                             "Run the Check on the final code and record `Check after:` in "
+                             "## Progress, or record `Check waived: <reason>` if the user waived it."))
+        if after_value:
+            if no_result_value(after_value):
+                problems.append((after["line"], "Check after records no result",
+                                 "Run the Check and record its result, or record "
+                                 "`Check waived: <reason>` if the user waived it."))
+            if TEMP_PATH_RE.search(after_value):
+                problems.append((after["line"], "Check after cites a temporary path",
+                                 "Move the receipt under the Evidence directory named in "
+                                 "standards.md, or drop the citation."))
+        if review is None or not review["value"].strip():
+            line = review["line"] if review else 1
+            problems.append((line, "archived without a Review record",
+                             "Run flow-verify and record `Review: pass (base <sha>)`, or "
+                             "`Review: skipped — <reason>`."))
+        else:
+            outcome, detail = review_outcome(review["value"])
+            if outcome == "blocked":
+                problems.append((review["line"], "archived with Review: blocked",
+                                 "Resolve the blocking findings, or record the user's waiver as "
+                                 "`Review: waived — <finding>; user, <YYYY-MM-DD>`."))
+            elif outcome in ("skipped", "waived") and not detail:
+                problems.append((review["line"], "Review: %s needs a reason" % outcome,
+                                 "Add the reason after the outcome."))
+            elif outcome not in REVIEW_OUTCOMES:
+                problems.append((review["line"], "invalid Review outcome '%s'" % outcome,
+                                 "Use pass, blocked, skipped, or waived."))
+    base = meta.get("base commit").strip()
+    if base.startswith("<") and base.endswith(">"):
+        problems.append((meta.line.get("base commit", 1),
+                         "archived with a placeholder Base commit",
+                         "Record the commit the work started from: workflow task start writes it."))
+    return problems
 
 
 class Meta(object):
@@ -510,8 +609,11 @@ Checks required Task, Effort, Check and Blocked by fields; effort slugs;
 that a task in tasks/<effort>/ says the same Effort; that the heading number
 matches the filename; Status and Priority values; blockers; Base commit refs;
 task-number collisions within efforts; dependency cycles; Covers IDs no spec
-check defines; and decision format. Checks active and completed task files;
-problems in completed files warn instead of failing.
+check defines; decision format; and that new archives carry a Check after or
+Check waived with a real result, a Review line, no placeholder Base commit,
+and no Status. Checks active and completed task files; problems in completed
+files warn instead of failing. Warns on oversized header material:
+standards.md past 80 lines, or an open task file past 16384 bytes.
 
   --audit        Audit historical archives and spec acceptances (omitted by default)
   --staged       Validate staged git index content instead of the working tree
@@ -609,6 +711,7 @@ class Validator(object):
         self.check_spec_acceptance()
         self.check_decisions()
         self.check_standards()
+        self.check_progress_size()
 
     def collect(self):
         if self.staged:
@@ -935,10 +1038,13 @@ class Validator(object):
     def check_new_archives(self):
         """Judge archives made in this change; committed history is never re-judged unless --audit is enabled.
 
-        A task moves to done/ with its checkboxes ticked and a record of the Check
-        run. Only paths absent from HEAD's tree are checked by default, so an old archive
-        that predates the rule (or a checkout of one) stays quiet. Passing --audit checks
-        all archived tasks.
+        A task moves to done/ with its checkboxes ticked, a `Check after` or
+        `Check waived`, a `Review:` line, and no placeholder Base commit
+        (CONVENTIONS §2). Only paths absent from HEAD's tree are checked by
+        default, so an old archive that predates the rule (or a checkout of one)
+        stays quiet. Passing --audit checks all archived tasks. Rule 9 — a
+        Status still present under done/ — is validate-only, since `task archive`
+        strips it.
         """
         committed = set()
         if not self.audit:
@@ -949,8 +1055,6 @@ class Validator(object):
             if not ready:
                 return
             committed = set(listing.splitlines())
-        unticked_suggestion = ("Tick it if it is done; otherwise finish it, or delete it "
-                               "and say in ## Progress why it no longer applies.")
         for path in self.files:
             rel = self.rel(path)
             if not rel.startswith(".workflow/done/"):
@@ -958,21 +1062,14 @@ class Validator(object):
             if not self.audit and rel in committed:
                 continue
             shown = visible_lines(self.lines(path))
-            for lineno, line in shown:
-                m = UNTICKED_RE.match(line.strip())
-                if m:
-                    item = m.group(1).strip()
-                    if len(item) > 60:
-                        item = item[:57] + "..."
-                    self.issue("ERROR", path, lineno,
-                               "archived with an unticked item: %s" % item, unticked_suggestion)
-            if self.meta[path].get("task type").strip().lower() == "spike":
-                if not section_has_content(shown, "findings"):
-                    self.issue("ERROR", path, 1, "spike archived without ## Findings",
-                               "Record what the spike found under ## Findings.")
-            elif not check_after_in_progress(shown):
-                self.issue("ERROR", path, 1, "archived without a Check after record",
-                           "Run the Check on the final code and record `Check after:` in ## Progress.")
+            meta = self.meta[path]
+            spike = meta.get("task type").strip().lower() == "spike"
+            for line, message, suggestion in archive_proof_problems(shown, meta, spike=spike):
+                self.issue("ERROR", path, line, message, suggestion)
+            if "status" in meta.field:
+                self.issue("ERROR", path, meta.line.get("status", 1),
+                           "archived task still has a Status",
+                           "Drop the Status field; only `workflow task archive` may move a task.")
     def specs(self):
         """(effort, path, meta) for every spec file, sorted by effort."""
         found = []
@@ -1070,13 +1167,42 @@ class Validator(object):
                            "standards.md contains unfilled placeholder",
                            "Fill in or remove placeholders in .workflow/standards.md.")
                 break
+        if len(lines) > 80:
+            self.issue("WARNING", path, 1,
+                       "standards.md is %d lines; keep it under one screen (80 lines)" % len(lines),
+                       "Move long-form material to docs/ or .workflow/research/ and leave a "
+                       "one-line pointer.")
+
+    def check_progress_size(self):
+        """An open task file's ## Progress is state, not a log (CONVENTIONS §7)."""
+        for path in self.files:
+            if not path.startswith(self.tasks_dir):
+                continue
+            size = None
+            if not self.staged:
+                try:
+                    size = os.path.getsize(path)
+                except OSError:
+                    size = None
+            if size is None:
+                lines = self.lines(path)
+                if not lines:
+                    continue
+                size = len("\n".join(lines).encode("utf-8")) + 1
+            if size <= 16384:
+                continue
+            self.issue("WARNING", path, 1,
+                       "task file is %d KB; ## Progress holds current state, not a log"
+                       % int(round(size / 1024.0)),
+                       "Summarise superseded attempts in one line each and move logs to the "
+                       "Evidence directory.")
 
 
 ISO_TIME_RE = re.compile(r"^[0-9-]+T[0-9][0-9]:[0-9][0-9](:[0-9][0-9](\.[0-9]+)?)?"
                          r"(Z|[+-][0-9][0-9]:[0-9][0-9])?$")
 DATE_RE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
 DECISION_HEADING_RE = re.compile(r"^[^ \t]+[ \t]+-[ \t]+[^ \t]")
-DECISION_OUTSIDE_RE = re.compile(r"^[ \t]*-[ \t]+\*\*(Decided|Instead of|Because|Decided by|Revisit when|Supersedes):")
+DECISION_OUTSIDE_RE = re.compile(r"^[ \t]*-[ \t]+\*\*(Decided|Instead of|Because|Decided by|Revisit when|Supersedes|Effort):")
 DECIDED_BY_RE = re.compile(r"^(user|agent)([ \t.(]|$)")
 
 
@@ -1124,7 +1250,7 @@ def decision_problems(lines):
             if not state["values"].get(name):
                 problems.append((state["start"], "missing or empty decision field %s" % name,
                                  "Add - **%s:** meaningful content." % name))
-        for opt_field in ("Revisit when", "Supersedes"):
+        for opt_field in ("Revisit when", "Supersedes", "Effort"):
             if opt_field in seen and not state["values"].get(opt_field):
                 problems.append((state["start"], "missing or empty decision field %s" % opt_field,
                                  "Add - **%s:** meaningful content, or omit the field." % opt_field))
@@ -1257,9 +1383,16 @@ or when a task branch <effort>/<NN>-<slug> exists locally or on a remote
 (under pr, git fetch first); the branch's copy of the task file gives its
 Status. Branches that all claim one task are named last.
 
+Also reported: research notes with open questions under .workflow/research/;
+tasks whose checklist is complete but not archived; efforts ready to close;
+specs with no tasks; ready tasks sharing a **Resources:** name; and stale
+worktrees whose branch already merged. These print even when no task files
+exist. With --effort, research notes and worktrees are omitted and the effort
+scoped sections are filtered to that effort.
+
 Options:
   --effort SLUG  Scope output to a single effort slug
-  --all          Return all ready tasks instead of capping at five
+  --all          Return all ready tasks (and every stale worktree) instead of capping at five
   --brief        Compact snapshot; print nothing when the queue is idle
   --format TYPE  Output text (default) or JSON
   --no-color     Disable terminal colors
@@ -1665,47 +1798,227 @@ def compute_file_overlaps(ready_tasks):
             for path, refs in sorted(overlaps.items(), key=lambda kv: (-len(kv[1]), kv[0]))]
 
 
-def open_maps(root, wf):
-    """[{"path": rel, "slug": slug, "title": title}] for active maps in .workflow/maps/."""
-    maps_dir = os.path.join(wf, "maps")
-    if not os.path.isdir(maps_dir):
+def compute_resource_overlaps(ready_tasks):
+    """Resources shared by ready tasks — a device, port, or license used one at a time."""
+    overlaps = {}
+    for task in ready_tasks:
+        for name in task.get("resources", ()):
+            overlaps.setdefault(name, []).append(task["task"])
+    return [{"resource": name, "tasks": sorted(refs)}
+            for name, refs in sorted(overlaps.items()) if len(refs) >= 2]
+
+
+def parse_resources(raw):
+    """Normalized resource names from a task's `Resources:` field."""
+    if not raw:
+        return []
+    names = []
+    for token in raw.split(","):
+        name = token.strip().strip("`").strip().lower()
+        if not name or FILES_NONE_RE.match(name):
+            continue
+        if name not in names:
+            names.append(name)
+    return names
+
+
+def spec_files(wf, target_effort=None):
+    """[(effort, path, meta)] for the spec files present in this tree."""
+    specs_dir = os.path.join(wf, "specs")
+    found = []
+    if not os.path.isdir(specs_dir):
+        return found
+    for name in sorted(os.listdir(specs_dir)):
+        path = os.path.join(specs_dir, name)
+        if not name.endswith(".md") or not os.path.isfile(path):
+            continue
+        effort = name[:-3]
+        if target_effort and effort != target_effort:
+            continue
+        found.append((effort, path, read_fields(path)))
+    return found
+
+
+def closeout_sections(spec_statuses, open_counts, done_counts, integrating_efforts):
+    """(ready_to_close, specs_without_tasks) for specs and the task counts around them."""
+    ready_to_close = []
+    specs_without_tasks = []
+    for effort, status in sorted(spec_statuses):
+        if effort in integrating_efforts:
+            continue
+        opened = open_counts.get(effort, 0)
+        archived = done_counts.get(effort, 0)
+        if status != "done" and opened == 0 and archived >= 1:
+            ready_to_close.append(effort)
+        if status in ("proposed", "in progress") and opened == 0 and archived == 0:
+            specs_without_tasks.append(effort)
+    return ready_to_close, specs_without_tasks
+
+
+def worktree_entries(root):
+    """Parsed blocks of `git worktree list --porcelain`, main worktree first."""
+    listing = git_out(root, "worktree", "list", "--porcelain")
+    if not listing:
+        return []
+    entries = []
+    current = None
+    for line in listing.splitlines():
+        if not line.strip():
+            if current is not None:
+                entries.append(current)
+                current = None
+            continue
+        key, _, value = line.partition(" ")
+        if key == "worktree":
+            if current is not None:
+                entries.append(current)
+            current = {"path": value.strip(), "head": "", "branch": None}
+            continue
+        if current is None:
+            continue
+        if key == "HEAD":
+            current["head"] = value.strip()
+        elif key == "branch":
+            current["branch"] = value.strip()
+    if current is not None:
+        entries.append(current)
+    return entries
+
+
+def stale_worktrees(root, wf):
+    """[{"path","branch","merged_into"}] for worktrees whose branch already merged.
+
+    A worktree is stale when its branch tip is a strict ancestor of the main
+    branch or of an `Integration branch` a spec declares, and is not that target
+    branch itself. One `git branch --merged` per target keeps it batched.
+    """
+    main = main_branch(root)
+    if not main:
+        return []
+    targets = []
+    main_oid = (git_out(root, "rev-parse", "--verify", "--quiet",
+                        "refs/heads/" + main + "^{commit}") or "").strip()
+    if not main_oid:
+        return []
+    targets.append((main, main_oid))
+    for _, _, meta in spec_files(wf):
+        declaration = meta.get("integration branch").strip()
+        if not declaration or (declaration.startswith("<") and declaration.endswith(">")):
+            continue
+        if declaration in [label for label, _ in targets]:
+            continue
+        resolved = resolve_branch(root, declaration)
+        if not resolved:
+            continue
+        oid = (git_out(root, "rev-parse", "--verify", "--quiet",
+                       "--end-of-options", resolved + "^{commit}") or "").strip()
+        if oid:
+            targets.append((declaration, oid))
+    merged_by_target = {}
+    for label, oid in targets:
+        listing = git_out(root, "branch", "--merged", oid, "--format=%(refname:short)")
+        merged_by_target[label] = set((listing or "").splitlines())
+    target_branches = set(label for label, _ in targets)
+    found = []
+    for entry in worktree_entries(root)[1:]:
+        ref = entry["branch"] or ""
+        if not ref.startswith("refs/heads/"):
+            continue
+        branch = ref[len("refs/heads/"):]
+        if branch in target_branches:
+            continue
+        merged_into = None
+        for label, oid in targets:
+            if branch in merged_by_target[label] and entry["head"] and entry["head"] != oid:
+                merged_into = label
+                break
+        if merged_into is None:
+            continue
+        found.append({"path": entry["path"], "branch": branch, "merged_into": merged_into})
+    found.sort(key=lambda item: item["path"].encode("utf-8", "surrogateescape"))
+    return found
+
+
+def open_research(root, wf):
+    """[{"path","slug","title","open"}] for research notes with open questions.
+
+    Only top-level `.workflow/research/*.md` files are scanned; `open` counts the
+    unticked `- [ ]` items under a `## Open questions` heading.
+    """
+    research_dir = os.path.join(wf, "research")
+    if not os.path.isdir(research_dir):
         return []
     found = []
-    for name in sorted(os.listdir(maps_dir)):
+    for name in sorted(os.listdir(research_dir)):
         if not name.endswith(".md"):
             continue
-        path = os.path.join(maps_dir, name)
+        path = os.path.join(research_dir, name)
         if not os.path.isfile(path):
             continue
         lines = read_lines(path)
-        if read_fields(path, lines).get("status", "").strip().lower() == "clear":
-            continue
-        slug = name[:-3]
-        title = slug
+        open_count = 0
+        inside = False
+        title = ""
         for _, line in visible_lines(lines):
             text = line.strip()
-            if text.startswith("# ") and not text.startswith("## "):
+            m = H2_RE.match(text)
+            if m:
+                inside = m.group(1).strip().rstrip(":").strip().lower() == "open questions"
+                continue
+            if inside:
+                if UNTICKED_RE.match(text):
+                    open_count += 1
+                continue
+            if not title and text.startswith("# ") and not text.startswith("## "):
                 heading = text[2:].strip()
-                if heading.lower().startswith("map:"):
-                    heading = heading[4:].strip()
-                if heading:
-                    title = heading
-                break
-        rel = os.path.relpath(path, root).replace(os.sep, "/")
-        found.append({"path": rel, "slug": slug, "title": title})
+                lower = heading.lower()
+                for prefix in ("research:", "map:"):
+                    if lower.startswith(prefix):
+                        heading = heading[len(prefix):].strip()
+                        break
+                title = heading
+        if not open_count:
+            continue
+        slug = name[:-3]
+        found.append({"path": os.path.relpath(path, root).replace(os.sep, "/"), "slug": slug,
+                      "title": title or slug, "open": open_count})
     return found
+
+
+def spec_sections(wf, target_effort=None, root=None):
+    """(ready_to_close, specs_without_tasks) computed from specs and task-file counts.
+
+    Used when `tasks/` is missing entirely, where no task can be integrating.
+    """
+    spec_statuses = [(effort, meta.get("status").strip().lower())
+                     for effort, _, meta in spec_files(wf, target_effort)]
+    done_counts, open_counts = {}, {}
+    done_dir, tasks_dir = os.path.join(wf, "done"), os.path.join(wf, "tasks")
+    for base, counter in ((done_dir, done_counts), (tasks_dir, open_counts)):
+        for path in task_files(base, root=root):
+            if not TASK_FILE_RE.match(os.path.basename(path)):
+                continue
+            effort = dir_effort(base, path) or read_fields(path).get("effort")
+            if effort:
+                counter[effort] = counter.get(effort, 0) + 1
+    return closeout_sections(spec_statuses, open_counts, done_counts, set())
 
 
 def collect_queue(root, wf, target_effort=None):
     """Gather queue state across the working tree and git branches."""
     tasks_dir, done_dir = os.path.join(wf, "tasks"), os.path.join(wf, "done")
     tree = tree_info(root)
-    maps = [] if target_effort else open_maps(root, wf)
+    research = [] if target_effort else open_research(root, wf)
+    stale = [] if target_effort else stale_worktrees(root, wf)
     if not os.path.isdir(tasks_dir):
-        return {"missing_tasks_dir": True, "tree": tree, "open_maps": maps, "ready": [],
-                "started": [], "stackable": [], "block_tasks": {}, "block_numbers": {},
-                "blockers": [], "task_count": 0, "blocked_count": 0, "waiting": 0,
-                "integrating": [], "duplicates": [], "overlaps": []}
+        closeable, unplanned = spec_sections(wf, target_effort, root=root)
+        return {"missing_tasks_dir": True, "tree": tree, "open_research": research,
+                "ready": [], "started": [], "stackable": [], "block_tasks": {},
+                "block_numbers": {}, "blockers": [], "task_count": 0, "blocked_count": 0,
+                "waiting": 0, "integrating": [], "duplicates": [], "overlaps": [],
+                "unarchived": [], "ready_to_close": closeable,
+                "specs_without_tasks": unplanned, "resource_overlaps": [],
+                "stale_worktrees": stale}
     # Blockers archived under done/ are finished and never block.
     archived = set()
     for path in task_files(done_dir, root=root):
@@ -1720,6 +2033,25 @@ def collect_queue(root, wf, target_effort=None):
     current = tree["branch"]
     main = tree["main"]
     head_oid = (git_out(root, "rev-parse", "--verify", "--quiet", "HEAD^{commit}") or "").strip() or None
+    spec_entries = spec_files(wf, target_effort)
+    spec_statuses = [(effort, meta.get("status").strip().lower())
+                     for effort, _, meta in spec_entries]
+    done_counts = {}
+    for path in task_files(done_dir, root=root):
+        if not TASK_FILE_RE.match(os.path.basename(path)):
+            continue
+        effort = dir_effort(done_dir, path) or read_fields(path).get("effort")
+        if effort:
+            done_counts[effort] = done_counts.get(effort, 0) + 1
+    open_file_counts = {}
+    for path in task_files(tasks_dir, root=root):
+        if not TASK_FILE_RE.match(os.path.basename(path)):
+            continue
+        effort = dir_effort(tasks_dir, path)
+        if not effort:
+            effort = read_fields(path).get("effort")
+        if effort:
+            open_file_counts[effort] = open_file_counts.get(effort, 0) + 1
     all_refs = list_branch_refs(root)
     oid_by_ref = {}
     for refname, b_name, oid, is_local in all_refs:
@@ -1798,7 +2130,8 @@ def collect_queue(root, wf, target_effort=None):
             sys.stderr.write("Warning: ignoring task with invalid filename: %s\n" % name)
             continue
         number = norm_number(m.group(1))
-        meta = read_fields(path)
+        lines = read_lines(path)
+        meta = read_fields(path, lines=lines)
         effort = meta.get("effort") or dir_effort(tasks_dir, path) or "none"
         if not SLUG_RE.match(effort):
             sys.stderr.write("Warning: %s has an invalid effort reference; using default priority\n" % name)
@@ -1815,11 +2148,20 @@ def collect_queue(root, wf, target_effort=None):
         base_branch = meta.get("base branch").strip()
         if base_branch and not (base_branch.startswith("<") and base_branch.endswith(">")):
             base_branches_needed.append(base_branch)
-        local_tasks.append((path, name, number, meta, effort, status, ref, base_branch))
+        ticked = unticked = 0
+        for _, line in visible_lines(lines):
+            text = line.strip()
+            if UNTICKED_RE.match(text):
+                unticked += 1
+            elif CHECKLIST_RE.match(text):
+                ticked += 1
+        complete = bool(ticked) and not unticked
+        local_tasks.append((path, name, number, meta, effort, status, ref, base_branch,
+                            complete, len(lines)))
 
     # Collect potential unlanded blocker refs referenced by open tasks (for stackable PRs).
     blocker_refs_needed = set()
-    for _, _, _, meta, effort, status, ref, _ in local_tasks:
+    for _, _, _, meta, effort, status, ref, _, _, _ in local_tasks:
         if ref in landed_main or ref in integration_landed or status in ("active", "paused", "blocked"):
             continue
         raw = meta.get("blocked by")
@@ -1890,6 +2232,7 @@ def collect_queue(root, wf, target_effort=None):
                 archived_branch.setdefault(c, b_name)
 
     ready, started, stackable = [], [], []
+    unarchived = []
     block_tasks, block_numbers = {}, {}
     task_count = len(local_tasks)
     blocked_count = waiting = 0
@@ -1899,8 +2242,10 @@ def collect_queue(root, wf, target_effort=None):
         block_tasks.setdefault(blocker, []).append(ref)
         block_numbers.setdefault(blocker, []).append(int(number))
 
-    for path, name, number, meta, effort, status, ref, base_branch in local_tasks:
+    for path, name, number, meta, effort, status, ref, base_branch, complete, _ in local_tasks:
         title = meta.title or meta.get("task") or "Untitled"
+        if complete:
+            unarchived.append((int(number), ref, title))
 
         if ref in landed_main:
             started.append((STARTED_ORDER["landed"], int(number), ref, title, "landed", main, effort))
@@ -1923,6 +2268,8 @@ def collect_queue(root, wf, target_effort=None):
             started.append((STARTED_ORDER[status], int(number), ref, title, status, branch, effort))
             if status == "blocked":
                 blocked_count += 1
+            continue
+        if complete:
             continue
 
         stacked_done = set()
@@ -1961,6 +2308,7 @@ def collect_queue(root, wf, target_effort=None):
         task = {"task": ref, "number": int(number), "title": title, "effort": effort,
                 "priority": priority, "goal": goal, "check": meta.get("check") or "(not specified)",
                 "path": rel_path, "branch": branch_name, "files": files_list,
+                "resources": parse_resources(meta.get("resources")),
                 "start_command": "flow-implement " + ref}
         ready.append((rank, int(number), len(ready), ref, task))
     ready.sort(key=lambda item: item[:3])
@@ -1982,12 +2330,93 @@ def collect_queue(root, wf, target_effort=None):
         claims.setdefault(ref, set()).add(b_name)
     duplicates = [(ref, sorted(names)) for ref, names in claims.items() if len(names) >= 2]
     duplicates.sort(key=lambda item: (-len(item[1]), item[0]))
+    unarchived.sort(key=lambda item: (item[0], item[1]))
     overlaps = compute_file_overlaps([item[4] for item in ready])
-    return {"missing_tasks_dir": False, "tree": tree, "open_maps": maps, "ready": ready,
-            "started": started, "stackable": stackable, "block_tasks": block_tasks,
-            "block_numbers": block_numbers, "blockers": blockers, "task_count": task_count,
-            "blocked_count": blocked_count, "waiting": waiting, "integrating": integrating,
-            "duplicates": duplicates, "overlaps": overlaps}
+    resource_overlaps = compute_resource_overlaps([item[4] for item in ready])
+    integrating_efforts = set(item["effort"] for item in integrating)
+    closeable, unplanned = closeout_sections(spec_statuses, open_file_counts, done_counts,
+                                             integrating_efforts)
+    return {"missing_tasks_dir": False, "tree": tree, "open_research": research,
+            "ready": ready, "started": started, "stackable": stackable,
+            "block_tasks": block_tasks, "block_numbers": block_numbers, "blockers": blockers,
+            "task_count": task_count, "blocked_count": blocked_count, "waiting": waiting,
+            "integrating": integrating, "duplicates": duplicates, "overlaps": overlaps,
+            "unarchived": [{"task": ref, "title": title} for _, ref, title in unarchived],
+            "ready_to_close": closeable, "specs_without_tasks": unplanned,
+            "resource_overlaps": resource_overlaps, "stale_worktrees": stale}
+
+def next_activity(state):
+    """True when `next` has anything to say; `--brief` stays silent only when nothing does."""
+    return bool(state["open_research"] or state["started"] or state["ready"]
+                or state["waiting"] or state["integrating"] or state["unarchived"]
+                or state["ready_to_close"] or state["specs_without_tasks"]
+                or state["resource_overlaps"] or state["stale_worktrees"])
+
+
+def json_sections(state, opts):
+    """The newer `next` JSON keys; research and worktrees are tree-wide, so `--effort` omits them."""
+    out = {}
+    if opts["effort"] is None:
+        out["open_research"] = state["open_research"]
+    out["unarchived"] = state["unarchived"]
+    out["ready_to_close"] = state["ready_to_close"]
+    out["specs_without_tasks"] = state["specs_without_tasks"]
+    out["resource_overlaps"] = state["resource_overlaps"]
+    if opts["effort"] is None:
+        out["stale_worktrees"] = state["stale_worktrees"]
+    return out
+
+
+def text_sections(state, opts):
+    """Text lines for research, unarchived tasks, closeable/unplanned specs, resources, worktrees."""
+    out = []
+    if state["open_research"]:
+        out.append("Open research questions (continue with flow-grill):\n")
+        for note in state["open_research"]:
+            out.append("  %s — %s (%d open)\n" % (note["path"], note["title"], note["open"]))
+    if state["unarchived"]:
+        out.append("Checklist complete, not archived (record proof, then workflow task archive):\n")
+        for item in state["unarchived"]:
+            out.append("  %s %s\n" % (item["task"], item["title"]))
+    if state["ready_to_close"]:
+        out.append("Ready to close (flow-close <effort>): %s\n" % ", ".join(state["ready_to_close"]))
+    if state["specs_without_tasks"]:
+        out.append("Specs without tasks (flow-break): %s\n" % ", ".join(state["specs_without_tasks"]))
+    if state["resource_overlaps"]:
+        out.append("Shared resources across ready tasks (run one at a time): %s\n" % ", ".join(
+            "%s (%s)" % (item["resource"], ", ".join(item["tasks"]))
+            for item in state["resource_overlaps"]))
+    stale = state["stale_worktrees"]
+    if stale:
+        shown = stale if opts["all"] else stale[:5]
+        line = "Stale worktrees (branch already merged; git worktree remove <path>): %s" % ", ".join(
+            item["path"] for item in shown)
+        if len(shown) < len(stale):
+            line += " (+%d more)" % (len(stale) - len(shown))
+        out.append(line + "\n")
+    return out
+
+
+def brief_sections(state):
+    """`--brief` lines for the same sections, one line each."""
+    lines = []
+    if state["open_research"]:
+        lines.append("Research: %s (continue with flow-grill)\n"
+                     % ", ".join(note["path"] for note in state["open_research"]))
+    if state["unarchived"]:
+        lines.append("Unarchived: %s\n" % ", ".join(item["task"] for item in state["unarchived"]))
+    if state["ready_to_close"]:
+        lines.append("Close: %s\n" % ", ".join(state["ready_to_close"]))
+    if state["specs_without_tasks"]:
+        lines.append("Unplanned specs: %s\n" % ", ".join(state["specs_without_tasks"]))
+    if state["resource_overlaps"]:
+        lines.append("Resources: %s\n" % ", ".join(
+            "%s (%s)" % (item["resource"], "+".join(item["tasks"]))
+            for item in state["resource_overlaps"]))
+    if state["stale_worktrees"]:
+        lines.append("Stale worktrees: %d\n" % len(state["stale_worktrees"]))
+    return lines
+
 
 def cmd_next(args):
     opts, code = parse_common(args, NEXT_USAGE, ("all", "brief", "effort"))
@@ -2002,18 +2431,14 @@ def cmd_next(args):
     state = collect_queue(root, wf, opts["effort"])
     tree = state["tree"]
     header = tree_header(tree)
-    maps = state["open_maps"]
     if opts["brief"] and not as_json:
         handoff = os.path.isfile(os.path.join(wf, "HANDOFF.md"))
-        active_work = bool(handoff or maps or state["started"] or state["ready"]
-                           or state["waiting"] or state["integrating"])
-        if not active_work:
+        if not (handoff or next_activity(state)):
             return 0
         lines = [header]
         if handoff:
             lines.append("Handoff: .workflow/HANDOFF.md present — read it and delete once absorbed.\n")
-        if maps:
-            lines.append("Maps: %s (continue with flow-grill)\n" % ", ".join(m["path"] for m in maps))
+        lines.extend(brief_sections(state))
         if state["started"]:
             lines.append("Started: %s\n" % ", ".join(
                 "%s [%s%s]" % (item[2], item[4], " @" + item[5] if item[5] else "")
@@ -2034,14 +2459,12 @@ def cmd_next(args):
     if state["missing_tasks_dir"]:
         if as_json:
             out = {"ready_count": 0, "task_count": 0, "blocked_count": 0, "ready_tasks": [],
-                   "file_overlaps": [], "blockers": [], "in_progress": [], "open_maps": maps,
+                   "file_overlaps": [], "blockers": [], "in_progress": [],
                    "tree": tree, "integrating": [], "duplicate_claims": []}
+            out.update(json_sections(state, opts))
             sys.stdout.write(json.dumps(out, ensure_ascii=False, separators=(",", ":")) + "\n")
         else:
-            extra = ""
-            if maps:
-                extra = "Open exploration maps (continue with flow-grill):\n" + "".join(
-                    "  %s — %s\n" % (m["path"], m["title"]) for m in maps)
+            extra = "".join(text_sections(state, opts))
             sys.stdout.write(header + extra + "No tasks found (tasks directory is missing).\n")
         return 0
 
@@ -2067,21 +2490,20 @@ def cmd_next(args):
                             for b in shown_blockers],
                "in_progress": [{"task": item[2], "number": item[1], "effort": item[6], "title": item[3],
                                 "status": item[4], "branch": item[5]} for item in started],
-               "open_maps": maps, "tree": tree, "integrating": integrating,
+               "tree": tree, "integrating": integrating,
                "duplicate_claims": [{"task": ref, "branches": names} for ref, names in shown_duplicates]}
+        out.update(json_sections(state, opts))
         sys.stdout.write(json.dumps(out, ensure_ascii=False, separators=(",", ":")) + "\n")
         return 0
 
     color = colors_enabled(opts["no_color"])
     bold, dim, off = ("\033[1m", "\033[2m", "\033[0m") if color else ("", "", "")
     out = [header]
-    if maps:
-        out.append("Open exploration maps (continue with flow-grill):\n")
-        for m in maps:
-            out.append("  %s%s%s — %s\n" % (bold, m["path"], off, m["title"]))
+    out.extend(text_sections(state, opts))
     if task_count == 0 and not integrating:
         sys.stdout.write("".join(out) + "No tasks found.\n")
         return 0
+
     headings = (("paused", "Paused (resume before starting new work):"),
                 ("blocked", "Needs replanning (Status: blocked; flow-break amend):"),
                 ("active", "In progress:"))
@@ -2164,6 +2586,8 @@ Usage: workflow task start <task>
 
 Records the current git HEAD as Base commit, sets Status to active,
 and updates the matching spec to 'in progress' if it was proposed or done.
+Warns (without failing) when uncommitted files outside .workflow/ sit at the
+Base commit, since flow-verify will review them as part of the task.
 <task> can be <effort>/<NN>, <effort>/<NN>-<slug>.md, or a task file path.
 A bare <NN> works when unambiguous across efforts.
 """
@@ -2172,10 +2596,14 @@ TASK_ARCHIVE_USAGE = """workflow task archive - archive a completed task
 
 Usage: workflow task archive <task>
 
-Verifies all checklist items are ticked, verifies required task proof
-(Check after: in ## Progress, or ## Findings for spike tasks),
-removes Status, moves the task to .workflow/done/<effort>/, and validates
-the resulting repository state. Refuses to overwrite existing archives.
+Verifies all checklist items are ticked and the task proof: a `Check after`
+or `Check waived` with a real result, a `Review:` outcome of
+pass | blocked | skipped | waived (with a reason for skipped and waived),
+and no placeholder Base commit. Spike tasks only need their checkboxes,
+`## Findings`, and a real Base commit. Removes Status, moves the task to
+.workflow/done/<effort>/, validates the resulting repository state, and
+prints the flow-close hint when it archived the effort's last open task.
+Refuses to overwrite existing archives.
 <task> can be <effort>/<NN>, <effort>/<NN>-<slug>.md, or a task file path.
 A bare <NN> works when unambiguous across efforts.
 """
@@ -2390,11 +2818,12 @@ def set_task_fields(content, fields_to_set):
 
         clean = s
         prefix = ""
+        bulleted = False
         bm = BULLET_RE.match(clean)
         if bm:
             prefix = line[:line.find(bm.group(1))]
             clean = bm.group(1).strip()
-            has_bullet = True
+            bulleted = True
 
         fm = BOLD_FIELD_RE.match(clean)
         bold_style = None
@@ -2409,7 +2838,11 @@ def set_task_fields(content, fields_to_set):
                 bold_style = "plain"
 
         if bold_style is not None:
+            # Only a header field line that is itself a bullet makes inserted
+            # fields bullets; checklist items and body bullets must not count.
             if first_h2_idx == -1:
+                if bulleted:
+                    has_bullet = True
                 last_top_field_idx = idx
             field_lines[key] = (idx, prefix, bold_style)
 
@@ -2608,7 +3041,33 @@ def task_start(task_arg):
     extra = ", spec: in progress" if spec_updated else ""
     sys.stdout.write("Started task %s (Base commit: %s, Status: active%s)\n" % (
         ref, head_sha[:10], extra))
+    dirty = dirty_paths_outside_workflow(root)
+    if dirty:
+        sys.stderr.write("Warning: %d uncommitted file(s) outside .workflow at Base commit; "
+                         "flow-verify will review them as part of this task. Commit or stash "
+                         "earlier work first.\n" % dirty)
     return 0
+
+
+def dirty_paths_outside_workflow(root):
+    """Count of uncommitted paths `git status --porcelain` lists outside .workflow/."""
+    status = git_out(root, "status", "--porcelain", "--untracked-files=all")
+    if not status:
+        return 0
+    count = 0
+    for line in status.splitlines():
+        if len(line) < 4:
+            continue
+        sides = line[3:].split(" -> ")
+        outside = False
+        for path in sides:
+            path = path.strip().strip('"')
+            if path.startswith(".workflow/") or path == ".workflow":
+                continue
+            outside = True
+        if outside:
+            count += 1
+    return count
 
 
 def task_archive(task_arg):
@@ -2643,28 +3102,14 @@ def task_archive(task_arg):
     lines = original_content.splitlines()
     shown = visible_lines(lines)
 
-    for lineno, line in shown:
-        m = UNTICKED_RE.match(line.strip())
-        if m:
-            item = m.group(1).strip()
-            if len(item) > 60:
-                item = item[:57] + "..."
-            sys.stderr.write("Error: task has unticked checkbox at line %d: %s\n" % (lineno, item))
-            sys.stderr.write("  Fix: Tick it with '- [x]' if done, or remove it before archiving.\n")
-            return 1
-
     meta = read_fields(task_path, lines=lines)
     is_spike = meta.get("task type").strip().lower() == "spike"
-    if is_spike:
-        if not section_has_content(shown, "findings"):
-            sys.stderr.write("Error: spike task missing ## Findings section\n")
-            sys.stderr.write("  Fix: Record what the spike found under ## Findings before archiving.\n")
-            return 1
-    else:
-        if not check_after_in_progress(shown):
-            sys.stderr.write("Error: task missing 'Check after:' in ## Progress\n")
-            sys.stderr.write("  Fix: Run the Check on the final code and record `Check after:` in ## Progress before archiving.\n")
-            return 1
+    problems = archive_proof_problems(shown, meta, spike=is_spike)
+    if problems:
+        for line, message, fix in problems:
+            sys.stderr.write("Error: %s:%d: %s\n" % (os.path.relpath(task_path, root), line, message))
+            sys.stderr.write("  Fix: %s\n" % fix)
+        return 1
 
     done_dir = os.path.join(wf, "done")
     if os.path.exists(done_dir) and not is_subpath(done_dir, wf):
@@ -2747,7 +3192,27 @@ def task_archive(task_arg):
 
     ref = task_ref(effort, number)
     sys.stdout.write("Archived task %s to %s\n" % (ref, os.path.relpath(dest_path, root)))
+    if effort_ready_to_close(wf, effort):
+        sys.stdout.write("Last open task of %s: run flow-close %s\n" % (effort, effort))
     return 0
+
+
+def effort_ready_to_close(wf, effort):
+    """True when the effort's spec is unfinished and no task file is left under tasks/."""
+    spec_path = os.path.join(wf, "specs", effort + ".md")
+    if not os.path.isfile(spec_path):
+        return False
+    status = read_fields(spec_path).get("status").strip().lower()
+    if status == "done":
+        return False
+    tasks_dir = os.path.join(wf, "tasks")
+    for path in task_files(tasks_dir):
+        if not TASK_FILE_RE.match(os.path.basename(path)):
+            continue
+        task_effort = dir_effort(tasks_dir, path) or read_fields(path).get("effort")
+        if task_effort == effort:
+            return False
+    return True
 
 
 def cmd_task(args):

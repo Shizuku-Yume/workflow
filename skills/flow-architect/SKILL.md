@@ -18,6 +18,8 @@ git log --oneline -60
 git log --format= --name-only -60 | sort | uniq -c | sort -rn | head -30
 ```
 
+Also list `decisions.md` entries whose `Revisit when` condition holds.
+
 ## 2. Look for real maintenance cost
 
 Check callers before calling anything dead, and report only evidence-backed issues:
@@ -35,6 +37,9 @@ Rank items as **Fix now**, **Worth doing**, or **Only if it grows**. Skip stylis
 
 ## Hotspots
 <files absorbing repeated changes>
+
+## Decisions to revisit
+<decisions.md entries whose Revisit when condition now holds, or None>
 
 ## Findings
 

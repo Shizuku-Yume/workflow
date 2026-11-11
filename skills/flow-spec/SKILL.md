@@ -15,7 +15,7 @@ Core user flows, failure handling, and non-goals must be decided. If real trade-
 
 ## 2. Write `.workflow/specs/<effort>.md`
 
-Omit sections like `What it must not do`, `What was considered and rejected`, and `Open questions` when empty—never pad a spec with `None` or `TBD`:
+Omit sections like `What it must not do`, `What was considered and rejected`, and `Open questions` when empty—never pad a spec with `None` or `TBD`. A spec is the contract: no dated remediation journals (those go in tasks or research notes), and long background goes in a linked research note (CONVENTIONS §2.1).
 
 ```markdown
 # <Title>
@@ -46,7 +46,7 @@ Out-of-scope items, with short reasons.
 Remaining choices and how they will be settled.
 ```
 
-At least one `W` check runs the real user entry point end to end. Keep `W` IDs stable.
+At least one `W` check runs the real user entry point end to end. When the work ports or must match a reference (upstream version, design mock, previous behaviour), at least one `W` check compares against the reference itself, not a list derived from it (CONVENTIONS §3). Keep `W` IDs stable.
 
 ## 3. Hand off
 

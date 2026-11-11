@@ -12,15 +12,15 @@ Only for efforts with a spec. A spec-less effort ends when its last task lands.
 
 ## 1. Check readiness
 
-`.workflow/specs/<effort>.md` exists, `.workflow/tasks/<effort>/` has no open tasks, and every task has landed. If `closeout.md` already exists (reopened effort), review only tasks added since the last close.
+`workflow next` reports the effort under `Ready to close` (`flow-close <effort>`). If not, `.workflow/tasks/<effort>/` still has open tasks or an unarchived task. If `closeout.md` already exists (reopened effort), review only tasks added since the last close.
 
 ## 2. Run checks on what ships
 
-On the landing branch head, built the way users get it, run every `W` check under `## How we will know it works` and walk the main user flow end to end. Run `flow-verify` in effort close mode. Small fixes may land with the close; larger gaps go through `flow-break` amend.
+On the landing branch head, built the way users get it, run every `W` check under `## How we will know it works` and walk the main user flow end to end, with receipts in the Evidence directory. Run `flow-verify` in effort close mode. Small fixes may land with the close; larger gaps go through `flow-break` amend.
 
 ## 3. Get sign-off
 
-Show the check results, the user-flow run, and review status. If the same friction recurred across tasks, suggest `flow-retro` in one line. The spec stays `in progress` until the user explicitly accepts.
+Show the check results, the user-flow run, review status, and the tasks with `Check waived:` or `Review: skipped` / `Review: waived`; review the skipped ones first (`flow-verify` effort close mode). If the same friction recurred across tasks, suggest `flow-retro` in one line. The spec stays `in progress` until the user explicitly accepts.
 
 ## 4. Record and mark done
 
@@ -36,6 +36,9 @@ Write `.workflow/done/<effort>/closeout.md`. On a reopened effort, append a `## 
 
 ## Key decisions & plan changes
 <notable decisions or plan changes, or None>
+
+## Waived checks & skipped reviews
+<tasks, or None>
 
 ## Remaining debt & follow-ups
 <open technical-debt.md items or follow-up tasks, or None>

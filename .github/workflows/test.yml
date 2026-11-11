@@ -51,7 +51,7 @@ jobs:
           if [ "$status" -eq 1 ] && grep -E '^(!|✗)' "$RUNNER_TEMP/doctor.out" | grep -v placeholder | grep -q .; then
             echo "doctor reported problems beyond standards.md placeholders"; exit 1
           fi
-          step /bin/bash .workflow/bin/workflow hook install
+          # init already installed the hook; the commit below runs it.
           step /bin/bash .workflow/bin/workflow hook status
           git add -A
           git commit -qm 'Install workflow'

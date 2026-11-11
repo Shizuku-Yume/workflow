@@ -11,8 +11,8 @@ Review one change read-only. Cover both requirements and code quality unless the
 ## 1. Requirements & proof
 
 - **Scope:** compare the change with the task or spec (or the commit message for a standalone change). Flag missing requirements, unrequested features, and broken supported behavior. In effort close mode, check all effort commits against the spec's goals, exclusions, and `W` checks, and check that the tasks work together.
-- **Proof:** `## Progress` must show the proof its `Task type` requires (CONVENTIONS §2.1); a bugfix also states reproduction and root cause (CONVENTIONS §6). Typechecks or mock-only tests do not prove real behavior.
-- **Docs & diff hygiene:** flag docs (`specs/`, `decisions.md`, `glossary.md`, `technical-debt.md`) only when the change leaves an existing statement stale or contradicted. Flag fixed debt still listed in `technical-debt.md`, `blocking` findings waived without a user decision, debug leftovers, dead code, and edits to files outside the task.
+- **Proof:** `## Progress` must show the proof its `Task type` requires (CONVENTIONS §2.1); a bugfix also states reproduction and root cause (CONVENTIONS §6). `Check after` must report the Check's own result on the real path, with receipts in the Evidence directory; a narrower observation (build passes, boot log) is `blocking`. Waivers must appear as `Check waived` or `Review: waived` in the task. Typechecks or mock-only tests do not prove real behavior.
+- **Docs & diff hygiene:** flag docs (`specs/`, `decisions.md`, `glossary.md`, `technical-debt.md`) only when the change leaves an existing statement stale or contradicted. Flag fixed debt still listed in `technical-debt.md`, waivers with no matching `Check waived` / `Review: waived` record, debug leftovers, dead code, and edits to files outside the task.
 
 ## 2. Code quality
 

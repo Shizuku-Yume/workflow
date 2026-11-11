@@ -16,6 +16,7 @@ Fill this in at project setup and keep it under one screen. Delete lines that do
 ```
 
 Real path: <TODO: how to exercise the app or CLI end to end>
+Evidence: <TODO: directory for check logs, screenshots, and receipts cited by `Check after`>
 
 ## Layout
 
@@ -29,6 +30,10 @@ Real path: <TODO: how to exercise the app or CLI end to end>
 
 Landing: <TODO: direct | local-merge | pr>
 - `direct`: commit on the current branch (solo work).
-- `local-merge`: merge task branches locally (parallel worktrees in `.workflow/worktrees/<effort>-<NN>`).
+- `local-merge`: merge task branches locally (parallel worktrees under the `Worktrees:` root).
 - `pr`: land through pull requests (shared remote).
 See CONVENTIONS §7. Name the main branch here if it is not `main` or `master`.
+
+Worktrees: <TODO: worktree root, default `.workflow/worktrees/` — delete this line if the default fits>
+
+Shared resources: <TODO: one line per thing only one task can use at a time, with how to claim and release it — delete this line if none>

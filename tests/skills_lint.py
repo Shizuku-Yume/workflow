@@ -29,7 +29,8 @@ REMOVED = ['workflow tasks', 'workflow deps', 'workflow decisions', 'workflow ef
            'workflow debt', 'workflow pulse', 'hotfix-review', 'mark-resolved',
            'effort create', 'effort complete', '.workflow/efforts', 'thinking.md',
            'phase-boundaries.md', 'merge-strategy.md', 'spike-tasks.md', 'flow-map',
-           'flow-help', 'flow-what', 'workflow-process', 'retrospective.md']
+           'flow-help', 'flow-what', 'workflow-process', 'retrospective.md',
+           'maps/', 'open_maps']
 
 passed = failed = 0
 
@@ -218,6 +219,8 @@ def check_file_tree():
         return
     entries = tree_entries(body)
     names = {entry.rsplit('/', 1)[-1] for entry in entries if '<' not in entry}
+    if '.gitignore' not in names:
+        fail(CONVENTIONS, 1, 'CONVENTIONS section 2 tree does not list .gitignore')
     for path in shipped_files():
         if path.parent.name != 'bin' and path.suffix not in ('.md', '.py'):
             continue
@@ -442,6 +445,11 @@ REFERENCE_TASK = '''# {number}: Reference target
 **Check:** `git status --short` → working tree status is displayed
 
 - [ ] Reference target exists
+
+## Progress
+
+Check after: `git status --short` -> working tree status is displayed
+Review: pass (base {base})
 '''
 
 
@@ -489,6 +497,7 @@ def roundtrips(tmp):
         'what shipped, with W-check results': 'Observable behavior verified; W1 and W2 passed.',
         'notable decisions or plan changes, or None': 'None',
         'open technical-debt.md items or follow-up tasks, or None': 'None',
+        'tasks, or None': 'None',
     }
     tasks = repo / '.workflow/tasks'
     # Blocker targets for the `Blocked by:` alternatives: demo/02 and demo2/01.
@@ -558,8 +567,7 @@ def roundtrips(tmp):
     archived_task = done_specdemo_dir / '01-reference.md'
     archived_task.write_text(
         REFERENCE_TASK.format(number='01', effort='specdemo', base=base)
-        .replace('- [ ] Reference target exists', '- [x] Reference target exists')
-        + '\n## Progress\nCheck after: git status --short -> ok\n',
+        .replace('- [ ] Reference target exists', '- [x] Reference target exists'),
         encoding='utf-8')
 
     done_spec_text = '\n'.join(text for _, text in spec_variants[0])

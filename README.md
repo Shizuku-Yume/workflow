@@ -13,7 +13,7 @@
 - **真实路径验证**：每个任务附带可执行的 `Check` 验证命令。修复 Bug 先复现失败，交付前在真实 CLI 或服务入口跑通验证。
 - **克制实现**：优先复用现有代码与标准库；处理真实可达的问题，不写臆想场景的防御逻辑、空封装或未要求的兼容开关。
 - **独立上下文审查**：由独立上下文的 `workflow-reviewer` 检查需求落实与代码质量；涉及鉴权、外部输入等安全边界时运行 `security-reviewer`。
-- **并行隔离与决策留痕**：`workflow next` 调度任务并提示文件冲突；并行任务在独立 Git worktree（`.workflow/worktrees/<effort>-<NN>`）中执行；难以回退的技术决定记入 `.workflow/decisions.md`，项目术语维护在 `glossary.md`。
+- **并行隔离与决策留痕**：`workflow next` 调度任务，提示文件冲突、共用资源冲突与分支已合并的 worktree；并行任务在独立 Git worktree 中执行，根目录由 `standards.md` 的 `Worktrees:` 指定，默认 `.workflow/worktrees/`；难以回退的技术决定记入 `.workflow/decisions.md`，项目术语维护在 `glossary.md`，跨会话的调研笔记放在 `research/<slug>.md`。
 
 ---
 
@@ -25,7 +25,7 @@
 2. **明确的 1–3 个任务**：`flow-break` 拆任务卡 → `flow-implement` 完成并归档。不写 Spec，不走 `flow-close`。
 3. **多任务复杂功能 / 涉及接口或数据结构变更**：`flow-spec` → `flow-break` → `flow-implement` → `flow-close`。
 
-**需求或方案未定时**（无论规模大小），先运行 `flow-grill` 理清取舍，再进入上面对应的路径；需要跨会话摸索的未知问题记入 `maps/<slug>.md`，`workflow next` 会持续提示。
+**需求或方案未定时**（无论规模大小），先运行 `flow-grill` 理清取舍，再进入上面对应的路径；需要跨会话摸索的未知问题记入 `research/<slug>.md`，未决项以 `- [ ]` 列在 `## Open questions` 下，`workflow next` 会持续提示。
 
 ---
 
@@ -38,17 +38,17 @@
 | 技能 | 适用场景 | 作用 |
 | :--- | :--- | :--- |
 | `flow-start` | 新开会话 / 恢复工作 / 不确定下一步干什么 | 读取项目标准与任务队列，给出下一步建议或推进任务。 |
-| `flow-grill` | 需求未定 / 新功能起步 | 查清代码现状与需求取舍。方案明确后转入 `flow-spec` 或 `flow-break`；需跨会话摸索的记入 `maps/<slug>.md`。 |
+| `flow-grill` | 需求未定 / 新功能起步 | 查清代码现状与需求取舍。方案明确后转入 `flow-spec` 或 `flow-break`；需跨会话摸索的记入 `research/<slug>.md`，未决项以 `- [ ]` 留在 `## Open questions` 下。 |
 | `flow-spec` | 方案未定 / 多任务复杂功能 | 将确认的设计整理为精简技术方案（`specs/<effort>.md`）；1–3 个明确任务直接跳过。 |
 | `flow-break` | 拆解可执行任务卡 | 把技术方案或明确需求拆为带依赖（`Blocked by`）和验证命令（`Check`）的任务卡片。 |
-| `flow-implement` | 执行单个任务或整组任务 | 完成单个任务或整组任务的编码、验证、审查与归档；传入 `<effort>` 时按依赖波次调度。 |
-| `flow-verify` | 合并前代码审查 | 启动独立上下文的 `workflow-reviewer` 审查需求落实与代码质量，按需触发安全审查。 |
+| `flow-implement` | 执行单个任务或整组任务 | 完成单个任务或整组任务的编码、验证、审查与归档；传入 `<effort>` 时按依赖波次在 `Worktrees:` 指定的根目录下调度并行任务。 |
+| `flow-verify` | 合并前代码审查 | 启动独立上下文的 `workflow-reviewer` 审查需求落实与代码质量，按需触发安全审查，并把 `Review:` 结论写回任务；审查子代理起不来时记为 `Review: skipped` 并告知用户。 |
 
 ### 按需辅助技能
 
 | 技能 | 适用场景 | 作用 |
 | :--- | :--- | :--- |
-| `flow-close` | 技术方案（Spec）整组收尾验收 | 在真实交付构建上跑通 Spec 检查与主流程，经用户确认后记录验收结论并归档。 |
+| `flow-close` | 技术方案（Spec）整组收尾验收 | 在真实交付构建上跑通 Spec 检查与主流程，先补审标记为 `Review: skipped` 的任务，经用户确认后写 closeout（列出 `Check waived` 与 `Review: skipped|waived` 的任务）并归档。 |
 | `flow-retro` | 会话卡壳 / 协作摩擦复盘 | 复盘会话卡壳与协作摩擦，提炼为自动化检查、规则精简或配置补充（需用户同意）。 |
 | `flow-architect` | 改动阻力大 / 排查技术债 | 排查高频修改模块中的冗余、死代码与过度封装，整理并跟踪可执行清理项。 |
 
@@ -77,11 +77,14 @@ workflow init
 常用参数：
 - `--claude`：同时生成 Claude Code 适配目录（`.claude/` 与 `CLAUDE.md`；仓库已有相关文件时自动开启）。
 - `--no-claude`：仅生成通用 `.agents/` 与 `AGENTS.md`。
+- `--no-hook`：不安装提交前校验钩子。
 - `--force`：强制覆盖本地修改过的受管模板文件。
 
-### 3. 安装提交前校验钩子（可选）
+`init` 默认安装提交前校验钩子；非 Git 目录会跳过，遇到已有的第三方钩子则原样保留并提示 `workflow hook install --append`。
 
-提交前自动检查任务卡片格式与依赖关系：
+### 3. 提交前校验钩子
+
+钩子在提交前检查任务卡片格式与依赖关系。`init` 已经装好；新克隆的仓库或此前没装过钩子的项目手动安装：
 
 ```bash
 workflow hook install
@@ -96,24 +99,24 @@ workflow hook install
 ### 日常调度与检查
 
 - `workflow next [--effort SLUG] [--all] [--brief] [--format text|json]`
-  按优先级列出可开工任务、进行中/暂停/阻塞任务，并提示共用文件冲突；`--brief` 输出精简简报，空闲时不输出。
+  按优先级列出可开工任务、进行中/暂停/阻塞任务，并提示共用文件与共用资源冲突；同时列出仍有未决问题的调研笔记、清单已完成但未归档的任务、可收尾的 spec、没有任务的 spec，以及分支已合并的陈旧 worktree。`--brief` 输出精简简报，空闲时不输出。
 - `workflow task start <task>`
-  激活任务，以当前 HEAD 记录 `Base commit`，设置 `Status: active`，并在需要时将对应 spec 推进为 `in progress`。
+  激活任务，以当前 HEAD 记录 `Base commit`，设置 `Status: active`，并在需要时将对应 spec 推进为 `in progress`；`.workflow/` 之外有未提交改动时给出警告，这些改动会被 `flow-verify` 一并审查。
 - `workflow task archive <task>`
-  核验清单已勾选与完成证据（非 spike 任务的 `Check after:` 或 spike 的 `## Findings`），移除 `Status`，归档至 `.workflow/done/<effort>/` 并校验全库状态。
-- `workflow validate [--strict] [--format text|json]`
-  检查 `tasks/`、`done/`、`specs/` 与 `decisions.md` 的字段格式和依赖完整性。
+  核验清单已勾选、`Check after:` 或 `Check waived:` 有实际结果、`Review:` 记录了 `pass | blocked | skipped | waived`（spike 任务只核验清单与 `## Findings`），移除 `Status`，归档至 `.workflow/done/<effort>/` 并校验全库状态；归档的是某个未完成 effort 的最后一个任务时，提示运行 `flow-close`。
+- `workflow validate [--strict] [--audit] [--staged] [--format text|json]`
+  检查 `tasks/`、`done/`、`specs/` 与 `decisions.md` 的字段格式和依赖完整性，并警告超过 80 行的 `standards.md` 与超过 16 KB 的未归档任务文件；`--audit` 连历史归档一起复查。
 - `workflow doctor`
-  检查工作流文件是否齐全、分支版本是否同步，并运行 `validate`。
+  检查工作流文件是否齐全、分支版本是否同步、钩子与 worktree 忽略规则是否就位，并运行 `validate`。
 - `workflow hook install|uninstall|status [--force|--append]`
-  管理 Git `pre-commit` 自动校验钩子。
+  管理 Git `pre-commit` 自动校验钩子；`init` 默认已安装。
 - `workflow version`
   查看版本号。
 
 ### 安装与维护
 
-- `workflow init [--force] [--claude|--no-claude]`：在当前项目安装工作流文件与 CLI。
-- `workflow update [--force] [--claude|--no-claude]`：升级受管技能、规则与 CLI，保留本地改写过的内容。
+- `workflow init [--force] [--claude|--no-claude] [--no-hook]`：在当前项目安装工作流文件与 CLI，默认安装提交前钩子。
+- `workflow update [--force] [--claude|--no-claude] [--no-hook]`：升级受管技能、规则与 CLI，保留本地改写过的内容；把旧的调研笔记目录迁到 `research/`，并补齐 `.workflow/.gitignore`。`update` 从不安装钩子，`--no-hook` 是空操作。
 - `workflow uninstall`：移除未改动的受管工作流文件，保留项目自身配置、任务与决策记录。
 
 ---
@@ -133,13 +136,14 @@ AGENTS.md                        # Agent 入口规则（带 workflow 标记块�
   bin/workflow-core.py           # 校验与任务队列脚本（Python 3 标准库）
   CONVENTIONS.md                 # 工作流通用规则
   STYLE.md                       # 表达与汇报风格规则
-  standards.md                   # 项目命令、目录说明与分支合入方式
+  standards.md                   # 项目命令、目录说明、Evidence 目录、worktree 根目录与分支合入方式
   glossary.md                    # 项目术语表（Git union merge）
   decisions.md                   # 架构与技术决策记录（Git union merge）
   technical-debt.md              # 待清理技术债记录
+  .gitignore                     # 忽略 worktrees/ 与 HANDOFF.md（由 CLI 生成）
   specs/<effort>.md              # 多任务功能的技术方案（Spec）
   tasks/<effort>/<NN>-<slug>.md  # 待完成任务卡片
-  maps/<slug>.md                 # 跨会话未决问题记录（由 flow-grill 写入）
+  research/<slug>.md             # 跨会话调研笔记，未决项列在 ## Open questions 下
   done/<effort>/                 # 已归档任务与验收记录
 ```
 
