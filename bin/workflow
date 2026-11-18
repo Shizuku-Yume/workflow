@@ -68,7 +68,7 @@ die()  { rm -f "${MANIFEST_STAGE:-}"; printf '%s✗%s %s\n' "$C_ERR" "$C_OFF" "$
 WORKFLOW_TMP_FILES=()
 cleanup_tmp_files() {
   local f
-  for f in "${WORKFLOW_TMP_FILES[@]}"; do
+  for f in ${WORKFLOW_TMP_FILES[@]+"${WORKFLOW_TMP_FILES[@]}"}; do
     rm -rf "$f" 2>/dev/null || true
   done
   [ -n "${MANIFEST_STAGE:-}" ] && rm -f "$MANIFEST_STAGE" 2>/dev/null || true
