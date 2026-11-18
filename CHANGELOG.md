@@ -3,6 +3,12 @@
 What changed in each version and what an existing project has to do about it.
 Usage lives in the README and in `--help`.
 
+## 2.12.1
+
+### Changes
+
+- **Release**: Bumped version to 2.12.1.
+
 ## 2.12.0
 
 ### Upgrade
