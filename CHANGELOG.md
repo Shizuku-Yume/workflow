@@ -3,16 +3,6 @@
 What changed in each version and what an existing project has to do about it.
 Usage lives in the README and in `--help`.
 
-## 2.12.1
-
-### Changes
-- **Proof, review routing, and `## Progress` bounds**: `Review: pass` now requires detail (base SHA); self-review is rejected.
-- **Atomic `workflow task land`**: Added `workflow task land` for serialized, clean merges.
-- **Parallel & Unattended Rules**: Formalized intra-task slice parallelism and conservative defaults for unattended agents.
-- **CLI & Templates**: Added `workflow -C` for cross-directory command execution, `NO_COLOR` support, and managed format header refreshing for `.workflow/` documentation files.
-- **Validation**: Added warnings for temporary path usage in `Check` commands and updated size-based warnings to focus on `## Progress` content.
-
-
 ## 2.12.0
 
 ### Upgrade
