@@ -94,18 +94,20 @@ workflow hook install
 
 ## CLI 命令速查
 
-可在全局运行 `workflow <command>`，也可直接运行项目内的 `.workflow/bin/workflow <command>`。
+可在全局运行 `workflow [-C <dir>] <command>`，也可直接运行项目内的 `.workflow/bin/workflow [-C <dir>] <command>`（`-C <dir>` 可从任意目录切到目标仓库；所有子命令均支持 `--no-color` 与 `NO_COLOR`）。
 
 ### 日常调度与检查
 
 - `workflow next [--effort SLUG] [--all] [--brief] [--format text|json]`
-  按优先级列出可开工任务、进行中/暂停/阻塞任务，并提示共用文件与共用资源冲突；同时列出仍有未决问题的调研笔记、清单已完成但未归档的任务、可收尾的 spec、没有任务的 spec，以及分支已合并的陈旧 worktree。`--brief` 输出精简简报，空闲时不输出。
+  按优先级列出可开工任务、进行中/暂停/阻塞任务，并提示共用文件与共用资源冲突；同时列出等待前置 effort（`Blocked by`）的条目、仍有未决问题的调研笔记、清单已完成但未归档的任务、可收尾的 spec、没有任务的 spec、在其他分支或 worktree 集成的 effort，以及分支已合并的陈旧 worktree。`--brief` 输出精简简报，空闲时不输出。
 - `workflow task start <task>`
   激活任务，以当前 HEAD 记录 `Base commit`，设置 `Status: active`，并在需要时将对应 spec 推进为 `in progress`；`.workflow/` 之外有未提交改动时给出警告，这些改动会被 `flow-verify` 一并审查。
 - `workflow task archive <task>`
-  核验清单已勾选、`Check after:` 或 `Check waived:` 有实际结果、`Review:` 记录了 `pass | blocked | skipped | waived`（spike 任务只核验清单与 `## Findings`），移除 `Status`，归档至 `.workflow/done/<effort>/` 并校验全库状态；归档的是某个未完成 effort 的最后一个任务时，提示运行 `flow-close`。
+  核验清单已勾选、`Check after:` 或 `Check waived:` 有实际结果、`Review:` 记录了 `pass | blocked | skipped | waived`（`pass` 须附带 base SHA 或审查者说明，禁止自审；spike 任务只核验清单与 `## Findings`），移除 `Status` 与 `Base branch`，归档至 `.workflow/done/<effort>/`（若 `tasks/<effort>/` 变空则一并清理）并校验全库状态；归档的是某个未完成 effort 的最后一个任务时，提示运行 `flow-close`。
+- `workflow task land <task> [--cleanup]`
+  在仓库级排他锁下原子合入已归档任务：检查工作区干净且目标分支（spec 的 `Integration branch` 或主分支）为源提交的祖先，再执行 `--no-ff` 合入；传入 `--cleanup` 且当前不在该任务 worktree 内时，一并清理任务 worktree 与分支。
 - `workflow validate [--strict] [--audit] [--staged] [--format text|json]`
-  检查 `tasks/`、`done/`、`specs/` 与 `decisions.md` 的字段格式和依赖完整性，并警告超过 80 行的 `standards.md` 与超过 16 KB 的未归档任务文件；`--audit` 连历史归档一起复查。
+  检查 `tasks/`、`done/`、`specs/`（含 spec 级 `Blocked by` 与任务级 `effort:<slug>` 依赖）及 `decisions.md` 的字段格式与依赖完整性；不限制任务卡整体字节大小，仅警告超过 80 行的 `standards.md`、未归档任务中重定向到 `/tmp` 的 `Check` 输出，以及臃肿的 `## Progress`（超过 25 行的代码块或过长内容）；仅对未归档任务校验 `Base branch` 引用存在性，`--audit` 连历史归档一起复查。
 - `workflow doctor`
   检查工作流文件是否齐全、分支版本是否同步、钩子与 worktree 忽略规则是否就位，并运行 `validate`。
 - `workflow hook install|uninstall|status [--force|--append]`
@@ -116,7 +118,7 @@ workflow hook install
 ### 安装与维护
 
 - `workflow init [--force] [--claude|--no-claude] [--no-hook]`：在当前项目安装工作流文件与 CLI，默认安装提交前钩子。
-- `workflow update [--force] [--claude|--no-claude] [--no-hook]`：升级受管技能、规则与 CLI，保留本地改写过的内容；把旧的调研笔记目录迁到 `research/`，并补齐 `.workflow/.gitignore`。`update` 从不安装钩子，`--no-hook` 是空操作。
+- `workflow update [--force] [--claude|--no-claude] [--no-hook]`：升级受管技能、规则与 CLI，刷新 `decisions.md`、`technical-debt.md` 与 `glossary.md` 中未修改的格式说明头（`--force` 可升级旧版无标记文件头且不改动已有条目），保留本地改写过的内容；把旧的调研笔记目录迁到 `research/`，并补齐 `.workflow/.gitignore`。`update` 从不安装钩子，`--no-hook` 是空操作。
 - `workflow uninstall`：移除未改动的受管工作流文件，保留项目自身配置、任务与决策记录。
 
 ---

@@ -21,7 +21,7 @@ Look for open choices in four areas:
 
 ## 2. Ask in short rounds
 
-Ask up to 5 user-owned questions per round, each with options and a recommendation so that "yes" is a complete answer:
+Ask up to 5 user-owned questions per round, each with options and a recommendation so that "yes" is a complete answer. Match the user's language (`STYLE.md`). When the host provides a structured question or form tool (such as `ask` or `AskUserQuestion`), use it with the recommended option preselected and brief context; otherwise use the plain-text format below:
 
 ```
 Q1 - <title>: <1-2 sentences of context; 2-3 options>

@@ -94,18 +94,20 @@ workflow hook install
 
 ## CLI Reference
 
-Use `workflow <command>` globally, or `.workflow/bin/workflow <command>` inside any initialized repository.
+Use `workflow [-C <dir>] <command>` globally, or `.workflow/bin/workflow [-C <dir>] <command>` (`-C <dir>` targets another directory; all subcommands honor `--no-color` and `NO_COLOR`).
 
 ### Daily Commands
 
 - `workflow next [--effort SLUG] [--all] [--brief] [--format text|json]`
-  Lists ready tasks by priority, shows active/paused/blocked tasks, and warns on shared-file and shared-resource overlaps. It also lists research notes with open questions, checklist-complete tasks not yet archived, efforts ready to close, specs without tasks, and stale worktrees whose branch is already merged. `--brief` prints a compact snapshot and stays silent when idle.
+  Lists ready tasks by priority, shows active/paused/blocked tasks, and warns on shared-file and shared-resource overlaps. It also lists items waiting on upstream efforts (`Blocked by`), research notes with open questions, checklist-complete tasks not yet archived, efforts ready to close, specs without tasks, efforts integrating on another branch or worktree, and stale worktrees whose branch is already merged. `--brief` prints a compact snapshot and stays silent when idle.
 - `workflow task start <task>`
   Activates a task, records current HEAD as `Base commit`, sets `Status: active`, and advances matching spec to `in progress` if needed; warns about uncommitted files outside `.workflow/`, which `flow-verify` will review as part of the task.
 - `workflow task archive <task>`
-  Verifies completed checkboxes, a `Check after:` or `Check waived:` with a real result, and a `Review:` outcome of `pass | blocked | skipped | waived` (spikes need only their checkboxes and `## Findings`), removes `Status`, moves to `.workflow/done/<effort>/`, and validates repository state; when the last task of an unfinished effort is archived it prints the `flow-close` hint.
+  Verifies completed checkboxes, a `Check after:` or `Check waived:` with a real result, and a `Review:` outcome of `pass | blocked | skipped | waived` (`pass` requires detail such as base SHA or reviewer and rejects self-review; spikes need only their checkboxes and `## Findings`), strips `Status` and `Base branch`, moves to `.workflow/done/<effort>/` (removing `tasks/<effort>/` when empty), and validates repository state; when the last task of an unfinished effort is archived it prints the `flow-close` hint.
+- `workflow task land <task> [--cleanup]`
+  Atomically lands an archived task under a repository-wide lock: verifies a clean tree and that the target branch (spec `Integration branch` or main) is an ancestor of the task commit, then creates a `--no-ff` merge; with `--cleanup`, removes the task worktree and branch when invoked outside that worktree.
 - `workflow validate [--strict] [--audit] [--staged] [--format text|json]`
-  Validates task files, archived tasks, specs, and `decisions.md`, and warns on a `standards.md` over 80 lines or an open task file over 16 KB; `--audit` re-checks historical archives.
+  Validates task files, archived tasks, specs (including spec `Blocked by` and task `effort:<slug>` dependencies), and `decisions.md`; imposes no whole-file byte cap on task files, instead warning on a `standards.md` over 80 lines, open `Check` redirections to `/tmp`, or bloated `## Progress` sections (code blocks over 25 lines or excess length); checks `Base branch` existence on open tasks only, while `--audit` re-checks historical archives.
 - `workflow doctor`
   Checks installed workflow files, branch version sync, the hook, worktree ignore rules, and `validate`.
 - `workflow hook install|uninstall|status [--force|--append]`
@@ -116,7 +118,7 @@ Use `workflow <command>` globally, or `.workflow/bin/workflow <command>` inside 
 ### Setup & Maintenance
 
 - `workflow init [--force] [--claude|--no-claude] [--no-hook]` — Install workflow files and CLI into the current repo, including the pre-commit hook by default.
-- `workflow update [--force] [--claude|--no-claude] [--no-hook]` — Refresh unmodified skills, rules, and CLI while preserving local edits; moves the old research-note directory to `research/` and fills in `.workflow/.gitignore`. `update` never installs the hook, so `--no-hook` is a no-op.
+- `workflow update [--force] [--claude|--no-claude] [--no-hook]` — Refresh unmodified skills, rules, and CLI while preserving local edits; refreshes unmodified format headers in `decisions.md`, `technical-debt.md`, and `glossary.md` (`--force` upgrades legacy unmarked headers without touching user entries); moves the old research-note directory to `research/` and fills in `.workflow/.gitignore`. `update` never installs the hook, so `--no-hook` is a no-op.
 - `workflow uninstall` — Remove unmodified managed files while keeping project standards, specs, tasks, and decisions.
 
 ---

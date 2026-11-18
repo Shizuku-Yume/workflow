@@ -126,7 +126,7 @@ def section_text(path, number):
 def check_section_references():
     sections = section_numbers()
     prose = sorted(set((ROOT / 'skills').rglob('*.md')) | set((ROOT / 'templates').rglob('*.md')))
-    prose += [p for p in (CONVENTIONS, ROOT / 'README.md', ROOT / 'README_EN.md') if p.is_file()]
+    prose += [p for p in (CONVENTIONS, ROOT / 'STYLE.md', ROOT / 'README.md', ROOT / 'README_EN.md') if p.is_file()]
     initial = failed
     for path in prose:
         for number, text in enumerate(lines(path), 1):

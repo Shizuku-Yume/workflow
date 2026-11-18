@@ -16,7 +16,7 @@ Only for efforts with a spec. A spec-less effort ends when its last task lands.
 
 ## 2. Run checks on what ships
 
-On the landing branch head, built the way users get it, run every `W` check under `## How we will know it works` and walk the main user flow end to end, with receipts in the Evidence directory. Run `flow-verify` in effort close mode. Small fixes may land with the close; larger gaps go through `flow-break` amend.
+On the landing branch head, built the way users get it, verify every `W` check under `## How we will know it works` and walk the main user flow end to end, with receipts in the Evidence directory. When a final gate task already ran the `W` checks and real user flow on the exact shipping code tree (only `.workflow/` files changed since, with receipts in the Evidence directory), verify and cite those receipts instead of rerunning identical suites; run only uncovered `W` checks and `Review: skipped` reviews. When closing an effort whose code already landed earlier with user authorization, verify merge ancestry (`git merge-base --is-ancestor`) and the recorded gate receipts. Run `flow-verify` in effort close mode. Small fixes may land with the close; larger gaps go through `flow-break` amend.
 
 ## 3. Get sign-off
 

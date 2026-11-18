@@ -1,7 +1,9 @@
+<!-- workflow:start -->
 # Decisions
 
 Append-only log of hard-to-reverse choices where a real alternative was rejected
-(CONVENTIONS §1). Skip routine implementation details. Git union-merges concurrent
+(CONVENTIONS §1). Skip routine implementation details and choices already stated
+in a spec, `standards.md`, or module contract. Git union-merges concurrent
 additions, so entries may interleave out of date order; cite by
 `decisions.md: <date> - <title>`.
 
@@ -15,10 +17,11 @@ non-empty English field names (values may be in any language):
 - **Because:** why it lost here
 
 Optional: **Effort** (the `<slug>` the decision belongs to), **Decided by** (`user` or
-`agent`), **Revisit when** (condition that reopens the decision as a question for
-`flow-grill`, and that `flow-architect` consults), and **Supersedes**
-(`<YYYY-MM-DD> - <old title>`; leave the older entry untouched so the file stays
-strictly append-only).
+`agent`; on parallel branches include the task ref, e.g. `agent (core/04)`, so
+concurrent entries never share identical trailing lines under union merge),
+**Revisit when** (condition that reopens the decision as a question for `flow-grill`,
+and that `flow-architect` consults), and **Supersedes** (`<YYYY-MM-DD> - <old title>`;
+leave the older entry untouched so the file stays strictly append-only).
 
 User waivers of a `Check` or a review finding are recorded in the task file
 (`Check waived` / `Review: waived`), not here.
@@ -34,6 +37,7 @@ User waivers of a `Check` or a review finding are recorded in the task file
 - **Decided by:** user
 - **Revisit when:** a background job starts calling this.
 ```
+<!-- workflow:end -->
 
 ## Entries
 

@@ -17,5 +17,5 @@ Precedence: user instruction → `standards.md` and repo conventions → `CONVEN
 2. Work is done when verified on the real path. Skip redundant reruns when inputs haven't changed, never the task's `Check` or real entry-point run. If the user waives the `Check`, record `Check waived: <reason; who; date>` in `## Progress`.
 3. When a plan assumption breaks, fix the plan with `flow-break` amend instead of working around it in code.
 4. Leave pre-existing dirty files alone unless asked. Give parallel tasks separate worktrees under the `Worktrees:` root in `.workflow/standards.md` (CONVENTIONS §7).
-5. Reuse before writing: repo → stdlib → platform → installed dependency. No guards for impossible cases, no unrequested wrappers (CONVENTIONS §8). Deliverables carry no trial-and-error notes or AI signatures (`STYLE.md`).
+5. Reuse before writing: repo → stdlib → platform → installed dependency. No guards for impossible cases, no unrequested wrappers (CONVENTIONS §8). Reply in the user's language; lead with the answer or outcome and stop when done or end with one concrete next step; deliverables carry no trial-and-error notes or AI signatures (`STYLE.md`).
 <!-- workflow:end -->

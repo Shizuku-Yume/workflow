@@ -25,7 +25,7 @@
 # need no checkout of this toolkit and nothing on PATH.
 set -euo pipefail
 
-VERSION="2.11.0"
+VERSION="2.12.0"
 BIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 KIT="$(cd "$BIN_DIR/.." && pwd)"
 
@@ -51,7 +51,9 @@ GA_END="# workflow:end"
 RETIRED_FRAMEWORK="thinking.md phase-boundaries.md merge-strategy.md spike-tasks.md"
 # ---------------------------------------------------------------- output
 
-if [ -t 2 ]; then
+disable_colors() { C_DIM=""; C_OK=""; C_WARN=""; C_ERR=""; C_OFF=""; export NO_COLOR=1; }
+
+if [ -t 2 ] && [ -z "${NO_COLOR:-}" ]; then
   C_DIM=$'\033[2m'; C_OK=$'\033[32m'; C_WARN=$'\033[33m'; C_ERR=$'\033[31m'; C_OFF=$'\033[0m'
 else
   C_DIM=""; C_OK=""; C_WARN=""; C_ERR=""; C_OFF=""
@@ -475,6 +477,43 @@ parse_agents_marker_state() {
   ' "$file"
 }
 
+# Parse workflow block markers strictly above a section boundary (e.g. "## Entries"),
+# ignoring user entries at or below that heading.
+parse_log_header_marker_state() {
+  local file="$1" heading="$2"
+  if [ ! -f "$file" ]; then
+    printf '0 0 0\n'
+    return 0
+  fi
+  awk -v s="$MARKER_START" -v e="$MARKER_END" -v h="$heading" '
+    !inside && $0 ~ ("^" h "[[:space:]]*$") { exit }
+    index($0, s) {
+      if ($0 == s) {
+        starts++
+        if (inside) malformed = 1
+        inside = 1
+      } else {
+        malformed = 1
+      }
+      next
+    }
+    index($0, e) {
+      if ($0 == e) {
+        ends++
+        if (!inside) malformed = 1
+        inside = 0
+      } else {
+        malformed = 1
+      }
+      next
+    }
+    END {
+      if (inside) malformed = 1
+      print starts + 0, ends + 0, malformed + 0
+    }
+  ' "$file"
+}
+
 # Ownership checksums live under `managed:` in .workflow/.workflow-version
 # ("  <cksum> <key>"). Earlier installs wrote per-file .workflow-managed
 # dotfiles (empty in 2.0, checksum in 2.1–2.9.0); lookup_managed reads the
@@ -636,9 +675,139 @@ install_rulebooks() {
       warn "skipped $f: $target was edited locally and is yours to keep"
     fi
   done
+}
 
-  # technical-debt.md is user data: install once, never overwrite edits.
-  install_file "$root/.workflow/technical-debt.md" "$KIT/templates/project/.workflow/technical-debt.md"
+# install_or_update_log_file ROOT REL_PATH SRC SECTION_HEADING MODE
+# Refresh the managed format header above SECTION_HEADING (between
+# <!-- workflow:start --> and <!-- workflow:end -->) while preserving user
+# entries below. MODE is init, update, or force.
+install_or_update_log_file() {
+  local root="$1" rel_path="$2" src="$3" section_heading="$4" mode="${5:-init}"
+  local target="$root/$rel_path" key="$rel_path#workflow-block" base
+  base="$(basename "$target")"
+  assert_symlink_safety "$root" "$target"
+
+  local block_src
+  block_src="$(wf_mktemp)"
+  awk -v s="$MARKER_START" -v e="$MARKER_END" '
+    $0 == s { inside = 1 }
+    inside { print }
+    $0 == e { inside = 0 }
+  ' "$src" > "$block_src"
+  [ -s "$block_src" ] || die "template $src is missing workflow markers"
+
+  if [ ! -e "$target" ]; then
+    mkdir -p "$(dirname "$target")"
+    cp "$src" "$target"
+    record_managed "$block_src" "$key"
+    rm -f "$block_src"
+    ok "$base"
+    return 0
+  fi
+
+  local marker_state starts ends malformed
+  marker_state="$(parse_log_header_marker_state "$target" "$section_heading")"
+  read -r starts ends malformed <<< "$marker_state"
+
+  if [ "$mode" = "init" ] && [ "${FORCE:-0}" != 1 ]; then
+    preserve_managed "$root" "$key" ""
+    rm -f "$block_src"
+    skip "$base (already exists, left alone)"
+    return 0
+  fi
+
+  if [ "$starts" -eq 1 ] && [ "$ends" -eq 1 ] && [ "$malformed" -eq 0 ]; then
+    local cur_block allow=0
+    cur_block="$(wf_mktemp)"
+    awk -v s="$MARKER_START" -v e="$MARKER_END" '
+      $0 == s { inside = 1 }
+      inside { print }
+      $0 == e { inside = 0 }
+    ' "$target" > "$cur_block"
+
+    if [ "$mode" = "force" ]; then
+      allow=1
+    elif has_managed_ownership "$root" "$key" ""; then
+      managed_ok_key "$root" "$cur_block" "$key" "$block_src" "" && allow=1
+    elif cmp -s "$cur_block" "$block_src"; then
+      allow=1
+    fi
+    rm -f "$cur_block"
+
+    if [ "$allow" -eq 1 ]; then
+      local tmp out_state
+      tmp="$(wf_mktemp)"
+      if ! WF_BLOCK="$(cat "$block_src")" awk -v s="$MARKER_START" -v e="$MARKER_END" '
+        BEGIN { repl = ENVIRON["WF_BLOCK"] }
+        $0 == s { print repl; skipping = 1; next }
+        $0 == e { skipping = 0; next }
+        !skipping { print }
+      ' "$target" > "$tmp"; then
+        rm -f "$tmp" "$block_src"
+        die "could not prepare $rel_path workflow header"
+      fi
+      out_state="$(parse_log_header_marker_state "$tmp" "$section_heading")"
+      if [ "$out_state" != "1 1 0" ]; then
+        rm -f "$tmp" "$block_src"
+        die "could not validate $rel_path workflow header"
+      fi
+      if cmp -s "$tmp" "$target"; then
+        rm -f "$tmp"
+        record_managed "$block_src" "$key"
+        rm -f "$block_src"
+        if [ "$mode" = "init" ]; then
+          skip "$base (already exists, left alone)"
+        else
+          skip "$base (header up to date)"
+        fi
+      else
+        mv "$tmp" "$target"
+        record_managed "$block_src" "$key"
+        rm -f "$block_src"
+        ok "$base (header updated)"
+      fi
+    else
+      preserve_managed "$root" "$key" ""
+      rm -f "$block_src"
+      warn "skipped $base header: edited locally and yours to keep (use --force)"
+    fi
+    return 0
+  fi
+
+  if [ "$starts" -eq 0 ] && [ "$ends" -eq 0 ] && [ "$malformed" -eq 0 ]; then
+    if [ "$mode" = "force" ] && grep -Eq "^${section_heading}[[:space:]]*$" "$target"; then
+      local tmp out_state
+      tmp="$(wf_mktemp)"
+      if ! WF_BLOCK="$(cat "$block_src")" awk -v heading="$section_heading" '
+        BEGIN { repl = ENVIRON["WF_BLOCK"]; found = 0 }
+        !found && $0 ~ ("^" heading "[[:space:]]*$") {
+          printf "%s\n\n", repl
+          found = 1
+        }
+        found { print }
+      ' "$target" > "$tmp"; then
+        rm -f "$tmp" "$block_src"
+        die "could not prepare $rel_path workflow header"
+      fi
+      out_state="$(parse_log_header_marker_state "$tmp" "$section_heading")"
+      if [ "$out_state" != "1 1 0" ] || ! grep -Eq "^${section_heading}[[:space:]]*$" "$tmp"; then
+        rm -f "$tmp" "$block_src"
+        die "could not validate $rel_path workflow header"
+      fi
+      mv "$tmp" "$target"
+      record_managed "$block_src" "$key"
+      rm -f "$block_src"
+      ok "$base (header upgraded)"
+    else
+      rm -f "$block_src"
+      skip "$base (already exists, left alone)"
+    fi
+    return 0
+  fi
+
+  preserve_managed "$root" "$key" ""
+  rm -f "$block_src"
+  warn "skipped $base: incomplete or ambiguous workflow block; fix markers manually"
 }
 
 check_managed_file() {
@@ -1203,6 +1372,7 @@ parse_install_args() {
       --claude) CLAUDE_CHOICE=on ;;
       --no-claude) CLAUDE_CHOICE=off ;;
       --no-hook) NO_HOOK=1 ;;
+      --no-color) disable_colors ;;
       -h|--help) usage; exit 0 ;;
       *) die "unknown argument: $arg" ;;
     esac
@@ -1229,9 +1399,12 @@ cmd_init() {
   install_agents "$root" "$force"
   install_rulebooks "$root" "$force"
 
-  for f in standards glossary decisions; do
-    install_file "$root/.workflow/$f.md" "$KIT/templates/project/.workflow/$f.md"
-  done
+  install_file "$root/.workflow/standards.md" "$KIT/templates/project/.workflow/standards.md"
+  local log_mode="init"
+  if [ "$force" = 1 ]; then log_mode="force"; fi
+  install_or_update_log_file "$root" ".workflow/glossary.md" "$KIT/templates/project/.workflow/glossary.md" "## Terms" "$log_mode"
+  install_or_update_log_file "$root" ".workflow/decisions.md" "$KIT/templates/project/.workflow/decisions.md" "## Entries" "$log_mode"
+  install_or_update_log_file "$root" ".workflow/technical-debt.md" "$KIT/templates/project/.workflow/technical-debt.md" "## Entries" "$log_mode"
 
   install_agents_block "$root" "$KIT/templates/project/AGENTS.md" "$force"
   install_gitattributes "$root"
@@ -1272,6 +1445,9 @@ cmd_update() {
   local rulebooks_mode="update"
   if [ "$force" = 1 ]; then rulebooks_mode="force"; fi
   install_rulebooks "$root" "$rulebooks_mode"
+  install_or_update_log_file "$root" ".workflow/glossary.md" "$KIT/templates/project/.workflow/glossary.md" "## Terms" "$rulebooks_mode"
+  install_or_update_log_file "$root" ".workflow/decisions.md" "$KIT/templates/project/.workflow/decisions.md" "## Entries" "$rulebooks_mode"
+  install_or_update_log_file "$root" ".workflow/technical-debt.md" "$KIT/templates/project/.workflow/technical-debt.md" "## Entries" "$rulebooks_mode"
   install_agents_block "$root" "$KIT/templates/project/AGENTS.md" "$force"
   install_gitattributes "$root"
   install_cli "$root" "$force"
@@ -1291,7 +1467,7 @@ cmd_update() {
     fi
   fi
   say ""
-  say "Your own files (standards, glossary, decisions, technical-debt, specs, tasks, research) were not touched."
+  say "Your own files and entries (standards, specs, tasks, research, and user entries in glossary, decisions, technical-debt) were not touched."
 }
 
 # Doctor reports what is installed. Task and decision checks are not
@@ -1371,7 +1547,11 @@ check_cli() {
 
 cmd_doctor() {
   for arg in "$@"; do
-    case "$arg" in -h|--help) usage; exit 0 ;; *) die "unknown argument: $arg" ;; esac
+    case "$arg" in
+      --no-color) disable_colors ;;
+      -h|--help) usage; exit 0 ;;
+      *) die "unknown argument: $arg" ;;
+    esac
   done
   local root; root="$(project_root)"
   assert_symlink_safety "$root"
@@ -1511,7 +1691,19 @@ cmd_doctor() {
   done
 
   for f in standards.md glossary.md decisions.md technical-debt.md; do
-    [ -f "$root/.workflow/$f" ] || { warn ".workflow/$f missing"; problems=$((problems + 1)); }
+    if [ ! -f "$root/.workflow/$f" ]; then
+      warn ".workflow/$f missing"
+      problems=$((problems + 1))
+    elif [ "$f" != "standards.md" ]; then
+      local log_heading="## Entries"
+      [ "$f" = "glossary.md" ] && log_heading="## Terms"
+      marker_state="$(parse_log_header_marker_state "$root/.workflow/$f" "$log_heading")"
+      read -r starts ends malformed <<< "$marker_state"
+      if [ "$malformed" -ne 0 ] || [ "$starts" -ne "$ends" ] || [ "$starts" -gt 1 ]; then
+        warn ".workflow/$f has an incomplete or ambiguous workflow block; fix markers manually"
+        problems=$((problems + 1))
+      fi
+    fi
   done
   if [ -f "$root/.workflow/standards.md" ] && grep -qE "$RE_STANDARDS_PLACEHOLDER" "$root/.workflow/standards.md"; then
     warn "standards.md still contains unfilled placeholders"
@@ -1634,7 +1826,11 @@ remove_cli() {
 
 cmd_uninstall() {
   for arg in "$@"; do
-    case "$arg" in -h|--help) usage; exit 0 ;; *) die "unknown argument: $arg" ;; esac
+    case "$arg" in
+      --no-color) disable_colors ;;
+      -h|--help) usage; exit 0 ;;
+      *) die "unknown argument: $arg" ;;
+    esac
   done
   require_kit uninstall
   local root; root="$(project_root)"
@@ -1917,16 +2113,22 @@ init_hook() {
 }
 
 cmd_hook() {
-  local action="${1:-status}" force=0 append=0
-  [ "$#" -gt 0 ] && shift
+  local action="" force=0 append=0 arg
   for arg in "$@"; do
     case "$arg" in
       --force) force=1 ;;
       --append) append=1 ;;
+      --no-color) disable_colors ;;
       -h|--help) usage; exit 0 ;;
-      *) die "unknown argument: $arg" ;;
+      -*) die "unknown argument: $arg" ;;
+      *)
+        if [ -z "$action" ]; then action="$arg"
+        else die "unknown argument: $arg"
+        fi
+        ;;
     esac
   done
+  [ -n "$action" ] || action="status"
   local root hook; root="$(project_root)"
   hook="$(hook_path "$root")" || die "not a git repository: $root"
   case "$action" in
@@ -1963,6 +2165,8 @@ usage() {
   cat <<EOF
 workflow $VERSION - a project workflow for coding agents
 
+Usage: workflow [-C <dir>] [--no-color] <command> ...
+
 Setup (from a toolkit checkout):
   workflow init [--force] [--claude|--no-claude] [--no-hook]
                                install into the current project, with its pre-commit hook
@@ -1980,9 +2184,10 @@ Anywhere, including the project's own copy, .workflow/bin/workflow:
                                ready tasks by priority, then paused and blocked
   workflow task start <task>   activate a task, record Base commit and update spec
   workflow task archive <task> verify proof and move a finished task to done/
+  workflow task land <task> [--cleanup]
+                               merge an archived task branch onto its target branch
   workflow version             print the version
-Commands support --help. validate, next and task need python3 (3.8+).
-
+Commands support --help and --no-color. validate, next and task need python3 (3.8+).
 Installs into the nearest git repository above the current directory, or the
 current directory if there is no git repository. Nothing is written outside that
 project. Symlinks escaping that project are rejected. Skills are copied into
@@ -2037,6 +2242,36 @@ nudge_project_version() {
   root="$(project_root)"
   version_drift_nudge "$root" || true
 }
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -C)
+      [ "$#" -ge 2 ] || die "option -C requires a directory argument"
+      [ -d "$2" ] || die "cannot change to '$2': no such directory"
+      cd "$2" || die "cannot change to '$2'"
+      shift 2
+      ;;
+    -C*)
+      _wf_dir="${1#-C}"
+      [ -n "$_wf_dir" ] || die "option -C requires a directory argument"
+      [ -d "$_wf_dir" ] || die "cannot change to '$_wf_dir': no such directory"
+      cd "$_wf_dir" || die "cannot change to '$_wf_dir'"
+      unset _wf_dir
+      shift
+      ;;
+    --no-color)
+      disable_colors
+      shift
+      ;;
+    --)
+      shift
+      break
+      ;;
+    *)
+      break
+      ;;
+  esac
+done
 
 case "${1:-}" in
   init) shift; cmd_init "$@" ;;

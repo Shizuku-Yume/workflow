@@ -27,6 +27,7 @@ Keep `AGENTS.md` short and `.workflow/standards.md` under one screen (CONVENTION
 | Evidence cited from temp paths or missing | Set `Evidence:` in `standards.md` and cite receipts there |
 | Tasks fighting over one device, port, or app | Declare it under `Shared resources:` (claim and release); tasks list it in `Resources:` |
 | `standards.md` or `AGENTS.md` past one screen | Move material to `docs/` or `.workflow/research/` with a one-line pointer |
+| Parallel branches collided on shared docs or logs | Route shared status/changelog/ledger updates to one final gate task, or qualify parallel `decisions.md` entries with `(<effort>/<NN>)` |
 
 ## 3. Propose and wait for approval
 

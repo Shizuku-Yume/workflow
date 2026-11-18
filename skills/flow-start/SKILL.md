@@ -17,7 +17,7 @@ Skip mid-session when context is already loaded and the next step is clear.
 
 ## 2. Read state
 
-Run `git status --short` and `.workflow/bin/workflow next --no-color` (`git fetch -q` first under `Landing: pr`). `next` reports paused, blocked, and ready tasks; research notes with open questions; finished-but-unarchived tasks; efforts ready to close; specs without tasks; stale worktrees; and tasks started on other branches. Name the branch if you are not on the main branch. Also note `fix-now` entries in `.workflow/technical-debt.md`.
+Run `git status --short` and `.workflow/bin/workflow next --no-color` (`git fetch -q` first under `Landing: pr`; `workflow -C <path> next` works from another directory). `next` reports paused, blocked, and ready tasks; tasks or efforts waiting on upstream dependencies (`Blocked by`); research notes with open questions; finished-but-unarchived tasks; efforts ready to close; specs without tasks; stale worktrees; and efforts integrating on another branch (naming any checked-out worktrees so `workflow -C <path> next` can inspect the integration queue). Name the branch if you are not on the main branch. Also note `fix-now` entries in `.workflow/technical-debt.md`.
 
 ## 3. Route
 

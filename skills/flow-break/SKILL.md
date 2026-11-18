@@ -11,7 +11,7 @@ Turn settled scope into task files under `.workflow/tasks/<effort>/` (fields: CO
 
 ## 1. Size tasks
 
-Each task delivers observable behavior in one session and has its own runnable `Check`. `Check` must be something the agent can run and observe; when it needs a person or a device, say exactly what is observed and where the receipt goes (the Evidence directory, CONVENTIONS §2). Task `01` is the thinnest end-to-end slice through the real entry point. Add a preparatory refactor only when it directly simplifies the requested change.
+Each task delivers observable behavior in one session and has its own runnable `Check`. `Check` must be something the agent can run and observe; when it needs a person or a device, say exactly what is observed and where the receipt goes (the Evidence directory, CONVENTIONS §2; never redirect `Check` log/receipt outputs to `/tmp` or `/var/tmp`, as `validate` warns on `/tmp` output redirections). Task `01` is the thinnest end-to-end slice through the real entry point. Add a preparatory refactor only when it directly simplifies the requested change. Keep shared status, changelog, or summary docs in a single final gate task rather than editing them across parallel tasks, and isolate dev ports and data directories per task when practical so `Resources:` stays reserved for true single-instance resources.
 
 ## 2. Confirm the list once
 
@@ -33,7 +33,7 @@ Number tasks in dependency order (`01`, `02`, ...); never reuse a number:
 - [ ] <acceptance point>
 ```
 
-Add `**Task type:** bugfix | refactor | spike` when it is not a `feature`, `**Covers:** W1, W2` when the effort has a spec (every spec `W` check is covered by a task or by `flow-close`), and `**Resources:** <names>` when the task needs a shared resource from `standards.md` (tasks sharing one are ordered with `Blocked by` or run one after another). `Files` and `Read first` can be omitted when obvious, though `Files` lets `workflow next` flag shared-file overlaps.
+Add `**Task type:** bugfix | refactor | spike` when it is not a `feature`, `**Covers:** W1, W2` when the effort has a spec (every spec `W` check is covered by a task or by `flow-close`), and `**Resources:** <names>` when the task needs a shared resource from `standards.md` (tasks sharing one are ordered with `Blocked by` or run one after another). `Blocked by` also accepts `effort:<slug>` when a task waits on a whole upstream effort. `Files` and `Read first` can be omitted when obvious, though `Files` lets `workflow next` flag shared-file overlaps.
 
 When the effort has a spec, set `**Status:** in progress` in `.workflow/specs/<effort>.md`. Run `.workflow/bin/workflow validate`, then commit the plan on the landing branch before cutting task branches.
 

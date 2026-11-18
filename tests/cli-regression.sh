@@ -2462,6 +2462,301 @@ test_doctor_path_toolkit_newer() {
   fi
 }
 
+# --- 2.12: -C <dir>, --no-color, and NO_COLOR ---
+test_global_c_and_no_color() {
+  local repo="$TMPDIR/repo_global_flags" out status esc
+  setup_repo "$repo"
+  mkdir -p "$repo/.workflow/tasks/core"
+  cat > "$repo/.workflow/tasks/core/01-flag.md" <<'EOF'
+# 01: Flag Check
+**Effort:** core
+**Check:** `true` passes
+**Blocked by:** None
+EOF
+
+  # -C <dir> and -C<dir> from outside the repository
+  status=0
+  out="$(cd "$TMPDIR" && "$WORKFLOW" -C "$repo" next --no-color 2>&1)" || status=$?
+  if [ "$status" -eq 0 ] && [[ "$out" == *"core/01 Flag Check"* ]]; then
+    pass "workflow -C <dir> next runs in the target repository"
+  else
+    fail "workflow -C <dir> next failed (exit $status): $out"
+  fi
+
+  status=0
+  out="$(cd "$TMPDIR" && "$WORKFLOW" -C"$repo" doctor --no-color 2>&1)" || status=$?
+  if [ "$status" -eq 0 ] && [[ "$out" == *"Everything present."* ]]; then
+    pass "workflow -C<dir> doctor --no-color succeeds"
+  else
+    fail "workflow -C<dir> doctor --no-color failed (exit $status): $out"
+  fi
+
+  status=0
+  out="$(cd "$TMPDIR" && "$WORKFLOW" -C "$TMPDIR/no-such-dir" next 2>&1)" || status=$?
+  if [ "$status" -ne 0 ] && [[ "$out" == *"no such directory"* ]]; then
+    pass "workflow -C rejects missing directory"
+  else
+    fail "workflow -C should fail on missing directory (exit $status): $out"
+  fi
+
+  # Verify no ANSI escapes even with a TTY stderr when --no-color or NO_COLOR=1 is set
+  esc="$(printf '\033')"
+  status=0
+  out="$(python3 -c '
+import os, pty, subprocess, sys
+master, slave = pty.openpty()
+p = subprocess.Popen(sys.argv[1:], stdout=subprocess.PIPE, stderr=slave)
+os.close(slave)
+chunks = []
+while True:
+    try:
+        data = os.read(master, 4096)
+    except OSError:
+        break
+    if not data:
+        break
+    chunks.append(data)
+os.close(master)
+p.wait()
+sys.stdout.buffer.write(b"".join(chunks))
+sys.exit(p.returncode)
+' "$WORKFLOW" -C "$repo" doctor --no-color)" || status=$?
+  if [ "$status" -eq 0 ] && [[ "$out" != *"$esc"* ]]; then
+    pass "workflow doctor --no-color suppresses ANSI escapes on a TTY"
+  else
+    fail "workflow doctor --no-color emitted ANSI escapes or failed (exit $status)"
+  fi
+
+  status=0
+  out="$(NO_COLOR=1 python3 -c '
+import os, pty, subprocess, sys
+master, slave = pty.openpty()
+p = subprocess.Popen(sys.argv[1:], stdout=subprocess.PIPE, stderr=slave)
+os.close(slave)
+chunks = []
+while True:
+    try:
+        data = os.read(master, 4096)
+    except OSError:
+        break
+    if not data:
+        break
+    chunks.append(data)
+os.close(master)
+p.wait()
+sys.stdout.buffer.write(b"".join(chunks))
+sys.exit(p.returncode)
+' "$WORKFLOW" -C "$repo" doctor)" || status=$?
+  if [ "$status" -eq 0 ] && [[ "$out" != *"$esc"* ]]; then
+    pass "NO_COLOR=1 workflow doctor suppresses ANSI escapes on a TTY"
+  else
+    fail "NO_COLOR=1 workflow doctor emitted ANSI escapes or failed (exit $status)"
+  fi
+
+  if (cd "$repo" && "$WORKFLOW" hook status --no-color >/dev/null 2>&1); then
+    pass "workflow hook accepts --no-color"
+  else
+    fail "workflow hook --no-color failed"
+  fi
+}
+
+# --- 2.12: managed format headers in decisions/technical-debt/glossary ---
+test_managed_log_headers() {
+  local test_kit="$TMPDIR/mock-kit-logs"
+  cp -r "$KIT" "$test_kit"
+
+  local repo="$TMPDIR/repo_managed_logs" out
+  mkdir -p "$repo"
+  git -C "$repo" init -q
+  git -C "$repo" config user.email "test@example.com"
+  git -C "$repo" config user.name "Test User"
+  echo "root" > "$repo/README.md"
+  git -C "$repo" add README.md
+  git -C "$repo" commit -q -m "initial"
+  (cd "$repo" && "$test_kit/bin/workflow" init --no-hook >/dev/null 2>&1)
+
+  # Add user entries below ## Entries / ## Terms
+  cat >> "$repo/.workflow/decisions.md" <<'EOF'
+
+## 2026-03-01 - Keep plain SQL
+- **Decided:** plain SQL queries.
+- **Instead of:** ORM.
+- **Because:** transparent query plans.
+EOF
+  cat >> "$repo/.workflow/technical-debt.md" <<'EOF'
+
+## Duplicate retry helper
+- **Where:** src/net
+- **Added:** 2026-03-01
+- **Priority:** worth-doing
+- **Problem:** two copies exist
+- **Solution:** share one helper
+EOF
+  cat >> "$repo/.workflow/glossary.md" <<'EOF'
+
+- **Receipt**: verified output file stored under evidence.
+EOF
+
+  # 1. Upstream updates marked header -> update refreshes unmodified header and keeps entries
+  portable_sed 's/## Format/## Format\n\nUpstream header refresh v1./' "$test_kit/templates/project/.workflow/decisions.md"
+  out="$(cd "$repo" && "$test_kit/bin/workflow" update 2>&1)"
+  if grep -qF 'Upstream header refresh v1.' "$repo/.workflow/decisions.md" &&
+     grep -qF '## 2026-03-01 - Keep plain SQL' "$repo/.workflow/decisions.md" &&
+     [[ "$out" == *"decisions.md (header updated)"* ]]; then
+    pass "update refreshes unmodified marked header in decisions.md and preserves entries"
+  else
+    fail "update should refresh unmodified marked decisions.md header: $out"
+  fi
+
+  # 2. Locally edited marked header -> update skips without --force
+  portable_sed 's/Upstream header refresh v1./Local custom header note./' "$repo/.workflow/decisions.md"
+  portable_sed 's/Upstream header refresh v1./Upstream header refresh v2./' "$test_kit/templates/project/.workflow/decisions.md"
+  out="$(cd "$repo" && "$test_kit/bin/workflow" update 2>&1)"
+  if grep -qF 'Local custom header note.' "$repo/.workflow/decisions.md" &&
+     ! grep -qF 'Upstream header refresh v2.' "$repo/.workflow/decisions.md" &&
+     grep -qF '## 2026-03-01 - Keep plain SQL' "$repo/.workflow/decisions.md" &&
+     [[ "$out" == *"skipped decisions.md header: edited locally"* ]]; then
+    pass "update preserves locally edited marked header in decisions.md without --force"
+  else
+    fail "update should preserve locally edited marked header: $out"
+  fi
+
+  # 3. Legacy markerless headers: left alone on update, upgraded on update --force with entries intact
+  cat > "$repo/.workflow/decisions.md" <<'EOF'
+# Decisions
+Legacy 2.11 header text.
+
+## Entries
+
+## 2026-03-01 - Keep plain SQL
+- **Decided:** plain SQL queries.
+- **Instead of:** ORM.
+- **Because:** transparent query plans.
+EOF
+  cat > "$repo/.workflow/technical-debt.md" <<'EOF'
+# Technical Debt
+Legacy 2.11 debt header.
+
+## Entries
+
+## Duplicate retry helper
+- **Where:** src/net
+- **Added:** 2026-03-01
+- **Priority:** worth-doing
+- **Problem:** two copies exist
+- **Solution:** share one helper
+EOF
+  cat > "$repo/.workflow/glossary.md" <<'EOF'
+# Glossary
+Legacy 2.11 glossary header.
+
+## Terms
+
+- **Receipt**: verified output file stored under evidence.
+EOF
+
+  (cd "$repo" && "$test_kit/bin/workflow" update >/dev/null 2>&1)
+  if grep -qF 'Legacy 2.11 header text.' "$repo/.workflow/decisions.md" &&
+     ! grep -qF '<!-- workflow:start -->' "$repo/.workflow/decisions.md"; then
+    pass "update without --force leaves legacy markerless log headers untouched"
+  else
+    fail "update without --force should not modify legacy markerless log headers"
+  fi
+
+  out="$(cd "$repo" && "$test_kit/bin/workflow" update --force 2>&1)"
+  if grep -qF '<!-- workflow:start -->' "$repo/.workflow/decisions.md" &&
+     grep -qF 'Upstream header refresh v2.' "$repo/.workflow/decisions.md" &&
+     ! grep -qF 'Legacy 2.11 header text.' "$repo/.workflow/decisions.md" &&
+     grep -qF '## 2026-03-01 - Keep plain SQL' "$repo/.workflow/decisions.md" &&
+     grep -qF '<!-- workflow:start -->' "$repo/.workflow/technical-debt.md" &&
+     ! grep -qF 'Legacy 2.11 debt header.' "$repo/.workflow/technical-debt.md" &&
+     grep -qF '## Duplicate retry helper' "$repo/.workflow/technical-debt.md" &&
+     grep -qF '<!-- workflow:start -->' "$repo/.workflow/glossary.md" &&
+     ! grep -qF 'Legacy 2.11 glossary header.' "$repo/.workflow/glossary.md" &&
+     grep -qF -- '- **Receipt**: verified output file stored under evidence.' "$repo/.workflow/glossary.md"; then
+    pass "update --force upgrades legacy markerless headers while preserving all user entries"
+  else
+    fail "update --force failed to upgrade legacy headers cleanly: $out"
+  fi
+
+  # Inline marker mentions inside user entries below ## Entries must not confuse doctor/update
+  portable_sed 's/<[^>]*>/placeholder/g' "$repo/.workflow/standards.md"
+  cat >> "$repo/.workflow/decisions.md" <<'EOF'
+
+## 2026-03-02 - Document marker syntax
+- **Decided:** wrap headers in `<!-- workflow:start -->` and `<!-- workflow:end -->`.
+- **Instead of:** separate metadata files.
+- **Because:** keeps docs self-contained.
+EOF
+  git -C "$repo" add -A
+  git -C "$repo" commit -q -m "commit upgraded workflow"
+  if (cd "$repo" && "$test_kit/bin/workflow" doctor >/dev/null 2>&1); then
+    pass "doctor ignores inline marker text inside user entries below ## Entries"
+  else
+    fail "doctor should ignore marker mentions below ## Entries: $(cd "$repo" && "$test_kit/bin/workflow" doctor 2>&1 || true)"
+  fi
+
+  # 4. uninstall leaves user log files untouched
+  (cd "$repo" && "$test_kit/bin/workflow" uninstall >/dev/null 2>&1)
+  if grep -qF '## 2026-03-01 - Keep plain SQL' "$repo/.workflow/decisions.md" &&
+     grep -qF '## Duplicate retry helper' "$repo/.workflow/technical-debt.md" &&
+     grep -qF -- '- **Receipt**: verified output file stored under evidence.' "$repo/.workflow/glossary.md"; then
+    pass "uninstall leaves decisions.md, technical-debt.md, and glossary.md untouched"
+  else
+    fail "uninstall should not touch decisions.md, technical-debt.md, or glossary.md"
+  fi
+}
+
+# --- 2.12: workflow task land end-to-end dispatch ---
+test_task_land_cli() {
+  local repo="$TMPDIR/repo_task_land" wt="$TMPDIR/wt_task_land" out status=0
+  setup_repo "$repo"
+  git -C "$repo" branch -M main
+  mkdir -p "$repo/.workflow/tasks/core"
+  cat > "$repo/.workflow/tasks/core/01-land.md" <<'EOF'
+# 01: Landable Task
+
+**Effort:** core
+**Check:** `true` passes
+**Blocked by:** None
+EOF
+  git -C "$repo" add -A
+  git -C "$repo" commit -q -m "setup task core/01"
+
+  local base_sha
+  base_sha="$(git -C "$repo" rev-parse HEAD)"
+  git -C "$repo" worktree add -q -b core/01-land "$wt" main
+
+  (cd "$wt" && "$WORKFLOW" task start core/01 >/dev/null 2>&1)
+  printf 'landed content\n' > "$wt/landed.txt"
+  cat >> "$wt/.workflow/tasks/core/01-land.md" <<EOF
+
+## Progress
+
+Check before: \`true\` passed
+Check after: \`true\` passed
+Review: pass (base $base_sha)
+EOF
+  (cd "$wt" && "$WORKFLOW" task archive core/01 >/dev/null 2>&1)
+  git -C "$wt" add -A
+  git -C "$wt" commit -q -m "complete core/01"
+
+  out="$(cd "$TMPDIR" && "$WORKFLOW" -C "$repo" task land core/01 --cleanup 2>&1)" || status=$?
+  local parents parent_count
+  parents="$(git -C "$repo" rev-list --parents -n 1 main)"
+  parent_count="$(printf '%s\n' "$parents" | wc -w | tr -d ' ')"
+  if [ "$status" -eq 0 ] &&
+     [ "$parent_count" -eq 3 ] &&
+     [ -f "$repo/landed.txt" ] &&
+     [ -f "$repo/.workflow/done/core/01-land.md" ] &&
+     [ ! -d "$wt" ] &&
+     ! git -C "$repo" rev-parse --verify --quiet refs/heads/core/01-land >/dev/null 2>&1; then
+    pass "workflow task land --cleanup merges --no-ff onto target and cleans up worktree and branch"
+  else
+    fail "workflow task land --cleanup failed (exit $status, parents=$parent_count): $out"
+  fi
+}
+
 
 test_draft_placeholder_accepted
 test_invalid_concrete_sha_rejected
@@ -2512,6 +2807,9 @@ test_maps_research_migration
 test_init_hook_default
 test_version_drift_nudge
 test_doctor_path_toolkit_newer
+test_global_c_and_no_color
+test_managed_log_headers
+test_task_land_cli
 
 printf '\nResults: %d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" -eq 0 ]

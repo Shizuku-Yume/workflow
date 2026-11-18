@@ -20,6 +20,10 @@ same gate (see `archive_proof_problems`). Research notes live under
 `.workflow/research/`; `next` lists notes with open questions.
 """
 
+try:
+    import fcntl
+except ImportError:
+    fcntl = None
 import json
 import os
 import re
@@ -28,7 +32,7 @@ import subprocess
 import sys
 import tempfile
 
-VERSION = "2.11.0"
+VERSION = "2.12.0"
 KNOWN_FIELDS = {
     "task", "effort", "task type", "base commit", "base branch", "delivers", "blocked by",
     "files", "read first", "check", "covers", "question", "time box", "priority",
@@ -55,14 +59,16 @@ PLAIN_FIELD_RE = re.compile(r"^([A-Za-z][A-Za-z0-9_. -]*):\s*(.*)$")
 NONE_RE = re.compile(r"^none(\s*,\s*can\s+start\s+now)?$")
 QUALIFIED_REF_RE = re.compile(r"^([a-z0-9]+(-[a-z0-9]+)*)/([0-9]+)$")
 BARE_REF_RE = re.compile(r"^([0-9]+)$")
+EFFORT_PREFIX_REF_RE = re.compile(r"^effort:([a-z0-9]+(?:-[a-z0-9]+)*)$")
 SPEC_CHECK_RE = re.compile(r"^[-*]\s+\*\*([A-Za-z][A-Za-z0-9_-]*[0-9])\.\*\*")
 UNTICKED_RE = re.compile(r"^[-*]\s+\[ \]\s*(.*)$")
 ACCEPTED_RE = re.compile(r"^\s*(?:[-*]\s+)?(?:\*\*Accepted:\*\*|Accepted:|\*\*Accepted\*\*:)[ \t]+\S")
 REOPENED_RE = re.compile(r"^\s*##\s+Reopened(?:\b.*)?$", re.IGNORECASE)
+CHECK_TEMP_OUT_RE = re.compile(r"(?:\btee(?:\s+-a)?\s+|[12&]*>>?\s*)['\"]?/(?:var/)?tmp/")
+SELF_REVIEW_RE = re.compile(r"\bself[- ]?review(?:ed|ing)?\b|自审|自我审查", re.IGNORECASE)
 STANDARDS_PLACEHOLDER_RE = re.compile(
     r"<TODO:[^>]+>|<(install|run|test|typecheck|lint) command>|<direct \| local-merge \| pr>"
 )
-
 
 # ---------------------------------------------------------------- helpers
 
@@ -369,7 +375,16 @@ def archive_proof_problems(shown, meta, spike=False):
                              "`Review: skipped — <reason>`."))
         else:
             outcome, detail = review_outcome(review["value"])
-            if outcome == "blocked":
+            if outcome == "pass":
+                if not detail:
+                    problems.append((review["line"],
+                                     "Review: pass needs a base commit or reviewer detail",
+                                     "Record `Review: pass (base <sha>)` or `Review: pass (base <sha>, reviewer <id>)`."))
+                elif SELF_REVIEW_RE.search(detail):
+                    problems.append((review["line"],
+                                     "self-review does not satisfy Review: pass",
+                                     "Run flow-verify in a fresh context, or record `Review: skipped — <reason>` if no fresh reviewer can run."))
+            elif outcome == "blocked":
                 problems.append((review["line"], "archived with Review: blocked",
                                  "Resolve the blocking findings, or record the user's waiver as "
                                  "`Review: waived — <finding>; user, <YYYY-MM-DD>`."))
@@ -496,7 +511,7 @@ class BlockerError(Exception):
         self.trailing = trailing
 
 
-def parse_blockers(raw):
+def parse_blockers(raw, allow_bare_effort=False):
     """[(normalized ref, raw token)] for a Blocked by value; raises BlockerError."""
     raw = raw.strip()
     if NONE_RE.match(raw.lower()):
@@ -508,17 +523,25 @@ def parse_blockers(raw):
     refs = []
     for token in raw.split(","):
         token = token.strip()
+        m = EFFORT_PREFIX_REF_RE.match(token)
+        if m:
+            refs.append(("effort:" + m.group(1), token))
+            continue
         m = QUALIFIED_REF_RE.match(token)
         if m:
             refs.append((m.group(1) + "/" + norm_number(m.group(3)), token))
             continue
         m = BARE_REF_RE.match(token)
         if m:
+            if allow_bare_effort:
+                raise BlockerError(token)
             refs.append((norm_number(m.group(1)), token))
+            continue
+        if allow_bare_effort and SLUG_RE.match(token):
+            refs.append(("effort:" + token, token))
             continue
         raise BlockerError(token)
     return refs
-
 
 def resolve_ref(ref, effort):
     if "/" in ref:
@@ -611,10 +634,9 @@ matches the filename; Status and Priority values; blockers; Base commit refs;
 task-number collisions within efforts; dependency cycles; Covers IDs no spec
 check defines; decision format; and that new archives carry a Check after or
 Check waived with a real result, a Review line, no placeholder Base commit,
-and no Status. Checks active and completed task files; problems in completed
-files warn instead of failing. Warns on oversized header material:
-standards.md past 80 lines, or an open task file past 16384 bytes.
-
+files warn instead of failing. Warns on oversized material:
+standards.md past 80 lines, or a bloated ## Progress section on an open task
+(fenced code block over 25 lines, or over 60 non-empty lines / 8000 characters).
   --audit        Audit historical archives and spec acceptances (omitted by default)
   --staged       Validate staged git index content instead of the working tree
   --strict       Treat warnings as errors
@@ -700,11 +722,13 @@ class Validator(object):
         self.check_layout()
         self.check_collisions()
         edges = self.check_blockers()
+        self.check_spec_blockers()
         self.check_status()
         self.check_priorities()
         self.check_covers()
         self.check_bases()
         self.check_files_field()
+        self.check_temp_in_check()
         self.check_cycles(edges)
         self.check_new_archives()
         self.check_spec_done_with_open_tasks()
@@ -712,7 +736,6 @@ class Validator(object):
         self.check_decisions()
         self.check_standards()
         self.check_progress_size()
-
     def collect(self):
         if self.staged:
             ready, listing = git_result(self.root, "ls-files", "--stage", "--",
@@ -834,9 +857,20 @@ class Validator(object):
             else:
                 seen[key] = path
 
+    def known_efforts(self):
+        known = set(effort for effort, _, _ in self.specs() if SLUG_RE.match(effort))
+        for val in self.effort.values():
+            if val and SLUG_RE.match(val):
+                known.add(val)
+        for val in self.dir_effort.values():
+            if val and SLUG_RE.match(val):
+                known.add(val)
+        return known
+
     def check_blockers(self):
         edges = {}
-        suggestion = "Use NN or effort/NN, comma-separated, or None."
+        known = self.known_efforts()
+        suggestion = "Use NN, effort/NN, or effort:<slug>, comma-separated, or None."
         for path in self.files:
             blocked = self.meta[path].get("blocked by")
             if not blocked:
@@ -852,6 +886,17 @@ class Validator(object):
                     self.issue(self.sev(path), path, line, "malformed blocker '%s'" % exc.token, suggestion)
                 continue
             for ref, raw in refs:
+                if ref.startswith("effort:"):
+                    slug = ref[len("effort:"):]
+                    if slug == self.effort[path]:
+                        self.issue("ERROR", path, line,
+                                   "task cannot be blocked by its own effort '%s'" % slug,
+                                   "Remove the self-effort blocker or reference a specific task number.")
+                    elif slug not in known:
+                        self.issue(self.sev(path), path, line,
+                                   "orphaned effort blocker '%s'" % raw,
+                                   "Create specs/%s.md or tasks/%s/, or correct the Blocked by reference." % (slug, slug))
+                    continue
                 target = resolve_ref(ref, self.effort[path])
                 if target not in self.index:
                     self.issue(self.sev(path), path, line, "orphaned blocker '%s'" % raw,
@@ -860,6 +905,74 @@ class Validator(object):
                     edges.setdefault(key, []).append(target)
         return edges
 
+    def check_spec_blockers(self):
+        specs = self.specs()
+        known = self.known_efforts()
+        spec_by_effort = {effort: (path, meta) for effort, path, meta in specs}
+        spec_edges = {}
+        suggestion = "Use <effort>, effort:<effort>, or <effort>/<NN>, comma-separated, or None."
+        for effort, path, meta in specs:
+            blocked = meta.get("blocked by")
+            if not blocked:
+                continue
+            line = meta.line.get("blocked by", 1)
+            status = meta.get("status", "").strip().lower()
+            try:
+                refs = parse_blockers(blocked, allow_bare_effort=True)
+            except BlockerError as exc:
+                if exc.trailing:
+                    self.issue("ERROR", path, line, "malformed blocker: trailing comma", suggestion)
+                else:
+                    self.issue("ERROR", path, line, "malformed blocker '%s'" % exc.token, suggestion)
+                continue
+            for ref, raw in refs:
+                if ref.startswith("effort:"):
+                    slug = ref[len("effort:"):]
+                    if slug == effort:
+                        self.issue("ERROR", path, line,
+                                   "spec cannot be blocked by its own effort '%s'" % slug,
+                                   "Remove the self-effort blocker.")
+                    elif slug not in known:
+                        self.issue("ERROR", path, line,
+                                   "orphaned effort blocker '%s'" % raw,
+                                   "Create specs/%s.md or tasks/%s/, or correct the Blocked by reference." % (slug, slug))
+                    elif status != "done":
+                        up_meta = spec_by_effort.get(slug, (None, None))[1]
+                        if up_meta is None or up_meta.get("status", "").strip().lower() != "done":
+                            spec_edges.setdefault(effort, []).append(slug)
+                else:
+                    ref_effort, num = ref.split("/", 1)
+                    target = task_ref(ref_effort, num)
+                    if ref_effort == effort:
+                        self.issue("ERROR", path, line,
+                                   "spec cannot be blocked by its own task '%s'" % target,
+                                   "Remove the self-effort task blocker.")
+                    elif target not in self.index:
+                        self.issue("ERROR", path, line,
+                                   "orphaned blocker '%s'" % raw,
+                                   "Create task %s or correct the Blocked by reference." % target)
+                    elif status != "done" and target in self.active:
+                        up_meta = spec_by_effort.get(ref_effort, (None, None))[1]
+                        if up_meta is None or up_meta.get("status", "").strip().lower() != "done":
+                            spec_edges.setdefault(effort, []).append(ref_effort)
+        state = {}
+
+        def visit_spec(node, trail):
+            state[node] = 1
+            for target in spec_edges.get(node, ()):
+                st = state.get(target, 0)
+                if st == 1:
+                    s_path, s_meta = spec_by_effort[node]
+                    self.issue("ERROR", s_path, s_meta.line.get("blocked by", 1),
+                               "circular spec dependency: %s -> %s" % (" -> ".join(trail), target),
+                               "Remove or change one blocker in the cycle.")
+                elif st == 0 and target in spec_by_effort:
+                    visit_spec(target, trail + [target])
+            state[node] = 2
+
+        for effort in sorted(spec_edges):
+            if state.get(effort, 0) == 0:
+                visit_spec(effort, [effort])
     def check_covers(self):
         """Covers must name check IDs the effort's spec defines.
 
@@ -972,9 +1085,10 @@ class Validator(object):
             value = self.meta[path].get("base commit").strip()
             if value and value != "<commit-sha>":
                 commits.setdefault(value, []).append(path)
-            branch = self.meta[path].get("base branch").strip()
-            if branch and not (branch.startswith("<") and branch.endswith(">")):
-                branches.setdefault(branch, []).append(path)
+            if path.startswith(self.tasks_dir):
+                branch = self.meta[path].get("base branch").strip()
+                if branch and not (branch.startswith("<") and branch.endswith(">")):
+                    branches.setdefault(branch, []).append(path)
         if not commits and not branches:
             return
         is_git = subprocess.run(["git", "-C", self.root, "rev-parse", "--git-dir"],
@@ -1173,30 +1287,98 @@ class Validator(object):
                        "Move long-form material to docs/ or .workflow/research/ and leave a "
                        "one-line pointer.")
 
+    def check_temp_in_check(self):
+        """Warn when an open task's Check command redirects output to /tmp or /var/tmp."""
+        for path in self.files:
+            if not path.startswith(self.tasks_dir):
+                continue
+            check_val = self.meta[path].get("check", "")
+            if check_val and CHECK_TEMP_OUT_RE.search(check_val):
+                self.issue("WARNING", path, self.line_of(path, "check"),
+                           "Check writes output to a temporary path",
+                           "Write check logs and receipts under the Evidence directory named in standards.md instead of /tmp.")
+
     def check_progress_size(self):
         """An open task file's ## Progress is state, not a log (CONVENTIONS §7)."""
         for path in self.files:
             if not path.startswith(self.tasks_dir):
                 continue
-            size = None
-            if not self.staged:
-                try:
-                    size = os.path.getsize(path)
-                except OSError:
-                    size = None
-            if size is None:
-                lines = self.lines(path)
-                if not lines:
-                    continue
-                size = len("\n".join(lines).encode("utf-8")) + 1
-            if size <= 16384:
+            lines = self.lines(path)
+            if not lines:
                 continue
-            self.issue("WARNING", path, 1,
-                       "task file is %d KB; ## Progress holds current state, not a log"
-                       % int(round(size / 1024.0)),
-                       "Summarise superseded attempts in one line each and move logs to the "
-                       "Evidence directory.")
-
+            fence = None
+            in_comment = False
+            in_progress = False
+            progress_heading_line = 1
+            fence_start_line = 1
+            fence_inner_lines = []
+            warned_fences = []
+            outside_nonempty = 0
+            outside_chars = 0
+            for lineno, line in enumerate(lines, 1):
+                if fence is not None:
+                    new_fence, is_delim = next_fence_state(fence, line)
+                    if in_progress:
+                        if is_delim:
+                            inner_count = len(fence_inner_lines)
+                            if inner_count > 25:
+                                warned_fences.append((fence_start_line, inner_count))
+                            else:
+                                outside_nonempty += sum(1 for l in fence_inner_lines if l.strip())
+                                outside_chars += sum(len(l) for l in fence_inner_lines)
+                            if line.strip():
+                                outside_nonempty += 1
+                            outside_chars += len(line)
+                            fence = None
+                        else:
+                            fence_inner_lines.append(line)
+                    else:
+                        fence = new_fence
+                    continue
+                was_comment = in_comment
+                cleaned, in_comment = strip_comments(line, in_comment)
+                if (was_comment or in_comment) and not cleaned.strip():
+                    continue
+                new_fence, is_delim = next_fence_state(None, cleaned)
+                if is_delim:
+                    fence = new_fence
+                    if in_progress:
+                        fence_start_line = lineno
+                        fence_inner_lines = []
+                        if cleaned.strip():
+                            outside_nonempty += 1
+                        outside_chars += len(cleaned)
+                    continue
+                m = H2_RE.match(cleaned.strip())
+                if m:
+                    heading = m.group(1).strip().rstrip(":").strip().lower()
+                    if heading == "progress":
+                        if not in_progress:
+                            progress_heading_line = lineno
+                        in_progress = True
+                    elif in_progress:
+                        in_progress = False
+                    continue
+                if in_progress:
+                    if cleaned.strip():
+                        outside_nonempty += 1
+                    outside_chars += len(cleaned)
+            if in_progress and fence is not None:
+                inner_count = len(fence_inner_lines)
+                if inner_count > 25:
+                    warned_fences.append((fence_start_line, inner_count))
+                else:
+                    outside_nonempty += sum(1 for l in fence_inner_lines if l.strip())
+                    outside_chars += sum(len(l) for l in fence_inner_lines)
+            for fline, icount in warned_fences:
+                self.issue("WARNING", path, fline,
+                           "## Progress contains a %d-line code block; move logs to the Evidence directory" % icount,
+                           "Save command output and logs in the Evidence directory and keep a one-line summary in ## Progress.")
+            if outside_nonempty > 60 or outside_chars > 8000:
+                self.issue("WARNING", path, progress_heading_line,
+                           "## Progress is %d non-empty lines (%d chars); ## Progress holds current state, not a log"
+                           % (outside_nonempty, outside_chars),
+                           "Summarise superseded attempts in one line each, replace stale handoff notes, and move detailed receipts to the Evidence directory.")
 
 ISO_TIME_RE = re.compile(r"^[0-9-]+T[0-9][0-9]:[0-9][0-9](:[0-9][0-9](\.[0-9]+)?)?"
                          r"(Z|[+-][0-9][0-9]:[0-9][0-9])?$")
@@ -1262,13 +1444,9 @@ def decision_problems(lines):
         if fence is not None:
             fence, _ = next_fence_state(fence, s)
             continue
-        if in_comment:
-            if "-->" in s:
-                in_comment = False
-            continue
-        if "<!--" in s:
-            if "-->" not in s:
-                in_comment = True
+        was_comment = in_comment
+        s, in_comment = strip_comments(s, in_comment)
+        if (was_comment or in_comment) and not s.strip():
             continue
         fence, is_delim = next_fence_state(None, s)
         if is_delim:
@@ -2033,7 +2211,10 @@ def collect_queue(root, wf, target_effort=None):
     current = tree["branch"]
     main = tree["main"]
     head_oid = (git_out(root, "rev-parse", "--verify", "--quiet", "HEAD^{commit}") or "").strip() or None
-    spec_entries = spec_files(wf, target_effort)
+    all_spec_entries = spec_files(wf)
+    all_spec_meta = {effort: meta for effort, _, meta in all_spec_entries}
+    spec_entries = [entry for entry in all_spec_entries
+                    if not target_effort or entry[0] == target_effort]
     spec_statuses = [(effort, meta.get("status").strip().lower())
                      for effort, _, meta in spec_entries]
     done_counts = {}
@@ -2087,38 +2268,39 @@ def collect_queue(root, wf, target_effort=None):
             archived |= landed_main
 
     hidden_efforts = set()
+    integrating_elsewhere_efforts = set()
     integrating = []
     integration_landed = {}
     skip_branches = set()
-    specs_dir = os.path.join(wf, "specs")
-    if os.path.isdir(specs_dir):
-        for name in sorted(os.listdir(specs_dir)):
-            path = os.path.join(specs_dir, name)
-            if not name.endswith(".md") or not os.path.isfile(path):
-                continue
-            effort = name[:-3]
-            if target_effort and effort != target_effort:
-                continue
-            integration = read_fields(path).get("integration branch").strip()
-            if not integration or (integration.startswith("<") and integration.endswith(">")):
-                continue
-            ref, int_oid = ref_oid(integration)
-            if ref is None or not int_oid:
-                continue
-            match = TASK_BRANCH_RE.match(current) if current else None
-            if current == integration or (match is not None and match.group(1) == effort):
+    wt_by_branch = {
+        entry["branch"][len("refs/heads/"):]: entry["path"]
+        for entry in worktree_entries(root)
+        if (entry.get("branch") or "").startswith("refs/heads/")
+    }
+    for effort, _, s_meta in all_spec_entries:
+        integration = s_meta.get("integration branch").strip()
+        if not integration or (integration.startswith("<") and integration.endswith(">")):
+            continue
+        ref, int_oid = ref_oid(integration)
+        if ref is None or not int_oid:
+            continue
+        match = TASK_BRANCH_RE.match(current) if current else None
+        if current == integration or (match is not None and match.group(1) == effort):
+            if not target_effort or effort == target_effort:
                 batch_done_by_commit(root, [int_oid], done_cache, tree_cache)
                 for carried in done_cache.get(int_oid, ()):
                     if carried.split("/", 1)[0] == effort:
                         archived.add(carried)
                         integration_landed.setdefault(carried, integration)
                 skip_branches.update((integration, ref))
-            else:
+        else:
+            integrating_elsewhere_efforts.add(effort)
+            if not target_effort or effort == target_effort:
                 done_count, open_count = branch_effort_counts(root, ref, effort)
                 integrating.append({"effort": effort, "branch": integration,
+                                    "worktree": wt_by_branch.get(integration),
                                     "archived": done_count, "open": open_count})
                 hidden_efforts.add(effort)
-
     # Scan local open task files first so we only inspect git blobs for live open tasks.
     local_tasks = []
     open_refs = set()
@@ -2164,16 +2346,28 @@ def collect_queue(root, wf, target_effort=None):
     for _, _, _, meta, effort, status, ref, _, _, _ in local_tasks:
         if ref in landed_main or ref in integration_landed or status in ("active", "paused", "blocked"):
             continue
-        raw = meta.get("blocked by")
-        if raw:
+        spec_raw = all_spec_meta[effort].get("blocked by") if effort in all_spec_meta else ""
+        if spec_raw:
             try:
-                for token, _ in parse_blockers(raw):
+                for token, _ in parse_blockers(spec_raw, allow_bare_effort=True):
+                    if token.startswith("effort:"):
+                        continue
                     target = resolve_ref(token, effort)
                     if target not in archived:
                         blocker_refs_needed.add(target)
             except BlockerError:
                 pass
-
+        raw = meta.get("blocked by")
+        if raw:
+            try:
+                for token, _ in parse_blockers(raw):
+                    if token.startswith("effort:"):
+                        continue
+                    target = resolve_ref(token, effort)
+                    if target not in archived:
+                        blocker_refs_needed.add(target)
+            except BlockerError:
+                pass
     relevant_task_refs = (open_refs - landed_main - set(integration_landed)) | blocker_refs_needed
     branches = {}
     task_branch_candidates = []
@@ -2242,6 +2436,17 @@ def collect_queue(root, wf, target_effort=None):
         block_tasks.setdefault(blocker, []).append(ref)
         block_numbers.setdefault(blocker, []).append(int(number))
 
+    def is_effort_satisfied(eff):
+        if eff in integrating_elsewhere_efforts:
+            return False
+        if eff in all_spec_meta:
+            return all_spec_meta[eff].get("status", "").strip().lower() == "done"
+        has_done = (done_counts.get(eff, 0) > 0) or any(
+            r.startswith(eff + "/") for r in archived
+        )
+        has_open = open_file_counts.get(eff, 0) > 0
+        return bool(has_done and not has_open)
+
     for path, name, number, meta, effort, status, ref, base_branch, complete, _ in local_tasks:
         title = meta.title or meta.get("task") or "Untitled"
         if complete:
@@ -2277,26 +2482,48 @@ def collect_queue(root, wf, target_effort=None):
             stacked_done = done_cache.get(base_oid_by_name[base_branch], set())
 
         blocked = False
+        open_refs_needed = []
+        spec_blocked_raw = all_spec_meta[effort].get("blocked by") if effort in all_spec_meta else ""
+        if spec_blocked_raw:
+            try:
+                for token, _ in parse_blockers(spec_blocked_raw, allow_bare_effort=True):
+                    if token.startswith("effort:"):
+                        slug = token[len("effort:"):]
+                        if not is_effort_satisfied(slug) and slug not in open_refs_needed:
+                            open_refs_needed.append(slug)
+                    else:
+                        target = resolve_ref(token, effort)
+                        if target not in archived and target not in stacked_done and target not in open_refs_needed:
+                            open_refs_needed.append(target)
+            except BlockerError:
+                blocked = True
+                record("(malformed spec Blocked by field)", ref, number)
+
         raw = meta.get("blocked by")
         if not raw:
             blocked = True
             record("(missing Blocked by field)", ref, number)
         else:
             try:
-                open_refs_needed = []
                 for token, _ in parse_blockers(raw):
-                    target = resolve_ref(token, effort)
-                    if target not in archived and target not in stacked_done and target not in open_refs_needed:
-                        open_refs_needed.append(target)
-                for target in open_refs_needed:
-                    record(target, ref, number)
-                blocked = bool(open_refs_needed)
-                if open_refs_needed and all(t in finished_branches for t in open_refs_needed):
-                    stackable.append((ref, [finished_branches[t] for t in open_refs_needed]))
+                    if token.startswith("effort:"):
+                        slug = token[len("effort:"):]
+                        if not is_effort_satisfied(slug) and slug not in open_refs_needed:
+                            open_refs_needed.append(slug)
+                    else:
+                        target = resolve_ref(token, effort)
+                        if target not in archived and target not in stacked_done and target not in open_refs_needed:
+                            open_refs_needed.append(target)
             except BlockerError:
                 blocked = True
                 sys.stderr.write("Warning: %s has malformed Blocked by: %s\n" % (name, raw))
                 record("(malformed Blocked by field)", ref, number)
+        for target in open_refs_needed:
+            record(target, ref, number)
+        if open_refs_needed:
+            blocked = True
+            if all("/" in t and t in finished_branches for t in open_refs_needed):
+                stackable.append((ref, [finished_branches[t] for t in open_refs_needed]))
         if blocked:
             blocked_count += 1
             waiting += 1
@@ -2305,8 +2532,10 @@ def collect_queue(root, wf, target_effort=None):
         rel_path = os.path.relpath(path, root).replace(os.sep, "/")
         branch_name = "%s/%s" % (effort, name[:-3])
         files_list = parse_task_files_field(root, meta.get("files"))
+        delivers = meta.get("delivers", "").strip()
         task = {"task": ref, "number": int(number), "title": title, "effort": effort,
-                "priority": priority, "goal": goal, "check": meta.get("check") or "(not specified)",
+                "priority": priority, "goal": goal, "delivers": delivers,
+                "check": meta.get("check") or "(not specified)",
                 "path": rel_path, "branch": branch_name, "files": files_list,
                 "resources": parse_resources(meta.get("resources")),
                 "start_command": "flow-implement " + ref}
@@ -2535,11 +2764,15 @@ def cmd_next(args):
                 out.append("%sReady tasks%s (%d):\n" % (bold, off, len(ready)))
             else:
                 out.append("%sReady tasks%s (%d total; showing up to 5):\n" % (bold, off, len(ready)))
+            shown_goal_efforts = set()
             for i, item in enumerate(shown_ready, 1):
                 ref, task = item[3], item[4]
                 out.append("%d) %s%s%s %s (priority: %s)\n" % (i, bold, ref, off, task["title"], task["priority"]))
-                if task["goal"] != "(not specified)":
+                if task["goal"] != "(not specified)" and task["effort"] not in shown_goal_efforts:
                     out.append("   %sGoal:%s %s\n" % (dim, off, task["goal"]))
+                    shown_goal_efforts.add(task["effort"])
+                if task.get("delivers"):
+                    out.append("   %sDelivers:%s %s\n" % (dim, off, task["delivers"]))
                 out.append("   %sCheck:%s %s\n" % (dim, off, task["check"]))
                 out.append("   Start: flow-implement %s\n" % ref)
             if overlaps:
@@ -2557,8 +2790,12 @@ def cmd_next(args):
     if integrating:
         out.append("Integrating on another branch (run next there):\n")
         for item in integrating:
-            out.append("  %s on %s: %d archived, %d open\n" % (
-                item["effort"], item["branch"], item["archived"], item["open"]))
+            if item.get("worktree"):
+                out.append("  %s on %s (%s): %d archived, %d open\n" % (
+                    item["effort"], item["branch"], item["worktree"], item["archived"], item["open"]))
+            else:
+                out.append("  %s on %s: %d archived, %d open\n" % (
+                    item["effort"], item["branch"], item["archived"], item["open"]))
     if shown_duplicates:
         out.append("Several branches claim one task (keep one; rename retries to "
                    "attempt/<effort>-<NN>): %s\n" % ", ".join(
@@ -2571,13 +2808,15 @@ TASK_USAGE = """workflow task - manage task lifecycle state transitions
 
 Usage: workflow task start <task>
        workflow task archive <task>
+       workflow task land <task> [--cleanup]
        workflow task <subcommand> --help
 
 Subcommands:
   start    record current HEAD as Base commit, set Status: active,
            and update matching spec to in progress
-  archive  verify checkboxes and task proof, remove Status,
+  archive  verify checkboxes and task proof, remove Status and Base branch,
            move task to .workflow/done/<effort>/, and validate
+  land     atomically merge an archived task branch onto its target branch
 """
 
 TASK_START_USAGE = """workflow task start - activate a task and record base commit
@@ -2598,14 +2837,34 @@ Usage: workflow task archive <task>
 
 Verifies all checklist items are ticked and the task proof: a `Check after`
 or `Check waived` with a real result, a `Review:` outcome of
-pass | blocked | skipped | waived (with a reason for skipped and waived),
-and no placeholder Base commit. Spike tasks only need their checkboxes,
-`## Findings`, and a real Base commit. Removes Status, moves the task to
-.workflow/done/<effort>/, validates the resulting repository state, and
-prints the flow-close hint when it archived the effort's last open task.
-Refuses to overwrite existing archives.
+pass | blocked | skipped | waived (with base/reviewer detail for pass,
+and a reason for skipped and waived), and no placeholder Base commit.
+Spike tasks only need their checkboxes, `## Findings`, and a real Base commit.
+Removes Status and Base branch, moves the task to .workflow/done/<effort>/,
+removes an emptied tasks/<effort>/ directory, validates the resulting
+repository state, and prints the flow-close hint when it archived the
+effort's last open task. Refuses to overwrite existing archives.
 <task> can be <effort>/<NN>, <effort>/<NN>-<slug>.md, or a task file path.
 A bare <NN> works when unambiguous across efforts.
+"""
+
+TASK_LAND_USAGE = """workflow task land - atomically land an archived task branch
+
+Usage: workflow task land <task> [--cleanup]
+
+Acquires an exclusive lock at <git-common-dir>/workflow-land.lock, verifies
+working tree cleanliness and that the target branch (Integration branch from
+specs/<effort>.md, else main/master) is an ancestor of the task commit, and
+creates a --no-ff merge on the target branch.
+
+Works either from inside the task branch/worktree (after `workflow task archive`
+and commit) or from the target branch when a unique local branch
+<effort>/<NN>-<slug> has already archived the task.
+
+Options:
+  --cleanup   Remove the task worktree (when cwd is outside it) and delete the
+              merged task branch
+  -h, --help  Show this help
 """
 
 
@@ -3140,6 +3399,7 @@ def task_archive(task_arg):
         return 1
 
     updated_content = remove_field_from_content(original_content, "status")
+    updated_content = remove_field_from_content(updated_content, "base branch")
     try:
         os.makedirs(dest_dir, exist_ok=True)
     except OSError as e:
@@ -3156,6 +3416,8 @@ def task_archive(task_arg):
         sys.stderr.write("Error: failed to write archive destination '%s': %s\n" % (os.path.relpath(dest_path, root), str(e)))
         return 1
 
+    tasks_dir = os.path.join(wf, "tasks")
+    task_parent = os.path.dirname(task_path)
     try:
         os.remove(task_path)
     except OSError as e:
@@ -3166,6 +3428,13 @@ def task_archive(task_arg):
                 pass
         sys.stderr.write("Error: failed to remove original task file: %s\n" % str(e))
         return 1
+
+    if is_lexical_subpath(task_parent, tasks_dir) and is_subpath(task_parent, tasks_dir):
+        try:
+            if not os.listdir(task_parent):
+                os.rmdir(task_parent)
+        except OSError:
+            pass
 
     validator = Validator(root)
     validator.run()
@@ -3179,6 +3448,7 @@ def task_archive(task_arg):
         except OSError:
             pass
         try:
+            os.makedirs(task_parent, exist_ok=True)
             replace_file_atomically(task_path, original_content, mode=source_mode)
         except OSError:
             pass
@@ -3213,6 +3483,352 @@ def effort_ready_to_close(wf, effort):
         if task_effort == effort:
             return False
     return True
+
+
+def resolve_archived_task_file(root, arg):
+    """Resolve a user-provided task reference to a path under .workflow/done."""
+    wf = os.path.join(root, ".workflow")
+    done_dir = os.path.join(wf, "done")
+    if not os.path.isdir(done_dir):
+        raise ValueError("no .workflow/done directory found at %s" % root)
+
+    def _validate_done_path_and_effort(target_path, user_ref):
+        if not is_lexical_subpath(target_path, done_dir) or not is_subpath(target_path, done_dir):
+            raise ValueError("task '%s' resolves outside .workflow/done" % user_ref)
+        bn = os.path.basename(target_path)
+        m = TASK_FILE_RE.match(bn)
+        if not m:
+            raise ValueError("file '%s' does not match task filename pattern (e.g. 01-slug.md)" % bn)
+        num = norm_number(m.group(1))
+        eff = dir_effort(done_dir, target_path) or read_fields(target_path).get("effort") or ""
+        eff = eff.strip()
+        if not eff or not SLUG_RE.match(eff):
+            raise ValueError("task '%s' has invalid effort slug '%s'" % (user_ref, eff) if eff else "task '%s' has missing effort slug" % user_ref)
+        return target_path, eff, num
+
+    candidate_paths = [
+        arg,
+        os.path.join(root, arg),
+        os.path.join(wf, arg),
+        os.path.join(done_dir, arg),
+    ]
+    for cp in candidate_paths:
+        if os.path.isfile(cp):
+            abs_p = os.path.abspath(cp)
+            if not is_safe_path(abs_p, root):
+                raise ValueError("path '%s' escapes project root" % arg)
+            if is_lexical_subpath(abs_p, done_dir):
+                return _validate_done_path_and_effort(abs_p, arg)
+
+    all_done = task_files(done_dir, root=root)
+    matches = []
+    clean_arg = arg.strip()
+    if clean_arg.endswith("/"):
+        clean_arg = clean_arg[:-1]
+
+    for p in all_done:
+        bn = os.path.basename(p)
+        m = TASK_FILE_RE.match(bn)
+        if not m:
+            continue
+        num = norm_number(m.group(1))
+        eff = dir_effort(done_dir, p) or read_fields(p).get("effort") or ""
+        base_no_ext = os.path.splitext(bn)[0]
+        if "/" in clean_arg:
+            parts = clean_arg.split("/", 1)
+            arg_eff, arg_rest = parts[0], parts[1]
+            if arg_eff == eff:
+                if arg_rest in (bn, base_no_ext):
+                    matches.append((p, eff, num))
+                else:
+                    rest_m = TASK_FILE_RE.match(arg_rest if arg_rest.endswith(".md") else arg_rest + ".md")
+                    if rest_m and norm_number(rest_m.group(1)) == num:
+                        matches.append((p, eff, num))
+                    elif norm_number(arg_rest.split("-")[0].split(".")[0]) == num:
+                        matches.append((p, eff, num))
+        else:
+            if clean_arg in (bn, base_no_ext):
+                matches.append((p, eff, num))
+            else:
+                bare_m = TASK_FILE_RE.match(clean_arg if clean_arg.endswith(".md") else clean_arg + ".md")
+                if bare_m and norm_number(bare_m.group(1)) == num:
+                    matches.append((p, eff, num))
+                elif norm_number(clean_arg.split("-")[0].split(".")[0]) == num:
+                    matches.append((p, eff, num))
+
+    if len(matches) == 1:
+        return _validate_done_path_and_effort(matches[0][0], arg)
+    if len(matches) > 1:
+        refs = [os.path.relpath(p, root) for p, _, _ in matches]
+        raise ValueError("ambiguous archived task reference '%s': matches multiple tasks (%s)" % (
+            arg, ", ".join(refs)))
+    raise ValueError("task '%s' not found under .workflow/done" % arg)
+
+
+def task_land(task_arg, cleanup=False):
+    root = project_root()
+    wf = os.path.join(root, ".workflow")
+    if not os.path.isdir(wf):
+        sys.stderr.write("Error: no .workflow directory at %s; run 'workflow init' first\n" % root)
+        return 1
+
+    ok_git, in_wt = git_result(root, "rev-parse", "--is-inside-work-tree")
+    if not ok_git or in_wt.strip() != "true":
+        sys.stderr.write("Error: task land requires a git repository\n")
+        return 1
+
+    dirty = git_out(root, "status", "--porcelain", "--untracked-files=normal")
+    if dirty is None:
+        sys.stderr.write("Error: failed to inspect git status in %s\n" % root)
+        return 1
+    if dirty.strip():
+        sys.stderr.write("Error: working tree has uncommitted changes; commit or stash them before landing\n")
+        return 1
+
+    current = current_branch(root)
+    wt_by_branch = {
+        entry["branch"][len("refs/heads/"):]: entry["path"]
+        for entry in worktree_entries(root)
+        if (entry.get("branch") or "").startswith("refs/heads/")
+    }
+
+    source_branch = None
+    source_oid = None
+    source_wt = None
+    effort = number = title = None
+    spec_meta = None
+
+    try:
+        done_path, effort, number = resolve_archived_task_file(root, task_arg)
+        ref = task_ref(effort, number)
+        tasks_dir = os.path.join(wf, "tasks")
+        for p in task_files(tasks_dir, root=root):
+            m = TASK_FILE_RE.match(os.path.basename(p))
+            if not m:
+                continue
+            p_eff = dir_effort(tasks_dir, p) or read_fields(p).get("effort") or ""
+            if p_eff == effort and norm_number(m.group(1)) == number:
+                sys.stderr.write("Error: task %s is both archived (%s) and still open (%s); remove the duplicate first\n"
+                                 % (ref, os.path.relpath(done_path, root), os.path.relpath(p, root)))
+                return 1
+        source_oid = (git_out(root, "rev-parse", "--verify", "HEAD^{commit}") or "").strip()
+        if not source_oid:
+            sys.stderr.write("Error: cannot determine HEAD commit\n")
+            return 1
+        source_branch = current
+        source_wt = root
+        meta = read_fields(done_path)
+        title = meta.title or meta.get("task") or "Untitled"
+        spec_path = os.path.join(wf, "specs", effort + ".md")
+        if os.path.isfile(spec_path):
+            spec_meta = read_fields(spec_path)
+    except ValueError as done_err:
+        try:
+            _, effort, number = resolve_task_file(root, task_arg)
+        except ValueError as open_err:
+            sys.stderr.write("Error: %s\n" % str(open_err if "ambiguous" in str(open_err) else done_err))
+            return 1
+        ref = task_ref(effort, number)
+        listing = git_out(root, "for-each-ref", "--format=%(refname:short)\t%(objectname)",
+                          "refs/heads/%s/" % effort) or ""
+        archived_branches = []
+        for row in listing.splitlines():
+            if "\t" not in row:
+                continue
+            b_name, b_oid = row.split("\t", 1)
+            b_oid = b_oid.strip()
+            bm = TASK_BRANCH_RE.match(b_name)
+            if not bm or bm.group(1) != effort or norm_number(bm.group(2)) != number:
+                continue
+            done_listing = git_out(root, "ls-tree", "-r", "--name-only", b_oid, "--",
+                                   ".workflow/done/%s" % effort) or ""
+            done_rel = None
+            for rel in done_listing.splitlines():
+                fm = TASK_FILE_RE.match(os.path.basename(rel))
+                if fm and norm_number(fm.group(1)) == number:
+                    done_rel = rel
+                    break
+            if not done_rel:
+                continue
+            tasks_listing = git_out(root, "ls-tree", "-r", "--name-only", b_oid, "--",
+                                    ".workflow/tasks") or ""
+            still_open = False
+            for rel in tasks_listing.splitlines():
+                parts = rel.split("/")
+                fm = TASK_FILE_RE.match(parts[-1])
+                if not fm or norm_number(fm.group(1)) != number:
+                    continue
+                if len(parts) >= 4 and parts[2] == effort:
+                    still_open = True
+                    break
+                if len(parts) == 3:
+                    blob_text = git_out(root, "show", "%s:%s" % (b_oid, rel)) or ""
+                    if read_fields(rel, lines=split_text(blob_text)).get("effort") == effort:
+                        still_open = True
+                        break
+            if not still_open:
+                archived_branches.append((b_name, b_oid, done_rel))
+        if not archived_branches:
+            sys.stderr.write("Error: task %s is not archived yet; run 'workflow task archive %s' and commit first\n"
+                             % (ref, ref))
+            return 1
+        if len(archived_branches) > 1:
+            sys.stderr.write("Error: multiple local branches have archived %s: %s\n"
+                             % (ref, ", ".join(b for b, _, _ in archived_branches)))
+            return 1
+        source_branch, source_oid, done_rel = archived_branches[0]
+        source_wt = wt_by_branch.get(source_branch)
+        if source_wt:
+            wt_dirty = git_out(source_wt, "status", "--porcelain", "--untracked-files=normal")
+            if wt_dirty is None:
+                sys.stderr.write("Error: failed to inspect git status in %s\n" % source_wt)
+                return 1
+            if wt_dirty.strip():
+                sys.stderr.write("Error: task worktree %s has uncommitted changes; commit or stash them before landing\n"
+                                 % source_wt)
+                return 1
+        blob_text = git_out(root, "show", "%s:%s" % (source_oid, done_rel)) or ""
+        meta = read_fields(done_rel, lines=split_text(blob_text))
+        title = meta.title or meta.get("task") or "Untitled"
+        spec_rel = ".workflow/specs/%s.md" % effort
+        spec_blob = git_out(root, "show", "%s:%s" % (source_oid, spec_rel))
+        if spec_blob is not None:
+            spec_meta = read_fields(spec_rel, lines=split_text(spec_blob))
+        else:
+            spec_path = os.path.join(wf, "specs", effort + ".md")
+            if os.path.isfile(spec_path):
+                spec_meta = read_fields(spec_path)
+
+    integration = spec_meta.get("integration branch").strip() if spec_meta else ""
+    if integration and not (integration.startswith("<") and integration.endswith(">")):
+        target = integration
+    else:
+        target = main_branch(root)
+    if not target:
+        sys.stderr.write("Error: cannot determine target branch (no main or master branch)\n")
+        return 1
+    if not (git_out(root, "rev-parse", "--verify", "--quiet", "--end-of-options",
+                    "refs/heads/" + target + "^{commit}") or "").strip():
+        sys.stderr.write("Error: target branch '%s' does not exist locally\n" % target)
+        return 1
+    if source_branch == target:
+        sys.stderr.write("Error: already on target branch %s\n" % target)
+        return 1
+
+    common_dir = (git_out(root, "rev-parse", "--git-common-dir") or "").strip()
+    if not common_dir:
+        sys.stderr.write("Error: cannot determine git common directory\n")
+        return 1
+    if not os.path.isabs(common_dir):
+        common_dir = os.path.normpath(os.path.join(root, common_dir))
+    lock_path = os.path.join(common_dir, "workflow-land.lock")
+
+    with open(lock_path, "a+") as lock_fh:
+        if fcntl is not None:
+            fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX)
+        try:
+            target_oid = (git_out(root, "rev-parse", "--verify", "--quiet", "--end-of-options",
+                                  "refs/heads/" + target + "^{commit}") or "").strip()
+            if not target_oid:
+                sys.stderr.write("Error: target branch '%s' does not exist locally\n" % target)
+                return 1
+            wt_by_branch = {
+                entry["branch"][len("refs/heads/"):]: entry["path"]
+                for entry in worktree_entries(root)
+                if (entry.get("branch") or "").startswith("refs/heads/")
+            }
+            if is_ancestor_commit(root, source_oid, target_oid, {}):
+                sys.stdout.write("Task %s is already landed on %s (%s)\n" % (ref, target, target_oid[:10]))
+            else:
+                if not is_ancestor_commit(root, target_oid, source_oid, {}):
+                    sys.stderr.write("Error: target branch '%s' has commits not in '%s'; "
+                                     "merge or rebase '%s' into the task branch and rerun Check before landing\n"
+                                     % (target, source_branch or source_oid[:10], target))
+                    return 1
+                target_wt = wt_by_branch.get(target)
+                merge_msg = "merge(%s): land task %02d %s" % (effort, int(number), title)
+                if target_wt:
+                    t_dirty = git_out(target_wt, "status", "--porcelain", "--untracked-files=normal")
+                    if t_dirty is None:
+                        sys.stderr.write("Error: failed to inspect git status in %s\n" % target_wt)
+                        return 1
+                    if t_dirty.strip():
+                        sys.stderr.write("Error: target worktree %s has uncommitted changes; "
+                                         "commit or stash them before landing\n" % target_wt)
+                        return 1
+                    proc = subprocess.run(
+                        ["git", "-C", target_wt, "merge", "--no-ff", source_branch or source_oid, "-m", merge_msg],
+                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True
+                    )
+                    if proc.returncode != 0:
+                        detail = (proc.stderr or proc.stdout or "").strip()
+                        sys.stderr.write("Error: failed to merge into %s%s\n"
+                                         % (target, (": " + detail) if detail else ""))
+                        return 1
+                    merge_oid = (git_out(target_wt, "rev-parse", "HEAD") or "").strip()
+                else:
+                    proc_ct = subprocess.run(
+                        ["git", "-C", root, "commit-tree", source_oid + "^{tree}",
+                         "-p", target_oid, "-p", source_oid, "-m", merge_msg],
+                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True
+                    )
+                    if proc_ct.returncode != 0:
+                        detail = (proc_ct.stderr or proc_ct.stdout or "").strip()
+                        sys.stderr.write("Error: failed to create merge commit for %s%s\n"
+                                         % (target, (": " + detail) if detail else ""))
+                        return 1
+                    merge_oid = proc_ct.stdout.strip()
+                    proc_ur = subprocess.run(
+                        ["git", "-C", root, "update-ref", "-m", "workflow task land %s" % ref,
+                         "refs/heads/" + target, merge_oid, target_oid],
+                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True
+                    )
+                    if proc_ur.returncode != 0:
+                        detail = (proc_ur.stderr or proc_ur.stdout or "").strip()
+                        sys.stderr.write("Error: failed to update %s%s\n"
+                                         % (target, (": " + detail) if detail else ""))
+                        return 1
+                sys.stdout.write("Landed task %s onto %s (%s)\n" % (ref, target, merge_oid[:10]))
+
+            if cleanup:
+                if source_wt:
+                    cwd_real = os.path.realpath(os.getcwd())
+                    swt_real = os.path.realpath(source_wt)
+                    if cwd_real == swt_real or cwd_real.startswith(swt_real + os.sep):
+                        sys.stderr.write("Note: kept active worktree %s (current directory is inside it); "
+                                         "remove from another tree with: git worktree remove %s\n"
+                                         % (source_wt, source_wt))
+                    else:
+                        proc_rm = subprocess.run(
+                            ["git", "-C", root, "worktree", "remove", source_wt],
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True
+                        )
+                        if proc_rm.returncode != 0:
+                            detail = (proc_rm.stderr or proc_rm.stdout or "").strip()
+                            sys.stderr.write("Warning: could not remove worktree %s%s\n"
+                                             % (source_wt, (": " + detail) if detail else ""))
+                        elif source_branch:
+                            proc_bd = subprocess.run(
+                                ["git", "-C", root, "branch", "-d", source_branch],
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True
+                            )
+                            if proc_bd.returncode != 0:
+                                detail = (proc_bd.stderr or proc_bd.stdout or "").strip()
+                                sys.stderr.write("Warning: could not delete branch %s%s\n"
+                                                 % (source_branch, (": " + detail) if detail else ""))
+                elif source_branch and source_branch != current:
+                    proc_bd = subprocess.run(
+                        ["git", "-C", root, "branch", "-d", source_branch],
+                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True
+                    )
+                    if proc_bd.returncode != 0:
+                        detail = (proc_bd.stderr or proc_bd.stdout or "").strip()
+                        sys.stderr.write("Warning: could not delete branch %s%s\n"
+                                         % (source_branch, (": " + detail) if detail else ""))
+        finally:
+            if fcntl is not None:
+                fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
+    return 0
 
 
 def cmd_task(args):
@@ -3253,6 +3869,31 @@ def cmd_task(args):
             return 2
         return task_archive(sub_args[0])
 
+    if subcommand == "land":
+        if not sub_args:
+            sys.stderr.write("Error: missing task argument\n")
+            sys.stderr.write(TASK_LAND_USAGE)
+            return 2
+        cleanup = False
+        task_arg = None
+        for arg in sub_args:
+            if arg in ("-h", "--help"):
+                sys.stdout.write(TASK_LAND_USAGE)
+                return 0
+            if arg == "--cleanup":
+                cleanup = True
+            elif arg.startswith("-"):
+                return usage_error("unknown option: %s" % arg, TASK_LAND_USAGE)
+            elif task_arg is None:
+                task_arg = arg
+            else:
+                return usage_error("unexpected extra argument: %s" % arg, TASK_LAND_USAGE)
+        if not task_arg:
+            sys.stderr.write("Error: missing task argument\n")
+            sys.stderr.write(TASK_LAND_USAGE)
+            return 2
+        return task_land(task_arg, cleanup=cleanup)
+
     sys.stderr.write("Error: unknown task subcommand: %s\n" % subcommand)
     sys.stderr.write(TASK_USAGE)
     return 2
@@ -3265,6 +3906,7 @@ Usage: workflow-core.py validate [--strict] [--audit] [--staged] [--format text|
        workflow-core.py next [--effort SLUG] [--all] [--brief] [--format text|json] [--no-color]
        workflow-core.py task start <task>
        workflow-core.py task archive <task>
+       workflow-core.py task land <task> [--cleanup]
        workflow-core.py <command> --help
 """ % VERSION
 

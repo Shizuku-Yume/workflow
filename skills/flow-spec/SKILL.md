@@ -15,7 +15,7 @@ Core user flows, failure handling, and non-goals must be decided. If real trade-
 
 ## 2. Write `.workflow/specs/<effort>.md`
 
-Omit sections like `What it must not do`, `What was considered and rejected`, and `Open questions` when empty—never pad a spec with `None` or `TBD`. A spec is the contract: no dated remediation journals (those go in tasks or research notes), and long background goes in a linked research note (CONVENTIONS §2.1).
+Omit sections like `What it must not do`, `What was considered and rejected`, and `Open questions` when empty—never pad a spec with `None` or `TBD`. Add optional `**Blocked by:** <effort>` (or `<effort>/<NN>`) when the effort must wait for an upstream effort to finish, and `**Integration branch:** <effort>/integration` when tasks integrate off main before landing together (CONVENTIONS §2, §7). A spec is the contract: no dated remediation journals (those go in tasks or research notes), and long background goes in a linked research note (CONVENTIONS §2.1).
 
 ```markdown
 # <Title>

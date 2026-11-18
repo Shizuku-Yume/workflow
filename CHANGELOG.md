@@ -3,6 +3,77 @@
 What changed in each version and what an existing project has to do about it.
 Usage lives in the README and in `--help`.
 
+## 2.12.0
+
+### Upgrade
+
+Run `npm install --global @shizuku-yume/workflow`, then on the main branch with a
+clean tree run:
+
+```sh
+workflow update   # add --force if AGENTS.md or log headers were edited locally and you want the updated blocks
+git add .workflow .agents AGENTS.md && git commit   # plus .claude CLAUDE.md if used
+```
+
+Merge the main branch into active branches and worktrees so every environment uses the
+updated rules and CLI.
+
+- `workflow update` refreshes unmodified `<!-- workflow:start --> ... <!-- workflow:end -->`
+  headers in `decisions.md`, `technical-debt.md`, and `glossary.md`; pass `--force` to
+  upgrade legacy unmarked headers above `## Entries` / `## Terms` without touching existing
+  entries.
+- `Review: pass` now requires a detail such as `Review: pass (base <sha>)` and rejects
+  self-review; open `Check` commands redirecting output to `/tmp` or `/var/tmp` trigger a
+  `validate` warning (cite receipts in the Evidence directory instead).
+
+### Changes
+
+- **Proof, review routing, and `## Progress` bounds (`CONVENTIONS §2.1, §5`)**:
+  - `Review: pass` rejects bare `pass` with no detail and rejects self-review
+    (`self-review`, `自审`, `自我审查`) in both `workflow task archive` and
+    `workflow validate`; existing `Review: pass (base <sha>)` lines remain valid.
+  - Reviewer selection falls back in order: registered `workflow-reviewer` → host's dedicated
+    code-review agent or review model role with `.agents/agents/workflow-reviewer.md` → a
+    fresh read-only subagent or isolated worker session; `workflow-reviewer.md` also inspects
+    visual/screenshot receipts in the Evidence directory when UI changes.
+  - `workflow validate` warns when an open task's `Check` redirects or pipes output to `/tmp/`
+    or `/var/tmp/`, while still allowing runtime isolation such as `HOME=/tmp/...` or
+    `mktemp -d`.
+  - Removed the 16,384-byte whole-file size warning on open tasks so specs and checklists
+    have no byte cap; `validate` instead warns when `## Progress` contains a fenced code
+    block over 25 inner lines or exceeds 60 non-empty visible lines or 8,000 characters.
+  - `workflow task archive` strips `Base branch` alongside `Status` and removes
+    `.workflow/tasks/<effort>/` when emptied; `validate` checks `Base branch` ref existence
+    only on open tasks under `tasks/`.
+- **Atomic `workflow task land`, effort `Blocked by`, and parallel/unattended rules (`CONVENTIONS §1, §2, §4, §7`)**:
+  - Added `workflow task land <task> [--cleanup]`, serialized via an exclusive repository lock
+    (`<git-common-dir>/workflow-land.lock`). It verifies a clean working tree and that the
+    target branch (`Integration branch` or main) is an ancestor of the task commit, creates a
+    `--no-ff` merge onto target, and with `--cleanup` removes the task worktree and branch
+    when invoked outside that worktree.
+  - `specs/<effort>.md` accepts optional `**Blocked by:** <effort>[, <effort>/<NN>]`, and
+    task files accept `effort:<slug>` in `Blocked by:`. Unsatisfied effort blockers hold
+    tasks under `Waiting on dependencies` in `workflow next` and are validated for existence
+    and cycles.
+  - `workflow next` deduplicates `Goal:` lines and names checked-out worktree paths under
+    `Integrating on another branch` so `workflow -C <path> next` can inspect them directly.
+  - Added conventions for intra-task slice parallelism (lock shared interfaces first, fan out
+    over disjoint files, converge shared status/ledger updates in one final gate task),
+    unattended run discipline (never invoke interactive question tools, conservative defaults,
+    strict `Status: blocked` criteria), `flow-close` receipt reuse when a final gate task
+    already verified the shipping tree, and `flow-grill` preferring structured question
+    tools when available.
+- **CLI and templates**:
+  - Added `workflow -C <dir> <command>` to run any command against another directory.
+  - Honored `--no-color` and `NO_COLOR` across all `bin/workflow` commands (`doctor`, `hook`,
+    `init`, `update`, `uninstall`), matching `workflow-core.py`.
+  - Wrapped format headers in `templates/project/.workflow/{decisions,technical-debt,glossary}.md`
+    with `<!-- workflow:start --> ... <!-- workflow:end -->` for managed refreshes on
+    `workflow update` (`uninstall` still leaves these user-owned files untouched).
+  - Expanded `STYLE.md` with chat-shape, plain-language, matter-of-fact error, and
+    status/report formatting rules, aligned the `AGENTS.md` template's `STYLE.md` summary
+    sentence, and added Evidence screenshot/visual receipt inspection to `workflow-reviewer.md`.
+
 ## 2.11.0
 
 ### Upgrade

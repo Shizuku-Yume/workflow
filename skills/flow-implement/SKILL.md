@@ -18,7 +18,7 @@ Read the task file and the spec sections it cites. A bare `NN` works when unambi
 
 ## 2. Build
 
-Make the smallest clear change across code, callers, tests, and docs (CONVENTIONS §8). For bugs, follow CONVENTIONS §6.
+Make the smallest clear change across code, callers, tests, and docs (CONVENTIONS §8). For multi-file tasks, settle shared interfaces and types first, then fan out parallel workers over disjoint files when the host supports subagents or worker sessions, integrating in one owner (CONVENTIONS §7). For bugs, follow CONVENTIONS §6.
 
 ## 3. Verify
 
@@ -31,14 +31,14 @@ Run `flow-verify` against `Base commit`; it records the `Review:` line in `## Pr
 
 ## 5. Archive and land
 
-- Tick `- [x]` items, record proof (spike: `## Findings`; else `Check after:` or `Check waived:`) and `flow-verify`'s `Review:` line, then run `.workflow/bin/workflow task archive <effort>/<NN>`. It checks the proof lines, strips `Status`, moves the file to `.workflow/done/<effort>/`, and prints when the effort is ready to close. Then land per CONVENTIONS §7. Keep `## Progress` as current state: one line per superseded attempt, long logs to the Evidence directory (CONVENTIONS §2.1).
+- Tick `- [x]` items, record proof (spike: `## Findings`; else `Check after:` or `Check waived:`) and `flow-verify`'s `Review:` line, then run `.workflow/bin/workflow task archive <effort>/<NN>`. It checks the proof lines, strips `Status` and `Base branch`, moves the file to `.workflow/done/<effort>/`, removes an emptied `.workflow/tasks/<effort>/` directory, and prints when the effort is ready to close. Then land with `.workflow/bin/workflow task land <effort>/<NN> [--cleanup]` (or per CONVENTIONS §7) once rebased or merged up to date. Keep `## Progress` as current state: replace stale handoff notes on resume, keep one line per superseded attempt, and write long logs to the Evidence directory (CONVENTIONS §2.1).
 - Report what changed, the `Check` and real-path results, and the review outcome. Include breaking or migration notes and logged decisions only when applicable.
-- **Broken assumption:** set `Status: blocked`, add `## Blocked`, and replan (CONVENTIONS §3). **Stopping mid-task:** hand off per CONVENTIONS §4 and set `Status: paused`.
+- **Broken assumption or unattended block:** set `Status: blocked`, add `## Blocked`, and replan (CONVENTIONS §3, §4 — in unattended runs, reserve `blocked` strictly for broken assumptions or blocking review findings after 2 rounds). **Stopping mid-task:** hand off per CONVENTIONS §4 and set `Status: paused`.
 
 ## 6. Effort queue mode
 
 When the argument is `<effort>`:
 1. Run `.workflow/bin/workflow next --effort <effort> --all --format json`. Handle `paused` and `blocked` tasks first.
-2. Run ready tasks in parallel, one worktree under the `Worktrees:` root (`standards.md`, default `.workflow/worktrees/`) and one subagent each (CONVENTIONS §7). Each subagent builds and passes `Check` in its own worktree. Tasks listed together in `file_overlaps` or `resource_overlaps` run one after another.
-3. As each subagent finishes, confirm `Check` and the real path, run `flow-verify`, and land in the main session; remove the worktree (`git worktree remove <path>`) and rerun `next`. On long runs, `workflow next --effort <effort> --brief` prints a compact queue check (silent when idle).
+2. Run ready tasks in parallel, one worktree under the `Worktrees:` root (`standards.md`, default `.workflow/worktrees/`) and one subagent or isolated unattended worker session each (CONVENTIONS §4, §7). Each worker builds and passes `Check` in its own worktree. Tasks listed together in `file_overlaps` or `resource_overlaps` run one after another.
+3. As each worker finishes, confirm `Check` and the real path, run `flow-verify`, archive (`workflow task archive <effort>/<NN>`), and land via `.workflow/bin/workflow task land <effort>/<NN> --cleanup` (which acquires a repo lock, verifies ancestry, merges `--no-ff`, and removes the worktree and branch when outside that worktree); then rerun `next`. On long runs, `workflow next --effort <effort> --brief` prints a compact queue check (silent when idle).
 4. When every task has landed, run `flow-close <effort>` if the effort has a spec; otherwise the final report lists the tasks with `Check waived` or `Review: skipped` / `Review: waived`.
