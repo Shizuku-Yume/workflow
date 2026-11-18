@@ -255,7 +255,7 @@ expected_agents() {
     from_manifest="$(awk '
       /^managed:$/ { in_m = 1; next }
       in_m && /^[^ ]/ { in_m = 0 }
-      in_m && $2 ~ /^\.agents\/agents\/[^/]+\.md$/ {
+      in_m && $2 ~ "^\\.agents/agents/[^/]+\\.md$" {
         k = $2
         sub(/^\.agents\/agents\//, "", k)
         sub(/\.md$/, "", k)
@@ -608,7 +608,7 @@ cli_manifest_entries() {
     from_vf="$(awk '
       /^managed:$/ { in_m = 1; next }
       in_m && /^[^ ]/ { in_m = 0 }
-      in_m && $2 ~ /^\.workflow\/bin\/[^/]+$/ {
+      in_m && $2 ~ "^\\.workflow/bin/[^/]+$" {
         k = $2; sub(/^\.workflow\/bin\//, "", k)
         print $1, k
       }
